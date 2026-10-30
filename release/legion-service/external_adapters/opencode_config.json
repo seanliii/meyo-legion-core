@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "meyo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Meyo AIGC Gateway",
+      "options": {
+        "baseURL": "{env.OPENAI_BASE_URL}",
+        "apiKey": "{env.OPENAI_API_KEY}"
+      },
+      "models": {
+        "gpt-5.6-sol": {"name": "GPT 5.6 Sol"},
+        "deepseek-v4-pro": {"name": "DeepSeek V4 Pro"},
+        "GLM-5.3": {"name": "GLM 5.3"}
+      }
+    }
+  },
+  "share": "disabled",
+  "autoupdate": false
+}

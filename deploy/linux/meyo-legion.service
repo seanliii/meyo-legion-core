@@ -1,0 +1,22 @@
+[Unit]
+Description=Meyo Legion personal runtime
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=meyo-legion
+Group=meyo-legion
+UMask=0077
+WorkingDirectory=/opt/meyo-legion/current
+Environment=PATH=/opt/meyo-legion/native:/opt/meyo-legion/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/meyo-legion/venv/bin/python -I /opt/meyo-legion/current/meyo.py serve --state-dir /var/lib/meyo-legion
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=60
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

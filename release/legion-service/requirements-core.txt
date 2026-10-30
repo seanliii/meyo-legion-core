@@ -1,0 +1,20 @@
+# 独立服务、共享搜索和明确可桥调的本地工具。
+# 在独立 venv 中安装；各原生 CLI 及其授权仍由对应成员入口管理。
+ddgs>=9.0.0
+duckduckgo_search>=8.0.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+wikipedia>=1.4.0
+markdown-it-py==4.2.0
+tavily-python>=0.3.0
+
+# 保留原有 Responses/Chat 协议适配依赖；未配置时不代表提供方可用。
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+
+# 既有 retained-tools.json 明确声明的三个工具，沿用原已选版本。
+# 不复制原 Linux wheel：pip 为当前系统选择发行物。
+sympy==1.14.0
+duckdb==1.5.4
+ijson==3.5.1

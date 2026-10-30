@@ -1,0 +1,55 @@
+{
+	admin off
+	default_sni {$MEYO_PUBLIC_HOST}
+}
+
+(meyo_access_log) {
+	log {
+		output file {$MEYO_ACCESS_LOG} {
+			roll_size 5MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri regexp ^(/shared/)[^?]*(?:\?.*)?$|^([^?]*)(?:\?.*)?$ "${1}${2}"
+				resp_headers delete
+			}
+		}
+	}
+}
+
+{$MEYO_PUBLIC_HOST} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+
+	@public_host host {$MEYO_PUBLIC_HOST}
+	handle @public_host {
+		# Compress completed history payloads, not authentication responses or SSE streams.
+		@history_payload path / /api/legion/session /api/legion/session-index /api/legion/session/teams /api/legion/sessions
+		encode @history_payload gzip
+		import /etc/meyo-legion/routes/*.caddy
+		reverse_proxy {$MEYO_UPSTREAM} {
+			flush_interval -1
+		}
+	}
+	handle {
+		respond "Not Found" 404
+	}
+	import meyo_access_log
+}
+
+# An unmatched Host otherwise receives Caddy's empty default 200 response.
+:443 {
+	respond "Not Found" 404
+	import meyo_access_log
+}
+
+# Optional operator-managed redirects from a previous public origin.
+import /etc/meyo-legion/aliases/*.caddy

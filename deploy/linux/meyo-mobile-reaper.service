@@ -1,0 +1,17 @@
+[Unit]
+Description=Release expired owner-bound Meyo cloud mobile sessions
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=meyo-legion
+Group=meyo-legion
+UMask=0077
+WorkingDirectory=/opt/meyo-legion/current
+ExecStart=/opt/meyo-legion/venv/bin/python -I /opt/meyo-legion/current/meyo.py reap-devices --state-dir /var/lib/meyo-legion
+TimeoutStartSec=120
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/meyo-legion

@@ -1,0 +1,19 @@
+[project]
+name = "meyo-harnesses"
+version = "0.1.0"
+description = "meyo 9-harness community plugin for omnigent (ADR-001 fork 归一层)"
+requires-python = ">=3.12"
+dependencies = []
+
+# ★非侵入接入 omnigent:注册进官方 community harness entry-point group
+#   (omnigent/harness_plugins.py: COMMUNITY_ENTRY_POINT_GROUP = "omnigent.community.harness")
+#   fork omnigent 后 pip install -e 本包,omnigent 自动发现这 9 家,无需改 core。
+[project.entry-points."omnigent.community.harness"]
+meyo = "meyo_harnesses:MEYO_HARNESSES"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["meyo_harnesses"]

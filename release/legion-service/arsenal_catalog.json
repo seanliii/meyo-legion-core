@@ -1,0 +1,2139 @@
+{
+ "catalog": "Agent 军团装备总库",
+ "km_doc": 2783473557,
+ "total": 103,
+ "tiers": [
+  "CC插件",
+  "MCP",
+  "MCP市场",
+  "Skills",
+  "主力框架",
+  "军团本体",
+  "垂直框架",
+  "工具箱",
+  "必装神器",
+  "新锐框架",
+  "王牌军团",
+  "编排",
+  "编排辅助",
+  "自进化军团",
+  "记忆层",
+  "参考源"
+ ],
+ "items": [
+  {
+   "id": "km:01:cowagent",
+   "km_num": 1,
+   "name": "CowAgent",
+   "tier": "军团本体",
+   "priority": "主力",
+   "scenes": [
+    "assistant",
+    "im"
+   ],
+   "url": "https://github.com/zhayujie/CowAgent",
+   "desc": "7×24在线个人助手·微信/飞书/网页召唤",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:02:paperclip",
+   "km_num": 2,
+   "name": "Paperclip",
+   "tier": "军团本体",
+   "priority": "主力",
+   "scenes": [
+    "assistant",
+    "team"
+   ],
+   "url": "https://github.com/paperclipai/paperclip",
+   "desc": "Agent公司:管理一支AI团队",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:03:tutti",
+   "km_num": 3,
+   "name": "Tutti",
+   "tier": "军团本体",
+   "priority": "按需",
+   "scenes": [
+    "assistant",
+    "multiagent"
+   ],
+   "url": "https://github.com/tutti-os/tutti",
+   "desc": "多Agent协作助手形态",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:04:军团本体设计思想-文章",
+   "km_num": 4,
+   "name": "军团本体设计思想(文章)",
+   "tier": "军团本体",
+   "priority": "按需",
+   "scenes": [
+    "reference"
+   ],
+   "url": "https://mp.weixin.qq.com/s/jsAMm52Nj0hROpNCytLTzw",
+   "desc": "建军团前先读的设计思想",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "reference",
+   "join_note": "作为发现/参考源·不占运行时"
+  },
+  {
+   "id": "km:05:nanobot",
+   "km_num": 5,
+   "name": "nanobot",
+   "tier": "军团本体",
+   "priority": "按需",
+   "scenes": [
+    "assistant"
+   ],
+   "url": "https://github.com/HKUDS/nanobot",
+   "desc": "小而美Agent助手(HKUDS)",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:06:pi",
+   "km_num": 6,
+   "name": "pi",
+   "tier": "军团本体",
+   "priority": "按需",
+   "scenes": [
+    "assistant",
+    "cli"
+   ],
+   "url": "https://pi.dev/install.sh",
+   "desc": "一行命令安装的Agent",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:07:hermes-agent",
+   "km_num": 7,
+   "name": "Hermes Agent",
+   "tier": "自进化军团",
+   "priority": "主力",
+   "scenes": [
+    "agent",
+    "selfevolve",
+    "skill",
+    "memory"
+   ],
+   "url": "https://github.com/NousResearch/hermes-agent",
+   "desc": "自主创建Skill+持久记忆+自改进·6后端·本地已有源码",
+   "kind": "repo",
+   "local_source": "harness_baselines/hermes-agent",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:08:genericagent",
+   "km_num": 8,
+   "name": "GenericAgent",
+   "tier": "自进化军团",
+   "priority": "主力",
+   "scenes": [
+    "agent",
+    "selfevolve",
+    "skill",
+    "im"
+   ],
+   "url": "https://github.com/lsdefine/GenericAgent",
+   "desc": "3K行种子·技能树自生长·token 1/6",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:09:omniagent",
+   "km_num": 9,
+   "name": "OmniAgent",
+   "tier": "自进化军团",
+   "priority": "按需",
+   "scenes": [
+    "agent",
+    "selfevolve"
+   ],
+   "url": "https://github.com/YeQing17-2026/OmniAgent",
+   "desc": "全维度自进化(Skill+Context+BrainModel)+在线RL",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:10:aeon",
+   "km_num": 10,
+   "name": "Aeon",
+   "tier": "自进化军团",
+   "priority": "按需",
+   "scenes": [
+    "agent",
+    "selfevolve",
+    "ci"
+   ],
+   "url": "https://github.com/aeonfun/aeon",
+   "desc": "跑在GitHub Actions·自愈Skill·零基础设施",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:11:seagent",
+   "km_num": 11,
+   "name": "SEAgent",
+   "tier": "自进化军团",
+   "priority": "按需",
+   "scenes": [
+    "agent",
+    "computeruse"
+   ],
+   "url": "https://github.com/SunzeY/SEAgent",
+   "desc": "自进化Computer Use·GRPO+PRM(ICML2026)",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:12:haystack",
+   "km_num": 12,
+   "name": "Haystack",
+   "tier": "主力框架",
+   "priority": "主力",
+   "scenes": [
+    "rag",
+    "pipeline",
+    "doc"
+   ],
+   "url": "https://github.com/deepset-ai/haystack",
+   "desc": "RAG/文档处理优先的管道式Agent",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:13:langgraph",
+   "km_num": 13,
+   "name": "LangGraph",
+   "tier": "主力框架",
+   "priority": "必装",
+   "scenes": [
+    "orchestration",
+    "graph"
+   ],
+   "url": "https://github.com/langchain-ai/langgraph",
+   "desc": "状态化图编排·LangChain生态核心",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:14:google-adk",
+   "km_num": 14,
+   "name": "Google ADK",
+   "tier": "主力框架",
+   "priority": "主力",
+   "scenes": [
+    "orchestration",
+    "a2a",
+    "mcp"
+   ],
+   "url": "https://github.com/google/adk-python",
+   "desc": "Google全家桶·A2A/MCP原生",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:15:openclaw",
+   "km_num": 15,
+   "name": "OpenClaw",
+   "tier": "王牌军团",
+   "priority": "主力",
+   "scenes": [
+    "assistant",
+    "selfevolve",
+    "skill",
+    "memory",
+    "im"
+   ],
+   "url": "https://github.com/openclaw/openclaw",
+   "desc": "346k star·心跳调度+持久记忆+ClawHub 13700+skills",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:16:grok-build",
+   "km_num": 16,
+   "name": "Grok Build",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "code",
+    "cli",
+    "tui"
+   ],
+   "url": "https://github.com/xai-org/grok-build",
+   "desc": "xAI开源coding agent·Rust全屏·headless/ACP",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:17:kimi-code-cli",
+   "km_num": 17,
+   "name": "Kimi Code CLI",
+   "tier": "新锐框架",
+   "priority": "主力",
+   "scenes": [
+    "code",
+    "cli",
+    "mcp"
+   ],
+   "url": "https://github.com/MoonshotAI/kimi-code",
+   "desc": "Moonshot开源coding·CC平替·MCP/ACP",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:18:deerflow",
+   "km_num": 18,
+   "name": "DeerFlow",
+   "tier": "新锐框架",
+   "priority": "主力",
+   "scenes": [
+    "agent",
+    "research",
+    "code",
+    "sandbox"
+   ],
+   "url": "https://github.com/bytedance/deer-flow",
+   "desc": "ByteDance长时程SuperAgent·沙盒+子agent",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:19:block-buzz",
+   "km_num": 19,
+   "name": "Block Buzz",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "collab",
+    "nostr"
+   ],
+   "url": "https://github.com/block/buzz",
+   "desc": "Block开源协作空间·人类与AI平等成员",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:20:cline",
+   "km_num": 20,
+   "name": "Cline",
+   "tier": "新锐框架",
+   "priority": "主力",
+   "scenes": [
+    "code",
+    "vscode",
+    "mcp"
+   ],
+   "url": "https://github.com/cline/cline",
+   "desc": "自主coding agent·VSCode/SDK/CLI·MCP",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:21:goose",
+   "km_num": 21,
+   "name": "Goose",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "agent",
+    "extensible"
+   ],
+   "url": "https://github.com/aaif-goose/goose",
+   "desc": "Block开源可扩展AI agent",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:22:ironclaw",
+   "km_num": 22,
+   "name": "IronClaw",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "agentos",
+    "privacy"
+   ],
+   "url": "https://github.com/nearai/ironclaw",
+   "desc": "Agent OS·隐私安全可扩展",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:23:astrbot",
+   "km_num": 23,
+   "name": "AstrBot",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "assistant",
+    "im"
+   ],
+   "url": "https://github.com/AstrBotDevs/AstrBot",
+   "desc": "AI Agent助手&开发框架·集成IM",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:24:openmontage",
+   "km_num": 24,
+   "name": "OpenMontage",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "video",
+    "media",
+    "generation"
+   ],
+   "url": "https://github.com/calesthio/OpenMontage",
+   "desc": "首个开源agentic视频系统·12pipeline+52工具+500skills·本地已有源码",
+   "kind": "repo",
+   "local_source": "harness_baselines/ecosystem/openmontage",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:25:vibe-trading",
+   "km_num": 25,
+   "name": "Vibe-Trading",
+   "tier": "新锐框架",
+   "priority": "按需",
+   "scenes": [
+    "trading",
+    "quant"
+   ],
+   "url": "https://github.com/HKUDS/Vibe-Trading",
+   "desc": "港大开源量化交易agent",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:26:browser-use",
+   "km_num": 26,
+   "name": "Browser-use",
+   "tier": "垂直框架",
+   "priority": "按需",
+   "scenes": [
+    "browse",
+    "web",
+    "automation"
+   ],
+   "url": "https://github.com/browser-use/browser-use",
+   "desc": "浏览器自动化·像真人操作网页",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:27:pipecat",
+   "km_num": 27,
+   "name": "Pipecat",
+   "tier": "垂直框架",
+   "priority": "按需",
+   "scenes": [
+    "voice",
+    "audio",
+    "realtime"
+   ],
+   "url": "https://github.com/pipecat-ai/pipecat",
+   "desc": "实时语音/多模态·STT→LLM→TTS",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:28:langflow",
+   "km_num": 28,
+   "name": "Langflow",
+   "tier": "垂直框架",
+   "priority": "主力",
+   "scenes": [
+    "orchestration",
+    "visual",
+    "workflow"
+   ],
+   "url": "https://github.com/langflow-ai/langflow",
+   "desc": "可视化拖拽工作流·2026最佳整体框架",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "member",
+   "join_note": "可纳入军团为独立成员·参与PK/relay/层级协作"
+  },
+  {
+   "id": "km:29:langchain",
+   "km_num": 29,
+   "name": "LangChain",
+   "tier": "编排",
+   "priority": "必装",
+   "scenes": [
+    "orchestration",
+    "tools"
+   ],
+   "url": "https://github.com/langchain-ai/langchain",
+   "desc": "生态最庞大的Agent工程平台",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:30:autogen",
+   "km_num": 30,
+   "name": "AutoGen",
+   "tier": "编排",
+   "priority": "主力",
+   "scenes": [
+    "orchestration",
+    "multiagent"
+   ],
+   "url": "https://github.com/microsoft/autogen",
+   "desc": "多智能体对话编程框架",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:31:agentscope",
+   "km_num": 31,
+   "name": "AgentScope",
+   "tier": "编排",
+   "priority": "按需",
+   "scenes": [
+    "orchestration",
+    "multimodal",
+    "distributed"
+   ],
+   "url": "https://github.com/modelscope/agentscope",
+   "desc": "多模态分布式多智能体",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:32:openai-agents-sdk",
+   "km_num": 32,
+   "name": "OpenAI Agents SDK",
+   "tier": "编排",
+   "priority": "主力",
+   "scenes": [
+    "orchestration",
+    "handoff"
+   ],
+   "url": "https://github.com/openai/openai-agents-python",
+   "desc": "轻量官方多智能体",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:33:crewai",
+   "km_num": 33,
+   "name": "CrewAI",
+   "tier": "编排",
+   "priority": "主力",
+   "scenes": [
+    "orchestration",
+    "roleplay",
+    "multiagent"
+   ],
+   "url": "https://github.com/crewAIInc/crewAI",
+   "desc": "角色扮演多智能体协作",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:34:omniroute",
+   "km_num": 34,
+   "name": "OmniRoute",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "gateway",
+    "router"
+   ],
+   "url": "",
+   "desc": "MIT AI网关·290+供应商/500+模型·配额感知故障转移",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:35:orca",
+   "km_num": 35,
+   "name": "orca",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "orchestration",
+    "worktree",
+    "parallel"
+   ],
+   "url": "https://github.com/stablyai/orca",
+   "desc": "并行智能体舰队开发环境·本地已有源码",
+   "kind": "repo",
+   "local_source": "harness_baselines/ecosystem/orca",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:36:codebase-memory-mcp",
+   "km_num": 36,
+   "name": "codebase-memory-mcp",
+   "tier": "编排辅助",
+   "priority": "主力",
+   "scenes": [
+    "memory",
+    "code",
+    "mcp",
+    "graph"
+   ],
+   "url": "",
+   "desc": "代码库索引成知识图谱·158语言·token减99%",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:37:codex-plugin-cc",
+   "km_num": 37,
+   "name": "codex-plugin-cc",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "code",
+    "review",
+    "delegate"
+   ],
+   "url": "https://github.com/openai/codex-plugin-cc",
+   "desc": "CC里直接调Codex做审查/委派",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:38:herdr",
+   "km_num": 38,
+   "name": "herdr",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "multiplexer",
+    "terminal",
+    "runtime"
+   ],
+   "url": "https://herdr.dev",
+   "desc": "Rust终端Agent多路复用器·本地已有源码",
+   "kind": "reference",
+   "local_source": "harness_baselines/ecosystem/herdr",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:39:openwiki",
+   "km_num": 39,
+   "name": "openwiki",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "doc",
+    "code",
+    "cli"
+   ],
+   "url": "",
+   "desc": "自动为代码库写维护Agent文档的CLI",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:40:munder-difflin",
+   "km_num": 40,
+   "name": "munder-difflin",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "multiagent",
+    "reference"
+   ],
+   "url": "https://github.com/chaitanyagiri/munder-difflin",
+   "desc": "多Agent架构参考实现",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:41:capsule-identity",
+   "km_num": 41,
+   "name": "capsule-identity",
+   "tier": "编排辅助",
+   "priority": "按需",
+   "scenes": [
+    "identity",
+    "prompt"
+   ],
+   "url": "https://github.com/unicity-aos/capsule-identity",
+   "desc": "给AI Agent管理身份/组装系统提示词",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为嵌套编排成员·军团harness它·它再harness军团个体"
+  },
+  {
+   "id": "km:42:letta-memgpt",
+   "km_num": 42,
+   "name": "Letta(MemGPT)",
+   "tier": "记忆层",
+   "priority": "主力",
+   "scenes": [
+    "memory",
+    "context"
+   ],
+   "url": "https://github.com/letta-ai/letta",
+   "desc": "OS式内存管理·主上下文=RAM/归档=磁盘",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:43:mem0",
+   "km_num": 43,
+   "name": "Mem0",
+   "tier": "记忆层",
+   "priority": "必装",
+   "scenes": [
+    "memory"
+   ],
+   "url": "https://github.com/mem0ai/mem0",
+   "desc": "提取+检索三层记忆(user/session/agent)",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "已放弃(硬依赖qdrant→grpc编译死)·改用teamai-cli/redis",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "note": "(军团评估已放弃·见dev/legion-memory-eval.md)"
+  },
+  {
+   "id": "km:44:zep---graphiti",
+   "km_num": 44,
+   "name": "Zep / Graphiti",
+   "tier": "记忆层",
+   "priority": "主力",
+   "scenes": [
+    "memory",
+    "graph",
+    "temporal"
+   ],
+   "url": "https://github.com/getzep/zep",
+   "desc": "时序知识图谱·关系随时间可追溯",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:45:context7-mcp",
+   "km_num": 45,
+   "name": "Context7 MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "doc",
+    "mcp",
+    "code"
+   ],
+   "url": "",
+   "desc": "版本化文档查询·杜绝API幻觉",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:46:github-mcp",
+   "km_num": 46,
+   "name": "GitHub MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "github",
+    "mcp",
+    "code"
+   ],
+   "url": "",
+   "desc": "PR/Issue/Actions/代码搜索",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:47:playwright-mcp",
+   "km_num": 47,
+   "name": "Playwright MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "browse",
+    "mcp",
+    "automation"
+   ],
+   "url": "",
+   "desc": "浏览器自动化/截图/表单/隐身",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:48:firecrawl-mcp",
+   "km_num": 48,
+   "name": "Firecrawl MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "web",
+    "mcp",
+    "markdown",
+    "search"
+   ],
+   "url": "",
+   "desc": "最干净网页→Markdown",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:49:exa-mcp",
+   "km_num": 49,
+   "name": "Exa MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "search",
+    "mcp",
+    "semantic"
+   ],
+   "url": "",
+   "desc": "为Agent调优的语义搜索",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:50:filesystem-mcp",
+   "km_num": 50,
+   "name": "Filesystem MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "file",
+    "mcp"
+   ],
+   "url": "",
+   "desc": "本地文件安全访问",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:51:sentry-mcp",
+   "km_num": 51,
+   "name": "Sentry MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "monitoring",
+    "mcp",
+    "error"
+   ],
+   "url": "",
+   "desc": "错误追踪/性能监控接入prompt",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:52:supabase-mcp",
+   "km_num": 52,
+   "name": "Supabase MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "db",
+    "mcp",
+    "auth",
+    "storage"
+   ],
+   "url": "",
+   "desc": "Postgres+Auth+Storage",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:53:totalum-mcp",
+   "km_num": 53,
+   "name": "Totalum MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "deploy",
+    "mcp",
+    "nextjs"
+   ],
+   "url": "",
+   "desc": "一句话部署生产级Next.js",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:54:officecli-mcp",
+   "km_num": 54,
+   "name": "OfficeCLI MCP",
+   "tier": "MCP",
+   "priority": "必装",
+   "scenes": [
+    "office",
+    "mcp",
+    "excel",
+    "word",
+    "ppt"
+   ],
+   "url": "",
+   "desc": "AI直接读写Word/Excel/PPT",
+   "kind": "mcp",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:55:smithery",
+   "km_num": 55,
+   "name": "Smithery",
+   "tier": "MCP市场",
+   "priority": "按需",
+   "scenes": [
+    "mcp",
+    "registry"
+   ],
+   "url": "https://smithery.ai",
+   "desc": "7000+MCP服务器·类Docker Hub",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "reference",
+   "join_note": "作为发现/参考源·不占运行时"
+  },
+  {
+   "id": "km:56:mcp-market",
+   "km_num": 56,
+   "name": "MCP Market",
+   "tier": "MCP市场",
+   "priority": "按需",
+   "scenes": [
+    "mcp",
+    "registry"
+   ],
+   "url": "https://mcpmarket.com",
+   "desc": "10000+服务器·23+分类",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "reference",
+   "join_note": "作为发现/参考源·不占运行时"
+  },
+  {
+   "id": "km:57:frontend-design",
+   "km_num": 57,
+   "name": "frontend-design",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "ui",
+    "frontend"
+   ],
+   "url": "",
+   "desc": "UI输出不再像默认AI风格",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:58:code-review",
+   "km_num": 58,
+   "name": "code-review",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "review",
+    "multiagent"
+   ],
+   "url": "",
+   "desc": "多agent PR审查·置信度评分",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:59:context7-plugin",
+   "km_num": 59,
+   "name": "context7(plugin)",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "doc"
+   ],
+   "url": "",
+   "desc": "按需拉版本化库文档(插件形态)",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:60:code-simplifier",
+   "km_num": 60,
+   "name": "code-simplifier",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "simplify"
+   ],
+   "url": "",
+   "desc": "自动删减过度编写代码",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:61:claude-md-management",
+   "km_num": 61,
+   "name": "claude-md-management",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "claudemd"
+   ],
+   "url": "",
+   "desc": "审计CLAUDE.md+沉淀会话经验",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:62:feature-dev",
+   "km_num": 62,
+   "name": "feature-dev",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "architect",
+    "review"
+   ],
+   "url": "",
+   "desc": "探索-架构-审查全流程",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:63:security-guidance",
+   "km_num": 63,
+   "name": "security-guidance",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "security"
+   ],
+   "url": "",
+   "desc": "编辑警告+提交前LLM审查",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:64:commit-commands",
+   "km_num": 64,
+   "name": "commit-commands",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "code",
+    "git",
+    "pr"
+   ],
+   "url": "",
+   "desc": "commit+push+PR一键",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:65:remember",
+   "km_num": 65,
+   "name": "remember",
+   "tier": "CC插件",
+   "priority": "必装",
+   "scenes": [
+    "memory",
+    "log"
+   ],
+   "url": "",
+   "desc": "分层日志·记得昨天做了什么",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:66:anthropics-skills",
+   "km_num": 66,
+   "name": "anthropics/skills",
+   "tier": "Skills",
+   "priority": "必装",
+   "scenes": [
+    "skill",
+    "official"
+   ],
+   "url": "https://github.com/anthropics/skills",
+   "desc": "Anthropic官方目录·3.4万星",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "浅克隆到共享 ecosystem，工具箱自动扫描，各家按需使用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "install": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/anthropics/skills.git",
+    "harness_baselines/ecosystem/skills"
+   ],
+   "check": {
+    "method": "path",
+    "target": "harness_baselines/ecosystem/skills"
+   }
+  },
+  {
+   "id": "km:67:claude-plugins-community",
+   "km_num": 67,
+   "name": "claude-plugins-community",
+   "tier": "Skills",
+   "priority": "必装",
+   "scenes": [
+    "skill",
+    "community"
+   ],
+   "url": "https://github.com/anthropics/claude-plugins-community",
+   "desc": "Anthropic社区插件库",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "浅克隆到共享 ecosystem，工具箱自动扫描，各家按需使用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "install": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/anthropics/claude-plugins-community.git",
+    "harness_baselines/ecosystem/claude-plugins-community"
+   ],
+   "check": {
+    "method": "path",
+    "target": "harness_baselines/ecosystem/claude-plugins-community"
+   }
+  },
+  {
+   "id": "km:68:awesome-agent-skills",
+   "km_num": 68,
+   "name": "awesome-agent-skills",
+   "tier": "Skills",
+   "priority": "必装",
+   "scenes": [
+    "skill",
+    "aggregate"
+   ],
+   "url": "https://github.com/VoltAgent/awesome-agent-skills",
+   "desc": "VoltAgent聚合1000+技能·本地已有源码",
+   "kind": "repo",
+   "local_source": "harness_baselines/ecosystem/awesome-agent-skills",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:69:scientific-agent-skills",
+   "km_num": 69,
+   "name": "scientific-agent-skills",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill",
+    "science"
+   ],
+   "url": "https://github.com/k-dense-ai/scientific-agent-skills",
+   "desc": "科学技能库·17.5万科学家用",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:70:mattpocock-skills",
+   "km_num": 70,
+   "name": "mattpocock/skills",
+   "tier": "Skills",
+   "priority": "主力",
+   "scenes": [
+    "skill",
+    "code"
+   ],
+   "url": "https://github.com/mattpocock/skills",
+   "desc": "写代码skill",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "浅克隆到共享 ecosystem，工具箱自动扫描，各家按需使用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "install": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/mattpocock/skills.git",
+    "harness_baselines/ecosystem/mattpocock-skills"
+   ],
+   "check": {
+    "method": "path",
+    "target": "harness_baselines/ecosystem/mattpocock-skills"
+   }
+  },
+  {
+   "id": "km:71:addyosmani-agent-skills",
+   "km_num": 71,
+   "name": "addyosmani/agent-skills",
+   "tier": "Skills",
+   "priority": "主力",
+   "scenes": [
+    "skill",
+    "code"
+   ],
+   "url": "https://github.com/addyosmani/agent-skills",
+   "desc": "写代码skill(Addy Osmani)",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "浅克隆到共享 ecosystem，工具箱自动扫描，各家按需使用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "install": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/addyosmani/agent-skills.git",
+    "harness_baselines/ecosystem/agent-skills"
+   ],
+   "check": {
+    "method": "path",
+    "target": "harness_baselines/ecosystem/agent-skills"
+   }
+  },
+  {
+   "id": "km:72:ai-job-search",
+   "km_num": 72,
+   "name": "ai-job-search",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill",
+    "jobsearch"
+   ],
+   "url": "https://github.com/MadsLorentzen/ai-job-search",
+   "desc": "求职自动化:评估职位/定制简历/求职信",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:73:archify",
+   "km_num": 73,
+   "name": "archify",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill",
+    "architecture"
+   ],
+   "url": "https://github.com/tt-a1i/archify",
+   "desc": "架构相关skill",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:74:ponytail",
+   "km_num": 74,
+   "name": "ponytail",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill"
+   ],
+   "url": "https://github.com/DietrichGebert/ponytail",
+   "desc": "开源优秀skill",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:75:claude-obsidian",
+   "km_num": 75,
+   "name": "claude-obsidian",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill",
+    "notes",
+    "obsidian"
+   ],
+   "url": "https://github.com/AgriciDaniel/claude-obsidian",
+   "desc": "Claude×Obsidian笔记联动",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:76:openhuman",
+   "km_num": 76,
+   "name": "openhuman",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill",
+    "avatar",
+    "digitalhuman"
+   ],
+   "url": "https://github.com/tinyhumansai/openhuman",
+   "desc": "开源数字人/个人形象skill·本地已有源码",
+   "kind": "repo",
+   "local_source": "harness_baselines/ecosystem/openhuman",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:77:garden-skills",
+   "km_num": 77,
+   "name": "garden-skills",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill"
+   ],
+   "url": "https://github.com/ConardLi/garden-skills",
+   "desc": "技能花园(ConardLi)",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:78:moneyprinterturbo",
+   "km_num": 78,
+   "name": "MoneyPrinterTurbo",
+   "tier": "Skills",
+   "priority": "按需",
+   "scenes": [
+    "skill",
+    "video",
+    "shortvideo"
+   ],
+   "url": "https://github.com/harry0703/MoneyPrinterTurbo",
+   "desc": "一键生成短视频(文案→视频)",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:79:superpowers",
+   "km_num": 79,
+   "name": "superpowers",
+   "tier": "Skills",
+   "priority": "必装",
+   "scenes": [
+    "skill",
+    "workflow"
+   ],
+   "url": "https://github.com/obra/superpowers",
+   "desc": "工作流程引擎·规范skill描述分工·本地已有源码",
+   "kind": "repo",
+   "local_source": "harness_baselines/ecosystem/superpowers",
+   "install_strategy": "已随仓库(本地源码)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:80:jpage-即页",
+   "km_num": 80,
+   "name": "jpage(即页)",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "share",
+    "static"
+   ],
+   "url": "https://github.com/code2rich/jpage",
+   "desc": "静态内容分享·打开就能用",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:81:yt-dlp",
+   "km_num": 81,
+   "name": "yt-dlp",
+   "tier": "工具箱",
+   "priority": "主力",
+   "scenes": [
+    "video",
+    "download"
+   ],
+   "url": "https://github.com/yt-dlp/yt-dlp",
+   "desc": "全网视频下载器",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "pip一键装(轻量·无凭证)",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "install": [
+    "/opt/homebrew/opt/python@3.12/bin/python3.12",
+    "-m",
+    "pip",
+    "install",
+    "--break-system-packages",
+    "yt-dlp"
+   ],
+   "check": {
+    "method": "import",
+    "target": "yt_dlp"
+   },
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:82:ecc插件库",
+   "km_num": 82,
+   "name": "ECC插件库",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "research",
+    "market"
+   ],
+   "url": "",
+   "desc": "deep research和market research插件",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:83:dokploy",
+   "km_num": 83,
+   "name": "Dokploy",
+   "tier": "工具箱",
+   "priority": "主力",
+   "scenes": [
+    "deploy",
+    "vps"
+   ],
+   "url": "https://github.com/Dokploy/dokploy",
+   "desc": "低成本VPS部署",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:84:bento",
+   "km_num": 84,
+   "name": "bento",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "slides",
+    "presentation"
+   ],
+   "url": "https://github.com/nyblnet/bento",
+   "desc": "装进一个文件的幻灯片软件",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:85:awesome-cloudflare",
+   "km_num": 85,
+   "name": "awesome-cloudflare",
+   "tier": "工具箱",
+   "priority": "必装",
+   "scenes": [
+    "deploy",
+    "cloudflare",
+    "hosting"
+   ],
+   "url": "https://github.com/zhuima/awesome-cloudflare",
+   "desc": "Cloudflare云上瑞士军刀·免费托管/CDN/serverless",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:86:ionic",
+   "km_num": 86,
+   "name": "Ionic",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "mobile",
+    "crossplatform"
+   ],
+   "url": "https://github.com/ionic-team/ionic-framework",
+   "desc": "一套代码搞定iOS/Android/Web",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:87:vercel-eve",
+   "km_num": 87,
+   "name": "Vercel eve",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "agent",
+    "framework"
+   ],
+   "url": "",
+   "desc": "Vercel开源agent框架·一个agent一个目录",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:88:paseo",
+   "km_num": 88,
+   "name": "Paseo",
+   "tier": "工具箱",
+   "priority": "主力",
+   "scenes": [
+    "orchestration",
+    "manage",
+    "monitor"
+   ],
+   "url": "https://github.com/getpaseo/paseo",
+   "desc": "AI编程助手管理中枢·统一拉起监控调度CC/Codex",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:89:awesome-gpt-image-2",
+   "km_num": 89,
+   "name": "awesome-gpt-image-2",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "image_gen",
+    "resource"
+   ],
+   "url": "https://github.com/freestylefly/awesome-gpt-image-2",
+   "desc": "生图资源合集",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:90:deepseek-harness插件-文章",
+   "km_num": 90,
+   "name": "deepseek harness插件(文章)",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "reference",
+    "plugin"
+   ],
+   "url": "https://mp.weixin.qq.com/s/zJWeTfFeXp0Rw6XxAFWwAQ",
+   "desc": "DSH插件介绍文",
+   "kind": "reference",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "reference",
+   "join_note": "作为发现/参考源·不占运行时"
+  },
+  {
+   "id": "km:91:public-apis",
+   "km_num": 91,
+   "name": "public-apis",
+   "tier": "工具箱",
+   "priority": "主力",
+   "scenes": [
+    "api",
+    "reference"
+   ],
+   "url": "https://github.com/public-apis/public-apis",
+   "desc": "公开API大合集·按分类查",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "选定深用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:92:google-ai-edge-gallery",
+   "km_num": 92,
+   "name": "google-ai-edge/gallery",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "mobile",
+    "local",
+    "model"
+   ],
+   "url": "https://github.com/google-ai-edge/gallery",
+   "desc": "个人口袋agent·手机端跑模型",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:93:changedetection-io",
+   "km_num": 93,
+   "name": "changedetection.io",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "monitor",
+    "web",
+    "track"
+   ],
+   "url": "https://github.com/dgtlmoon/changedetection.io",
+   "desc": "网页变更监控·解放反复刷新",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:94:anthropic-cybersecurity-skills",
+   "km_num": 94,
+   "name": "Anthropic Cybersecurity Skills",
+   "tier": "必装神器",
+   "priority": "必装",
+   "scenes": [
+    "skill",
+    "security",
+    "mitre"
+   ],
+   "url": "https://github.com/mukul975/Anthropic-Cybersecurity-Skills",
+   "desc": "817个安全技能·映射MITRE ATT&CK",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "浅克隆到共享 ecosystem，工具箱自动扫描，各家按需使用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "install": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/mukul975/Anthropic-Cybersecurity-Skills.git",
+    "harness_baselines/ecosystem/Anthropic Cybersecurity Skills"
+   ],
+   "check": {
+    "method": "path",
+    "target": "harness_baselines/ecosystem/Anthropic Cybersecurity Skills"
+   }
+  },
+  {
+   "id": "km:95:gstack",
+   "km_num": 95,
+   "name": "gstack",
+   "tier": "必装神器",
+   "priority": "必装",
+   "scenes": [
+    "skill",
+    "config",
+    "roles"
+   ],
+   "url": "https://github.com/garrytan/gstack",
+   "desc": "Garry Tan的CC配置·23个opinionated工具",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "浅克隆到共享 ecosystem，工具箱自动扫描，各家按需使用",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用",
+   "install": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/garrytan/gstack.git",
+    "harness_baselines/ecosystem/gstack"
+   ],
+   "check": {
+    "method": "path",
+    "target": "harness_baselines/ecosystem/gstack"
+   }
+  },
+  {
+   "id": "km:96:hyperframes",
+   "km_num": 96,
+   "name": "Hyperframes",
+   "tier": "必装神器",
+   "priority": "必装",
+   "scenes": [
+    "video",
+    "html",
+    "render"
+   ],
+   "url": "https://github.com/heygen-com/hyperframes",
+   "desc": "写HTML渲染视频·为Agent构建",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:97:voicebox",
+   "km_num": 97,
+   "name": "Voicebox",
+   "tier": "必装神器",
+   "priority": "必装",
+   "scenes": [
+    "voice",
+    "audio",
+    "clone",
+    "tts"
+   ],
+   "url": "https://github.com/jamiepine/voicebox",
+   "desc": "开源AI语音工作室·克隆/听写/创作",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "轻量提示安装",
+   "source": "KM 2783473557《Agent 军团装备总库》",
+   "joinable": "capability",
+   "join_note": "挂到军团工具箱·各家按需调用"
+  },
+  {
+   "id": "km:98:teamai-cli",
+   "km_num": 98,
+   "name": "teamai-cli",
+   "tier": "记忆层",
+   "priority": "主力",
+   "scenes": [
+    "memory",
+    "orchestration",
+    "team",
+    "skill",
+    "harness"
+   ],
+   "url": "https://github.com/Tencent/teamai-cli",
+   "desc": "团队AI Harness+经验运营(摩擦信号/置信度治理/检索诚实)·军团首选融合·npm轻装",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "npm一键装(军团首选记忆/经验运营层·无grpc坑)",
+   "source": "军团记忆横评2026-08-27",
+   "joinable": "orchestrator",
+   "join_note": "可纳入为经验运营层",
+   "install": [
+    "npm",
+    "install",
+    "-g",
+    "teamai-cli"
+   ],
+   "check": {
+    "method": "cli",
+    "target": "teamai"
+   }
+  },
+  {
+   "id": "km:99:tencentdb-agent-memory",
+   "km_num": 99,
+   "name": "TencentDB-Agent-Memory",
+   "tier": "记忆层",
+   "priority": "按需",
+   "scenes": [
+    "memory",
+    "team",
+    "codegraph"
+   ],
+   "url": "https://github.com/Tencent/TencentDB-Agent-Memory",
+   "desc": "L0→L3分层记忆管线+两阶段去重·重(4服务Docker)·借机制不整装",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "军团横评推荐·见legion-memory-eval.md",
+   "source": "军团记忆横评2026-08-27",
+   "joinable": "capability",
+   "join_note": "借机制/挂能力"
+  },
+  {
+   "id": "km:100:openviking",
+   "km_num": 100,
+   "name": "OpenViking",
+   "tier": "记忆层",
+   "priority": "按需",
+   "scenes": [
+    "memory",
+    "context",
+    "vectordb"
+   ],
+   "url": "https://github.com/volcengine/OpenViking",
+   "desc": "Agent上下文数据库·viking://虚拟FS分层摘要(token降34-91%)·借压缩思路·AGPLv3",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "军团横评推荐·见legion-memory-eval.md",
+   "source": "军团记忆横评2026-08-27",
+   "joinable": "capability",
+   "join_note": "借机制/挂能力"
+  },
+  {
+   "id": "km:102:free-for-dev",
+   "km_num": 102,
+   "name": "free-for-dev",
+   "tier": "工具箱",
+   "priority": "按需",
+   "scenes": [
+    "deploy",
+    "hosting",
+    "cloud",
+    "免费额度"
+   ],
+   "url": "https://github.com/ripienaar/free-for-dev",
+   "desc": "开发者免费额度清单(SaaS/PaaS/IaaS/hosting/CI/DB等)·部署托管选型时查表用·避免为可白嫖的资源付费",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "场景触发动态装·部署/托管决策时clone本地或在线查README分节",
+   "source": "用户2026-09-07指定资源池",
+   "joinable": "capability",
+   "join_note": "部署/托管/上云决策时按需查表"
+  },
+  {
+   "id": "km:103:prompts-chat",
+   "km_num": 103,
+   "name": "prompts.chat",
+   "tier": "参考源",
+   "priority": "按需",
+   "scenes": [
+    "prompt",
+    "研究",
+    "机制提炼"
+   ],
+   "url": "https://github.com/f/prompts.chat",
+   "desc": "第三方提示词合集·只提炼执行机制(持续目标/自主实做/并行契约/失败换路/公开验收)·禁止整段复制prompt或冒充官方·与system_prompts_leaks同列未验证研究材料",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "只读研究源·按当前执行问题查对应指令·不安装不常驻",
+   "source": "用户2026-09-07指定资源池",
+   "joinable": "research",
+   "join_note": "世界研究器按需读·提炼机制不抄prompt"
+  },
+  {
+   "id": "km:101:codewiki-plus",
+   "km_num": 101,
+   "name": "CodeWiki-Plus",
+   "tier": "记忆层",
+   "priority": "按需",
+   "scenes": [
+    "memory",
+    "code",
+    "ast",
+    "wiki"
+   ],
+   "url": "https://github.com/CodeWiki-Plus/CodeWiki-Plus",
+   "desc": "仓库代码知识化·tree-sitter AST+Evidence断言·MIT·给auto代码理解借",
+   "kind": "repo",
+   "local_source": null,
+   "install_strategy": "军团横评推荐·见legion-memory-eval.md",
+   "source": "军团记忆横评2026-08-27",
+   "joinable": "capability",
+   "join_note": "借机制/挂能力"
+  }
+ ]
+}

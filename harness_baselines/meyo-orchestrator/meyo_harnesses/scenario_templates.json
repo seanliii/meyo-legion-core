@@ -1,0 +1,75 @@
+{
+  "_doc": "C端场景模板目录。只描述目标/验收/可选工具,不指定 harness 或固定路由;由 captain 模型自主选执行家与编排方式。",
+  "templates": [
+    {
+      "key": "research-brief",
+      "name": "查资料并产出可信简报",
+      "goal_template": "围绕 {topic} 做深度研究,给出结论、关键证据、争议点和可点击来源。",
+      "acceptance": ["每个关键结论有来源", "至少两类独立来源交叉验证", "明确列出未核实项"],
+      "suggested_tools": ["search_fabric"]
+    },
+    {
+      "key": "competitor-research",
+      "name": "竞品调研",
+      "goal_template": "调研 {competitors} 在 {dimension} 方面的现状,形成可比较的结构化报告。",
+      "acceptance": ["比较维度一致", "数据注明时间与来源", "区分事实和推断"],
+      "suggested_tools": ["search_fabric", "pm-skills"]
+    },
+    {
+      "key": "write-code",
+      "name": "写代码并验证",
+      "goal_template": "在 {repo_or_context} 中实现 {feature},保持现有风格并运行相关测试。",
+      "acceptance": ["实现满足需求", "相关测试通过", "报告修改文件与验证命令"],
+      "suggested_tools": []
+    },
+    {
+      "key": "fix-bug",
+      "name": "定位并修复 Bug",
+      "goal_template": "复现并修复 {bug},定位根因,补充防回归测试。",
+      "acceptance": ["有稳定复现", "解释根因而非只治症状", "回归测试通过"],
+      "suggested_tools": []
+    },
+    {
+      "key": "data-extraction",
+      "name": "采集并整理数据",
+      "goal_template": "从 {sources} 采集 {fields},去重清洗后输出 {format}。",
+      "acceptance": ["字段定义一致", "记录来源和采集时间", "缺失/冲突数据有标记"],
+      "suggested_tools": ["search_fabric"]
+    },
+    {
+      "key": "presentation",
+      "name": "制作演示文稿",
+      "goal_template": "为 {audience} 制作关于 {topic} 的演示文稿,目标是 {outcome}。",
+      "acceptance": ["叙事结构清晰", "关键数据有来源", "每页有单一核心信息"],
+      "suggested_tools": ["pm-skills"]
+    },
+    {
+      "key": "video-production",
+      "name": "制作短视频方案",
+      "goal_template": "围绕 {topic} 设计面向 {audience} 的 {duration} 短视频,输出脚本、分镜和素材清单。",
+      "acceptance": ["前3秒有明确钩子", "分镜与旁白逐一对应", "素材版权风险已标注"],
+      "suggested_tools": ["supervision-cv"]
+    },
+    {
+      "key": "visual-inspection",
+      "name": "图片/视频内容检查",
+      "goal_template": "检查 {media} 中的 {objects_or_issues},输出位置、置信度和异常说明。",
+      "acceptance": ["每个结果有坐标/时间点", "给出置信度", "低置信度结果单独标注"],
+      "suggested_tools": ["supervision-cv"]
+    },
+    {
+      "key": "desktop-automation",
+      "name": "桌面操作自动化",
+      "goal_template": "在 {application} 中完成 {workflow},每个不可逆或对外动作前停下确认。",
+      "acceptance": ["先验证当前界面状态", "关键步骤有截图证据", "不可逆/对外动作已确认"],
+      "suggested_tools": ["cua-computer"]
+    },
+    {
+      "key": "product-plan",
+      "name": "产品方案与交付计划",
+      "goal_template": "为 {product_or_feature} 制定从问题定义到交付验收的产品方案。",
+      "acceptance": ["用户问题与目标明确", "范围和非目标明确", "里程碑、风险、验收可执行"],
+      "suggested_tools": ["pm-skills"]
+    }
+  ]
+}

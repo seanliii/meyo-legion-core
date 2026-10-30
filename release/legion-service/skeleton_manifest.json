@@ -1,0 +1,5824 @@
+{
+ "version": 3,
+ "base_commit": "2833b4856eed55d5d665c29ecad737f9c9be27fe",
+ "generated_at": "2026-09-04T02:45:00Z",
+ "zones": {
+  "red": [
+   "agent_adapters.py",
+   "external_agent_registry.py",
+   "harness_registry.py",
+   "harness_worker.py",
+   "legion_contracts.py",
+   "legion_core.py",
+   "legion_paths.py",
+   "legion_pilot.py",
+   "legion_proc_registry.py",
+   "pilot_kernel.py",
+   "runtime_manifest.py",
+   "server.py",
+   "task_outcome.py",
+   "test_skeleton_guard.py"
+  ],
+  "yellow": [
+   "approval_state.py",
+   "artifact_delivery.py",
+   "dep_autoheal.py",
+   "desktop_fs.py",
+   "external_agent_transports.py",
+   "harness_model_compat.py",
+   "harness_performance.py",
+   "legion_concurrency.py",
+   "legion_idempotency.py",
+   "legion_memory.py",
+   "legion_permissions.py",
+   "legion_sandbox.py",
+   "legion_tool.py",
+   "legion_workdir.py",
+   "media_tools.py",
+   "model_registry.py",
+   "sessions.py",
+   "task_memory.py",
+   "team_state.py",
+   "toolbox.py"
+  ]
+ },
+ "files": {
+  "agent_adapters.py": {
+   "path": "release/legion-service/agent_adapters.py",
+   "zone": "red",
+   "lines": 134,
+   "bounds": [
+    74,
+    194
+   ],
+   "imports": [
+    "external_agent_registry",
+    "func_index",
+    "legion_core"
+   ],
+   "top_level": [
+    "overview"
+   ],
+   "critical": [
+    "_is_answer_agent",
+    "overview"
+   ],
+   "signatures": {
+    "_is_answer_agent": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "overview": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "edb51aff170dbd8d80a74ca904772f5f113f5a34b03d4e78a4d4c23d3f56dfd2"
+  },
+  "approval_state.py": {
+   "path": "release/legion-service/approval_state.py",
+   "zone": "yellow",
+   "lines": 95,
+   "bounds": [
+    35,
+    155
+   ],
+   "imports": [
+    "team_state"
+   ],
+   "top_level": [
+    "decide",
+    "expire_pending",
+    "list_approvals",
+    "request"
+   ],
+   "critical": [
+    "decide",
+    "expire_pending",
+    "list_approvals",
+    "request"
+   ],
+   "signatures": {
+    "decide": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "approval_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "decision",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "actor",
+       "annotation": "str",
+       "default": "'user'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "reason",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "expected_version",
+       "annotation": "int | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "expire_pending": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "int"
+    },
+    "list_approvals": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "include_terminal",
+       "annotation": "bool",
+       "default": "True"
+      }
+     ],
+     "returns": "dict"
+    },
+    "request": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "agent",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "capability",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "arguments",
+       "annotation": "dict[str, Any] | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "task_key",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "reason",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "ttl_s",
+       "annotation": "int",
+       "default": "3600"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "c1feba3319d3e71c0115e1f52c214652f79da6e583814b50abc38ac899ad292e"
+  },
+  "artifact_delivery.py": {
+   "path": "release/legion-service/artifact_delivery.py",
+   "zone": "yellow",
+   "lines": 273,
+   "bounds": [
+    163,
+    383
+   ],
+   "imports": [
+    "file_hub",
+    "legion_paths"
+   ],
+   "top_level": [
+    "enrich",
+    "extract",
+    "scan_new_files"
+   ],
+   "critical": [
+    "enrich",
+    "extract",
+    "scan_new_files"
+   ],
+   "signatures": {
+    "enrich": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "out",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "since_ts",
+       "annotation": "float",
+       "default": "0.0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "workdirs",
+       "annotation": "list | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "extract": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "text",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "list[dict]"
+    },
+    "scan_new_files": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "since_ts",
+       "annotation": "float",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "limit",
+       "annotation": "int",
+       "default": "60"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "workdir",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "scan_shared_roots",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "extra_roots",
+       "annotation": "list | None",
+       "default": "None"
+      }
+     ],
+     "returns": "list[dict]"
+    }
+   },
+   "content_sha256": "3df77f7c26545ffe14c427bb8b5b44f008da71fb71df349d838381a4e83cfe61"
+  },
+  "dep_autoheal.py": {
+   "path": "release/legion-service/dep_autoheal.py",
+   "zone": "yellow",
+   "lines": 155,
+   "bounds": [
+    95,
+    215
+   ],
+   "imports": [],
+   "top_level": [
+    "extract_missing_module",
+    "pip_install",
+    "run_with_autoheal"
+   ],
+   "critical": [
+    "extract_missing_module",
+    "pip_install",
+    "run_with_autoheal"
+   ],
+   "signatures": {
+    "extract_missing_module": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "output",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str | None"
+    },
+    "pip_install": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "pkg",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout",
+       "annotation": "float",
+       "default": "120.0"
+      }
+     ],
+     "returns": "tuple[bool, str]"
+    },
+    "run_with_autoheal": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "cmd",
+       "annotation": "list[str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout",
+       "annotation": "float",
+       "default": "8.0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cwd",
+       "annotation": "str | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "max_heals",
+       "annotation": "int",
+       "default": "3"
+      }
+     ],
+     "returns": "tuple"
+    }
+   },
+   "content_sha256": "dbb42b7b17ffdb417ff3e39974fc2c0f369d8da75d976c42ff45003dd275c4ad"
+  },
+  "desktop_fs.py": {
+   "path": "release/legion-service/desktop_fs.py",
+   "zone": "yellow",
+   "lines": 745,
+   "bounds": [
+    447,
+    1044
+   ],
+   "imports": [
+    "artifact_delivery",
+    "cloud_desktop",
+    "legion_paths",
+    "sessions"
+   ],
+   "top_level": [
+    "bootstrap",
+    "container_list",
+    "container_read",
+    "desktop_app",
+    "desktop_exec",
+    "desktop_screenshot",
+    "list_evolution",
+    "list_files",
+    "list_memory",
+    "list_personal",
+    "list_projects",
+    "list_sessions",
+    "local_mcp_call",
+    "local_mcp_tools",
+    "make_dir",
+    "materialize_session",
+    "open_in_desktop",
+    "prepare_user_root",
+    "read_file",
+    "session_archive",
+    "sync_personal_data",
+    "user_meyo_root",
+    "write_file"
+   ],
+   "critical": [
+    "bootstrap",
+    "container_list",
+    "container_read",
+    "desktop_app",
+    "desktop_exec",
+    "desktop_screenshot",
+    "list_evolution",
+    "list_files",
+    "list_memory",
+    "list_personal",
+    "list_projects",
+    "list_sessions",
+    "local_mcp_call",
+    "local_mcp_tools",
+    "make_dir",
+    "materialize_session",
+    "open_in_desktop",
+    "prepare_user_root",
+    "read_file",
+    "session_archive",
+    "sync_personal_data",
+    "user_meyo_root",
+    "write_file"
+   ],
+   "signatures": {
+    "bootstrap": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "container_list": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "CONTAINER_MEYO_ROOT"
+      }
+     ],
+     "returns": "dict"
+    },
+    "container_read": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "CONTAINER_MEYO_ROOT"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "max_bytes",
+       "annotation": "int",
+       "default": "MAX_READ_BYTES"
+      }
+     ],
+     "returns": "dict"
+    },
+    "desktop_app": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "action",
+       "annotation": "str",
+       "default": "'list'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "app",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "args",
+       "annotation": "Any",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "desktop_exec": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "command",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "60"
+      }
+     ],
+     "returns": "dict"
+    },
+    "desktop_screenshot": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_evolution": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_files": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_memory": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_personal": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_projects": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_sessions": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "local_mcp_call": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "name",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "arguments",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "kwonly",
+       "name": "bound_uid",
+       "annotation": "str | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "local_mcp_tools": {
+     "kind": "function",
+     "params": [],
+     "returns": "list[dict]"
+    },
+    "make_dir": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "materialize_session": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "result",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "open_in_desktop": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "app",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "prepare_user_root": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "read_file": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "max_bytes",
+       "annotation": "int",
+       "default": "MAX_READ_BYTES"
+      }
+     ],
+     "returns": "dict"
+    },
+    "session_archive": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "limit",
+       "annotation": "int",
+       "default": "60"
+      }
+     ],
+     "returns": "dict"
+    },
+    "sync_personal_data": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "user_meyo_root": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "str"
+    },
+    "write_file": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "uid",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "content",
+       "annotation": "Any",
+       "default": "''"
+      },
+      {
+       "kind": "kwonly",
+       "name": "append",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "kwonly",
+       "name": "content_base64",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "678141a811b4e0a4e524d968a3e5de5ce6c599cbbeeda102fbe46ffcd67b98ec"
+  },
+  "external_agent_registry.py": {
+   "path": "release/legion-service/external_agent_registry.py",
+   "zone": "red",
+   "lines": 1170,
+   "bounds": [
+    877,
+    1463
+   ],
+   "imports": [
+    "agent_manifest",
+    "external_agent_transports",
+    "legion_paths",
+    "legion_sandbox"
+   ],
+   "top_level": [
+    "apply_update",
+    "auto_update_all",
+    "auto_update_enabled",
+    "auto_update_status",
+    "auto_update_window",
+    "capability_actions",
+    "catalog_lock",
+    "check_updates",
+    "install",
+    "invalidate_probe_cache",
+    "invalidate_updates_cache",
+    "load_catalog",
+    "probe",
+    "run",
+    "run_capability",
+    "source_dir",
+    "start_auto_update_scheduler",
+    "validate_catalog"
+   ],
+   "critical": [
+    "_save_catalog",
+    "apply_update",
+    "auto_update_all",
+    "auto_update_enabled",
+    "auto_update_status",
+    "auto_update_window",
+    "capability_actions",
+    "catalog_lock",
+    "check_updates",
+    "install",
+    "invalidate_probe_cache",
+    "invalidate_updates_cache",
+    "load_catalog",
+    "probe",
+    "run",
+    "run_capability",
+    "source_dir",
+    "start_auto_update_scheduler",
+    "validate_catalog"
+   ],
+   "signatures": {
+    "_save_catalog": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "items",
+       "annotation": "list[dict]",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    },
+    "apply_update": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "target_tag",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "target_revision",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "1800"
+      }
+     ],
+     "returns": "dict"
+    },
+    "auto_update_all": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "1800"
+      }
+     ],
+     "returns": "dict"
+    },
+    "auto_update_enabled": {
+     "kind": "function",
+     "params": [],
+     "returns": "bool"
+    },
+    "auto_update_status": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    },
+    "auto_update_window": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "now",
+       "annotation": "float | None",
+       "default": "None"
+      }
+     ],
+     "returns": "str"
+    },
+    "capability_actions": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "catalog_lock": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "float",
+       "default": "30.0"
+      }
+     ],
+     "returns": ""
+    },
+    "check_updates": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "install": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "confirm",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "1800"
+      }
+     ],
+     "returns": "dict"
+    },
+    "invalidate_probe_cache": {
+     "kind": "function",
+     "params": [],
+     "returns": "None"
+    },
+    "invalidate_updates_cache": {
+     "kind": "function",
+     "params": [],
+     "returns": "None"
+    },
+    "load_catalog": {
+     "kind": "function",
+     "params": [],
+     "returns": "list[dict]"
+    },
+    "probe": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "task",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "workdir",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "900"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str] | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "str",
+       "default": "'gpt-5.6-sol'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "session_id",
+       "annotation": "str",
+       "default": "'external'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "runtime_context",
+       "annotation": "dict[str, Any] | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_capability": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "action",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "params",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "source_dir": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "item",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "pathlib.Path"
+    },
+    "start_auto_update_scheduler": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "interval_s",
+       "annotation": "int",
+       "default": "1800"
+      }
+     ],
+     "returns": "None"
+    },
+    "validate_catalog": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "ba257935e8cafdc733022d2334462ceba9250690ad7819ed10240eacc8fb2945"
+  },
+  "external_agent_transports.py": {
+   "path": "release/legion-service/external_agent_transports.py",
+   "zone": "yellow",
+   "lines": 579,
+   "bounds": [
+    347,
+    811
+   ],
+   "imports": [
+    "legion_proc_registry"
+   ],
+   "top_level": [
+    "TransportError",
+    "run_cli",
+    "run_http",
+    "run_jsonrpc",
+    "run_sdk",
+    "run_transport"
+   ],
+   "critical": [
+    "TransportError",
+    "run_cli",
+    "run_http",
+    "run_jsonrpc",
+    "run_sdk",
+    "run_transport"
+   ],
+   "signatures": {
+    "TransportError": {
+     "kind": "class",
+     "bases": [
+      "RuntimeError"
+     ],
+     "keywords": []
+    },
+    "run_cli": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "spec",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "context",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "Callable[[dict], None] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_http": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "spec",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "context",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "Callable[[dict], None] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_jsonrpc": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "spec",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "context",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "protocol",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "Callable[[dict], None] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_sdk": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "spec",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "context",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "Callable[[dict], None] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_transport": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "spec",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "context",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "Callable[[dict], None] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "428c8a1d7edd121c519a4d3437ddd8cc9644621ea32078b342d9593ac9bc1d56"
+  },
+  "harness_model_compat.py": {
+   "path": "release/legion-service/harness_model_compat.py",
+   "zone": "yellow",
+   "lines": 76,
+   "bounds": [
+    16,
+    136
+   ],
+   "imports": [],
+   "top_level": [
+    "incompatible_models",
+    "is_static_incompatible",
+    "ledger_incompatible"
+   ],
+   "critical": [
+    "incompatible_models",
+    "is_static_incompatible",
+    "ledger_incompatible"
+   ],
+   "signatures": {
+    "incompatible_models": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "set[str]"
+    },
+    "is_static_incompatible": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "ledger_incompatible": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "set[str]"
+    }
+   },
+   "content_sha256": "fa0acd7a5793895dc3e972804eb422545be32e8a2fdc6c1c02bc1c917a68316a"
+  },
+  "harness_performance.py": {
+   "path": "release/legion-service/harness_performance.py",
+   "zone": "yellow",
+   "lines": 110,
+   "bounds": [
+    50,
+    170
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "rank",
+    "record",
+    "strengths",
+    "summarize_row",
+    "table"
+   ],
+   "critical": [
+    "rank",
+    "record",
+    "strengths",
+    "summarize_row",
+    "table"
+   ],
+   "signatures": {
+    "rank": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "candidates",
+       "annotation": "list[str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "scene",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mode",
+       "annotation": "str",
+       "default": "'single'"
+      }
+     ],
+     "returns": "list[str]"
+    },
+    "record": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "scene",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mode",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "kwonly",
+       "name": "ok",
+       "annotation": "bool",
+       "default": "<required>"
+      },
+      {
+       "kind": "kwonly",
+       "name": "wall_s",
+       "annotation": "float",
+       "default": "0"
+      },
+      {
+       "kind": "kwonly",
+       "name": "quality",
+       "annotation": "float | None",
+       "default": "None"
+      },
+      {
+       "kind": "kwonly",
+       "name": "artifacts",
+       "annotation": "int",
+       "default": "0"
+      },
+      {
+       "kind": "kwonly",
+       "name": "source",
+       "annotation": "str",
+       "default": "'runtime'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "strengths": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "min_n",
+       "annotation": "int",
+       "default": "3"
+      }
+     ],
+     "returns": "list[dict]"
+    },
+    "summarize_row": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "row",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "table": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "scene",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mode",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "0c72a444c2e7e4a0287f997f8b807e31f24eba6f4da70feaa9d520119fce6b6a"
+  },
+  "harness_registry.py": {
+   "path": "harness_baselines/meyo-orchestrator/harness_registry.py",
+   "zone": "red",
+   "lines": 2121,
+   "bounds": [
+    1590,
+    2652
+   ],
+   "imports": [
+    "external_agent_registry",
+    "legion_core",
+    "legion_proc_registry",
+    "runtime_manifest"
+   ],
+   "top_level": [
+    "HarnessCtx",
+    "autonomy_matrix",
+    "available",
+    "load_harness_pool",
+    "prompt_cache_key",
+    "set_inproc_event_sink",
+    "set_inproc_runtime_env"
+   ],
+   "critical": [
+    "HarnessCtx",
+    "_ccr_selfheal_restart",
+    "_emit_harness_event",
+    "_legion_mode",
+    "_legion_prompt",
+    "_parse_orch_request",
+    "_prior_attempts_prelude",
+    "_run_live",
+    "autonomy_matrix",
+    "available",
+    "load_harness_pool",
+    "prompt_cache_key",
+    "set_inproc_event_sink",
+    "set_inproc_runtime_env"
+   ],
+   "signatures": {
+    "HarnessCtx": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    },
+    "_ccr_selfheal_restart": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "router_url",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "_emit_harness_event": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tag",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "stream",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "line",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    },
+    "_legion_mode": {
+     "kind": "function",
+     "params": [],
+     "returns": "bool"
+    },
+    "_legion_prompt": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "ctx",
+       "annotation": "",
+       "default": "None"
+      }
+     ],
+     "returns": "str"
+    },
+    "_parse_orch_request": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "final",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": ""
+    },
+    "_prior_attempts_prelude": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "prior",
+       "annotation": "",
+       "default": "<required>"
+      }
+     ],
+     "returns": ""
+    },
+    "_run_live": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "cmd",
+       "annotation": "",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout",
+       "annotation": "",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "env",
+       "annotation": "",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cwd",
+       "annotation": "",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "input",
+       "annotation": "",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "tag",
+       "annotation": "",
+       "default": "''"
+      }
+     ],
+     "returns": ""
+    },
+    "autonomy_matrix": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "available": {
+     "kind": "function",
+     "params": [],
+     "returns": "bool"
+    },
+    "load_harness_pool": {
+     "kind": "function",
+     "params": [],
+     "returns": ""
+    },
+    "prompt_cache_key": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "session_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "set_inproc_event_sink": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "",
+       "default": "<required>"
+      }
+     ],
+     "returns": ""
+    },
+    "set_inproc_runtime_env": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "values",
+       "annotation": "",
+       "default": "None"
+      }
+     ],
+     "returns": ""
+    }
+   },
+   "content_sha256": "f9cff67512a499848754cf7628b0a0a778994fe52ad2bc51add1f474145bf396"
+  },
+  "harness_worker.py": {
+   "path": "release/legion-service/harness_worker.py",
+   "zone": "red",
+   "lines": 327,
+   "bounds": [
+    245,
+    409
+   ],
+   "imports": [
+    "artifact_delivery",
+    "harness_registry",
+    "legion_proc_registry",
+    "legion_workdir"
+   ],
+   "top_level": [
+    "main"
+   ],
+   "critical": [
+    "main"
+   ],
+   "signatures": {
+    "main": {
+     "kind": "function",
+     "params": [],
+     "returns": "int"
+    }
+   },
+   "content_sha256": "c595618aa8f594d1def8ca384196e194eb849bbe02b23bef954fe91bff093a96"
+  },
+  "legion_concurrency.py": {
+   "path": "release/legion-service/legion_concurrency.py",
+   "zone": "yellow",
+   "lines": 173,
+   "bounds": [
+    113,
+    233
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "slot",
+    "status"
+   ],
+   "critical": [
+    "slot",
+    "status"
+   ],
+   "signatures": {
+    "slot": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tag",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": ""
+    },
+    "status": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "6c081299951b19bd83852ac4df056290c84dc5e30399c1918dadd61f3eb5d31a"
+  },
+  "legion_contracts.py": {
+   "path": "release/legion-service/legion_contracts.py",
+   "zone": "red",
+   "lines": 121,
+   "bounds": [
+    61,
+    181
+   ],
+   "imports": [],
+   "top_level": [
+    "AdapterCapabilities",
+    "ArtifactRef",
+    "CapabilityPolicy",
+    "ErrorEnvelope",
+    "TaskFacts"
+   ],
+   "critical": [
+    "AdapterCapabilities",
+    "ArtifactRef",
+    "CapabilityPolicy",
+    "ErrorEnvelope",
+    "TaskFacts"
+   ],
+   "signatures": {
+    "AdapterCapabilities": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    },
+    "ArtifactRef": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    },
+    "CapabilityPolicy": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    },
+    "ErrorEnvelope": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    },
+    "TaskFacts": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    }
+   },
+   "content_sha256": "389146f8f6589fc57dfbfa6736f8bccc89b7d75a465bfecfc49ddf08c5932b69"
+  },
+  "legion_core.py": {
+   "path": "release/legion-service/legion_core.py",
+   "zone": "red",
+   "lines": 5100,
+   "bounds": [
+    3825,
+    6376
+   ],
+   "imports": [
+    "approval_state",
+    "artifact_delivery",
+    "captain_aptitude",
+    "captain_preferences",
+    "cloud_desktop",
+    "desktop_fs",
+    "error_envelope",
+    "external_agent_registry",
+    "file_hub",
+    "github_access",
+    "harness_model_compat",
+    "harness_performance",
+    "harness_profiles",
+    "harness_registry",
+    "install_registry",
+    "legion_contracts",
+    "legion_memory",
+    "legion_paths",
+    "legion_pilot",
+    "legion_proc_registry",
+    "legion_sandbox",
+    "legion_workdir",
+    "media_tools",
+    "model_registry",
+    "opencli_bridge",
+    "runtime_manifest",
+    "task_memory",
+    "task_outcome",
+    "team_state",
+    "toolbox"
+   ],
+   "top_level": [
+    "available_capabilities",
+    "cancel_reason",
+    "capabilities_health",
+    "clear_cancel",
+    "dispatch",
+    "dispatch_persistent",
+    "elect_captain",
+    "gateway_status",
+    "health",
+    "invalidate_aigc_ready_cache",
+    "invalidate_harness_keys_cache",
+    "is_cancelled",
+    "list_harnesses",
+    "omnigent_sub_harnesses",
+    "parse_dispatch_with_model",
+    "pilot_check",
+    "pilot_save_settings",
+    "pilot_settings",
+    "plan_request_with_model",
+    "record_model_health",
+    "request_cancel",
+    "run_one",
+    "select_usable_model",
+    "suggest_subscription",
+    "tool_inventory"
+   ],
+   "critical": [
+    "_aigc_ready",
+    "_answer_keys_from_catalog",
+    "_build_failure_context",
+    "_build_prelude",
+    "_classify_failure",
+    "_dynamic_max_attempts",
+    "_harness_keys",
+    "_is_delivered",
+    "_looks_like_gateway_issue",
+    "_pilot_run_state",
+    "_recall_experience",
+    "_record_experience",
+    "_select_cross_direction",
+    "_strip_reasoning",
+    "_typed_outcome",
+    "available_capabilities",
+    "cancel_reason",
+    "capabilities_health",
+    "clear_cancel",
+    "dispatch",
+    "dispatch_persistent",
+    "elect_captain",
+    "gateway_status",
+    "health",
+    "invalidate_aigc_ready_cache",
+    "invalidate_harness_keys_cache",
+    "is_cancelled",
+    "list_harnesses",
+    "omnigent_sub_harnesses",
+    "parse_dispatch_with_model",
+    "pilot_check",
+    "pilot_save_settings",
+    "pilot_settings",
+    "plan_request_with_model",
+    "record_model_health",
+    "request_cancel",
+    "run_one",
+    "select_usable_model",
+    "suggest_subscription",
+    "tool_inventory"
+   ],
+   "signatures": {
+    "_aigc_ready": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cached_only",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "_answer_keys_from_catalog": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "items",
+       "annotation": "",
+       "default": "<required>"
+      }
+     ],
+     "returns": ""
+    },
+    "_build_failure_context": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "prev",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "attempt",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "Optional[str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "status",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "final",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "stalled",
+       "annotation": "bool",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "error",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "actions",
+       "annotation": "Optional[list]",
+       "default": "None"
+      }
+     ],
+     "returns": "str"
+    },
+    "_build_prelude": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "plan",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "str"
+    },
+    "_classify_failure": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "status",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "error",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "fail_kind",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "str"
+    },
+    "_dynamic_max_attempts": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "pool_size",
+       "annotation": "int",
+       "default": "<required>"
+      }
+     ],
+     "returns": "int"
+    },
+    "_harness_keys": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "set"
+    },
+    "_is_delivered": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "result",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "_looks_like_gateway_issue": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "status",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "final",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "_pilot_run_state": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "r",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "_recall_experience": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "str"
+    },
+    "_record_experience": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "ordered",
+       "annotation": "list",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": ""
+    },
+    "_select_cross_direction": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "current_direction",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "excluded",
+       "annotation": "set[str]",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "_strip_reasoning": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "final",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "_typed_outcome": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "ordered",
+       "annotation": "list",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "whole_cancelled",
+       "annotation": "bool",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "available_capabilities": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "cancel_reason": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "Optional[str]",
+       "default": "None"
+      }
+     ],
+     "returns": "str"
+    },
+    "capabilities_health": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    },
+    "clear_cancel": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    },
+    "dispatch": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "plan",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "Optional[Callable[[dict], None]]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "'adhoc'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mode",
+       "annotation": "str",
+       "default": "'pk'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "conversation_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "dispatch_persistent": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "plan",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "Optional[Callable[[dict], None]]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "'adhoc'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mode",
+       "annotation": "str",
+       "default": "'pk'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "conversation_id",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "max_rounds",
+       "annotation": "int",
+       "default": "6"
+      }
+     ],
+     "returns": "dict"
+    },
+    "elect_captain": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "plan",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "Optional[Callable[[dict], None]]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "'adhoc'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "conversation_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "gateway_status": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "probe",
+       "annotation": "bool",
+       "default": "True"
+      }
+     ],
+     "returns": "dict"
+    },
+    "health": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "probe_gateway",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "fast",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "invalidate_aigc_ready_cache": {
+     "kind": "function",
+     "params": [],
+     "returns": "None"
+    },
+    "invalidate_harness_keys_cache": {
+     "kind": "function",
+     "params": [],
+     "returns": "None"
+    },
+    "is_cancelled": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "Optional[str]",
+       "default": "None"
+      }
+     ],
+     "returns": "bool"
+    },
+    "list_harnesses": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "list[dict]"
+    },
+    "omnigent_sub_harnesses": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    },
+    "parse_dispatch_with_model": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "instruction",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "pilot_check": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "reply",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "run_state",
+       "annotation": "dict | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "pilot_save_settings": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "config",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "pilot_settings": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "plan_request_with_model": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "attachments",
+       "annotation": "list | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "record_model_health": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "ok",
+       "annotation": "bool",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    },
+    "request_cancel": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "Optional[str]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "reason",
+       "annotation": "str",
+       "default": "'用户停止'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_one": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "task",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "'adhoc'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cb",
+       "annotation": "Optional[Callable[[dict], None]]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "preferred_model",
+       "annotation": "Optional[str]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "preferred_appid",
+       "annotation": "Optional[str]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "attempt_timeout",
+       "annotation": "Optional[float]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "direction",
+       "annotation": "str",
+       "default": "'programming'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "conversation_id",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "runtime_brief",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "task_facts",
+       "annotation": "Optional[dict]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "capability_policy",
+       "annotation": "Optional[dict]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "cancel_check",
+       "annotation": "Optional[Callable[[], bool]]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "execution_depth",
+       "annotation": "str",
+       "default": "'standard'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "select_usable_model": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "direction",
+       "annotation": "str",
+       "default": "'programming'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "exclude_models",
+       "annotation": "Optional[set[str]]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "suggest_subscription": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "tool_inventory": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "52d9705b6b2af95eccfc365aa19af3c1a84f37fa1fc45017595174f4a3437d22"
+  },
+  "legion_idempotency.py": {
+   "path": "release/legion-service/legion_idempotency.py",
+   "zone": "yellow",
+   "lines": 176,
+   "bounds": [
+    116,
+    236
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "check",
+    "clear",
+    "is_billable",
+    "record"
+   ],
+   "critical": [
+    "check",
+    "clear",
+    "is_billable",
+    "record"
+   ],
+   "signatures": {
+    "check": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tool_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "params",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict | None"
+    },
+    "clear": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    },
+    "is_billable": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tool_id",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "record": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tool_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "params",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "result",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "None"
+    }
+   },
+   "content_sha256": "b4e351bce9bde0c1ac39b955e3bd00e14257e8c001ec251afa9459444e423c65"
+  },
+  "legion_memory.py": {
+   "path": "release/legion-service/legion_memory.py",
+   "zone": "yellow",
+   "lines": 319,
+   "bounds": [
+    191,
+    447
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "add",
+    "delete",
+    "is_available",
+    "mark_adopted",
+    "prune",
+    "search",
+    "stats"
+   ],
+   "critical": [
+    "add",
+    "delete",
+    "is_available",
+    "mark_adopted",
+    "prune",
+    "search",
+    "stats"
+   ],
+   "signatures": {
+    "add": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "answer",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "source",
+       "annotation": "str",
+       "default": "'legion'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "tags",
+       "annotation": "Optional[list]",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mtype",
+       "annotation": "str",
+       "default": "'long'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "delete": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "ts",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "q",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "is_available": {
+     "kind": "function",
+     "params": [],
+     "returns": "bool"
+    },
+    "mark_adopted": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "source",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "prune": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "min_conf",
+       "annotation": "float",
+       "default": "0.15"
+      }
+     ],
+     "returns": "dict"
+    },
+    "search": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "query",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "top",
+       "annotation": "int",
+       "default": "3"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mtypes",
+       "annotation": "Optional[list]",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "stats": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "6b9aef9b73a9ae65540ca3b283fe5892d95824cf201dcf3c4a9f501b70b65581"
+  },
+  "legion_paths.py": {
+   "path": "release/legion-service/legion_paths.py",
+   "zone": "red",
+   "lines": 67,
+   "bounds": [
+    7,
+    127
+   ],
+   "imports": [],
+   "top_level": [
+    "home_under",
+    "legion_dir",
+    "legion_home",
+    "media_dir",
+    "repos_dir",
+    "under",
+    "uploads_dir"
+   ],
+   "critical": [
+    "home_under",
+    "legion_dir",
+    "legion_home",
+    "media_dir",
+    "repos_dir",
+    "under",
+    "uploads_dir"
+   ],
+   "signatures": {
+    "home_under": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "var_pos",
+       "name": "parts",
+       "annotation": "",
+       "default": ""
+      }
+     ],
+     "returns": "str"
+    },
+    "legion_dir": {
+     "kind": "function",
+     "params": [],
+     "returns": "str"
+    },
+    "legion_home": {
+     "kind": "function",
+     "params": [],
+     "returns": "str"
+    },
+    "media_dir": {
+     "kind": "function",
+     "params": [],
+     "returns": "str"
+    },
+    "repos_dir": {
+     "kind": "function",
+     "params": [],
+     "returns": "str"
+    },
+    "under": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "var_pos",
+       "name": "parts",
+       "annotation": "",
+       "default": ""
+      }
+     ],
+     "returns": "str"
+    },
+    "uploads_dir": {
+     "kind": "function",
+     "params": [],
+     "returns": "str"
+    }
+   },
+   "content_sha256": "4f12113882c03b055bb2ff542363548670b4e34c650724121112deba773ca13c"
+  },
+  "legion_permissions.py": {
+   "path": "release/legion-service/legion_permissions.py",
+   "zone": "yellow",
+   "lines": 53,
+   "bounds": [
+    1,
+    113
+   ],
+   "imports": [],
+   "top_level": [
+    "ProductPermissionPolicy",
+    "capability_policy",
+    "decision"
+   ],
+   "critical": [
+    "ProductPermissionPolicy",
+    "capability_policy",
+    "decision"
+   ],
+   "signatures": {
+    "ProductPermissionPolicy": {
+     "kind": "class",
+     "bases": [],
+     "keywords": []
+    },
+    "capability_policy": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    },
+    "decision": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "action",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "8d09ef22145548b8b93addca39d11bf35eb7e5efb8314b760c1044ded57bf9d4"
+  },
+  "legion_pilot.py": {
+   "path": "release/legion-service/legion_pilot.py",
+   "zone": "red",
+   "lines": 123,
+   "bounds": [
+    63,
+    183
+   ],
+   "imports": [
+    "pilot_kernel"
+   ],
+   "top_level": [
+    "evaluate",
+    "load_user_config",
+    "read_shared_goals",
+    "save_user_config",
+    "settings_for_humans",
+    "user_config_path"
+   ],
+   "critical": [
+    "evaluate",
+    "load_user_config",
+    "read_shared_goals",
+    "save_user_config",
+    "settings_for_humans",
+    "user_config_path"
+   ],
+   "signatures": {
+    "evaluate": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "reply",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "run_state",
+       "annotation": "dict[str, Any]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "config",
+       "annotation": "dict[str, Any] | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "root",
+       "annotation": "Path | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "load_user_config": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "root",
+       "annotation": "Path | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "read_shared_goals": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "path",
+       "annotation": "Path",
+       "default": "DEFAULT_GOALS"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "save_user_config": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "config",
+       "annotation": "dict[str, Any]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "root",
+       "annotation": "Path | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "settings_for_humans": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "config",
+       "annotation": "dict[str, Any] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "user_config_path": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "root",
+       "annotation": "Path | None",
+       "default": "None"
+      }
+     ],
+     "returns": "Path"
+    }
+   },
+   "content_sha256": "0e73ef4ad02693b98ae2c6ae9942c9cce634cc644ef7c2b76175a03a3e760704"
+  },
+  "legion_proc_registry.py": {
+   "path": "release/legion-service/legion_proc_registry.py",
+   "zone": "red",
+   "lines": 307,
+   "bounds": [
+    230,
+    384
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "is_alive",
+    "kill_owned_by",
+    "register",
+    "sweep",
+    "unregister"
+   ],
+   "critical": [
+    "is_alive",
+    "kill_owned_by",
+    "register",
+    "sweep",
+    "unregister"
+   ],
+   "signatures": {
+    "is_alive": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "pid",
+       "annotation": "int",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "kill_owned_by": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "owner_pid",
+       "annotation": "int",
+       "default": "<required>"
+      }
+     ],
+     "returns": "list"
+    },
+    "register": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "pid",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "pgid",
+       "annotation": "int | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "owner",
+       "annotation": "int | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "comm",
+       "annotation": "str | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "meta",
+       "annotation": "dict | None",
+       "default": "None"
+      }
+     ],
+     "returns": "bool"
+    },
+    "sweep": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "kill",
+       "annotation": "bool",
+       "default": "True"
+      }
+     ],
+     "returns": "dict"
+    },
+    "unregister": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "pid",
+       "annotation": "int",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    }
+   },
+   "content_sha256": "16ccbcaee9ef7ab7716e394ea861ca7df0dafeb144873030dbb6981b461d2393"
+  },
+  "legion_sandbox.py": {
+   "path": "release/legion-service/legion_sandbox.py",
+   "zone": "yellow",
+   "lines": 96,
+   "bounds": [
+    36,
+    156
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "cleanup_legacy_peer_sources",
+    "cleanup_peer_sources",
+    "prepare_peer_sources",
+    "repo_root",
+    "workdir"
+   ],
+   "critical": [
+    "cleanup_legacy_peer_sources",
+    "cleanup_peer_sources",
+    "prepare_peer_sources",
+    "repo_root",
+    "workdir"
+   ],
+   "signatures": {
+    "cleanup_legacy_peer_sources": {
+     "kind": "function",
+     "params": [],
+     "returns": "int"
+    },
+    "cleanup_peer_sources": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "destination",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "prepare_peer_sources": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "destination",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "repo_root": {
+     "kind": "function",
+     "params": [],
+     "returns": "Path"
+    },
+    "workdir": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    }
+   },
+   "content_sha256": "5deda5e62d3dfc712db60880f013e65d8acd0cf34ebf635f7e10c49123129817"
+  },
+  "legion_tool.py": {
+   "path": "release/legion-service/legion_tool.py",
+   "zone": "yellow",
+   "lines": 1249,
+   "bounds": [
+    749,
+    1749
+   ],
+   "imports": [
+    "agent_adapters",
+    "agent_tool_provider",
+    "capability_catalog",
+    "capstack_bridge",
+    "external_agent_registry",
+    "func_index",
+    "func_invoke",
+    "github_access",
+    "install_registry",
+    "legion_memory",
+    "legion_paths",
+    "legion_permissions",
+    "legion_tool_usage",
+    "media_tools",
+    "my_workspace",
+    "opencli_bridge",
+    "research_pipeline",
+    "search_sources",
+    "site_deploy",
+    "skill_factory",
+    "skill_improver",
+    "source_audit",
+    "tool_query_rewrite",
+    "tool_semantic_index",
+    "toolbox",
+    "user_view",
+    "vision_toolkit_bridge"
+   ],
+   "top_level": [
+    "list_caps",
+    "run_tool",
+    "search",
+    "tool_timeout_hint"
+   ],
+   "critical": [
+    "list_caps",
+    "run_tool",
+    "search",
+    "tool_timeout_hint"
+   ],
+   "signatures": {
+    "list_caps": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "cap",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_tool": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tool_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "params",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "float | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_cb",
+       "annotation": "",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "search": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "query",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "top",
+       "annotation": "int",
+       "default": "8"
+      }
+     ],
+     "returns": "dict"
+    },
+    "tool_timeout_hint": {
+     "kind": "function",
+     "params": [],
+     "returns": "int"
+    }
+   },
+   "content_sha256": "bcd5897ffb50912d86d664197fcbd3fb8786dae15913c5b883d0d64117e04c96"
+  },
+  "legion_workdir.py": {
+   "path": "release/legion-service/legion_workdir.py",
+   "zone": "yellow",
+   "lines": 167,
+   "bounds": [
+    107,
+    227
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "cleanup",
+    "read_state",
+    "summarize_for_relay",
+    "under",
+    "write_state"
+   ],
+   "critical": [
+    "cleanup",
+    "read_state",
+    "summarize_for_relay",
+    "under",
+    "write_state"
+   ],
+   "signatures": {
+    "cleanup": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "None"
+    },
+    "read_state": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict | None"
+    },
+    "summarize_for_relay": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "failed_key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "under": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "write_state": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "qhash",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "state",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    }
+   },
+   "content_sha256": "985da0dd53333b2f41c4721293880c7a296478a623d7ccfb0cea21526d64d1fb"
+  },
+  "media_tools.py": {
+   "path": "release/legion-service/media_tools.py",
+   "zone": "yellow",
+   "lines": 604,
+   "bounds": [
+    362,
+    846
+   ],
+   "imports": [
+    "legion_idempotency",
+    "legion_paths",
+    "openmontage_local_provider"
+   ],
+   "top_level": [
+    "extract_audio",
+    "fetch_url",
+    "gen_image",
+    "gen_video",
+    "list_media_tools",
+    "read_pdf",
+    "run_media_tool",
+    "see_image",
+    "trim_media",
+    "video_frame",
+    "video_provider_status"
+   ],
+   "critical": [
+    "extract_audio",
+    "fetch_url",
+    "gen_image",
+    "gen_video",
+    "list_media_tools",
+    "read_pdf",
+    "run_media_tool",
+    "see_image",
+    "trim_media",
+    "video_frame",
+    "video_provider_status"
+   ],
+   "signatures": {
+    "extract_audio": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "video_path",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "300"
+      }
+     ],
+     "returns": "dict"
+    },
+    "fetch_url": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "url",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "25"
+      }
+     ],
+     "returns": "dict"
+    },
+    "gen_image": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "prompt",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "180"
+      }
+     ],
+     "returns": "dict"
+    },
+    "gen_video": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "prompt",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "image_path",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "duration",
+       "annotation": "str",
+       "default": "'5'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "aspect_ratio",
+       "annotation": "str",
+       "default": "'16:9'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "240"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_media_tools": {
+     "kind": "function",
+     "params": [],
+     "returns": "list"
+    },
+    "read_pdf": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "pdf_path",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "summarize",
+       "annotation": "bool",
+       "default": "False"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "120"
+      }
+     ],
+     "returns": "dict"
+    },
+    "run_media_tool": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tool_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "params",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "see_image": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "image_path",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "'详细描述这张图里的内容'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "90"
+      }
+     ],
+     "returns": "dict"
+    },
+    "trim_media": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "input_path",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "start_s",
+       "annotation": "float",
+       "default": "0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "end_s",
+       "annotation": "float",
+       "default": "0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "300"
+      }
+     ],
+     "returns": "dict"
+    },
+    "video_frame": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "video_path",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "at_s",
+       "annotation": "float",
+       "default": "1.0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "timeout_s",
+       "annotation": "int",
+       "default": "120"
+      }
+     ],
+     "returns": "dict"
+    },
+    "video_provider_status": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "93e8e3f62bc10abebbec7239497305971f876c81b534b648ed4db95ce14b97d1"
+  },
+  "model_registry.py": {
+   "path": "release/legion-service/model_registry.py",
+   "zone": "yellow",
+   "lines": 709,
+   "bounds": [
+    425,
+    993
+   ],
+   "imports": [
+    "legion_paths",
+    "runtime_manifest"
+   ],
+   "top_level": [
+    "ack_new_models",
+    "all_directions",
+    "discover_new_models",
+    "display_name",
+    "endpoint_type",
+    "get_prefs",
+    "list_models",
+    "recommended_for",
+    "resolve_assignments",
+    "resolve_model",
+    "resolve_overrides",
+    "scene_models",
+    "set_pref",
+    "verified_catalog"
+   ],
+   "critical": [
+    "ack_new_models",
+    "all_directions",
+    "discover_new_models",
+    "display_name",
+    "endpoint_type",
+    "get_prefs",
+    "list_models",
+    "recommended_for",
+    "resolve_assignments",
+    "resolve_model",
+    "resolve_overrides",
+    "scene_models",
+    "set_pref",
+    "verified_catalog"
+   ],
+   "signatures": {
+    "ack_new_models": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "state_path",
+       "annotation": "str | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "all_directions": {
+     "kind": "function",
+     "params": [],
+     "returns": "list"
+    },
+    "discover_new_models": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "current_models",
+       "annotation": "list | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "state_path",
+       "annotation": "str | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "initialize",
+       "annotation": "bool",
+       "default": "True"
+      }
+     ],
+     "returns": "dict"
+    },
+    "display_name": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "endpoint_type": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "get_prefs": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    },
+    "list_models": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "direction",
+       "annotation": "str",
+       "default": "'programming'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "recommended_for": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "list"
+    },
+    "resolve_assignments": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "plan",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "keys",
+       "annotation": "list",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "resolve_model": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "direction",
+       "annotation": "str | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "resolve_overrides": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "plan",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "keys",
+       "annotation": "list",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "scene_models": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "scene",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "tier",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "list"
+    },
+    "set_pref": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "harness_key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "model",
+       "annotation": "str | None",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "verified_catalog": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "9475c917016a1dca7bab512262a77db3aec2ee07613b198aac94f9f01b8394cf"
+  },
+  "pilot_kernel.py": {
+   "path": "release/legion-service/pilot_kernel.py",
+   "zone": "red",
+   "lines": 148,
+   "bounds": [
+    88,
+    208
+   ],
+   "imports": [],
+   "top_level": [
+    "classify",
+    "merge_config"
+   ],
+   "critical": [
+    "classify",
+    "merge_config"
+   ],
+   "signatures": {
+    "classify": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "reply",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "state",
+       "annotation": "dict[str, Any]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "config",
+       "annotation": "dict[str, Any] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "merge_config": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "overrides",
+       "annotation": "dict[str, Any] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    }
+   },
+   "content_sha256": "ee2132fb8ff5357dfeee3a773e215425c27eb9145d4b293e3b0b6b332bec030c"
+  },
+  "runtime_manifest.py": {
+   "path": "release/legion-service/runtime_manifest.py",
+   "zone": "red",
+   "lines": 248,
+   "bounds": [
+    186,
+    311
+   ],
+   "imports": [],
+   "top_level": [
+    "autonomy_specs",
+    "builtin_adapter_specs",
+    "diagnostics",
+    "direction",
+    "get",
+    "load_definitions",
+    "model_compatible",
+    "model_picks",
+    "profiles",
+    "resolve_builtin_adapters",
+    "supports_depth"
+   ],
+   "critical": [
+    "_validate_definition",
+    "autonomy_specs",
+    "builtin_adapter_specs",
+    "diagnostics",
+    "direction",
+    "get",
+    "load_definitions",
+    "model_compatible",
+    "model_picks",
+    "profiles",
+    "resolve_builtin_adapters",
+    "supports_depth"
+   ],
+   "signatures": {
+    "_validate_definition": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "item",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "list[str]"
+    },
+    "autonomy_specs": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict[str, dict]"
+    },
+    "builtin_adapter_specs": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict[str, str]"
+    },
+    "diagnostics": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "direction": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "default",
+       "annotation": "str",
+       "default": "'programming'"
+      }
+     ],
+     "returns": "str"
+    },
+    "get": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "load_definitions": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict[str, dict]"
+    },
+    "model_compatible": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "endpoint_type",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "model_picks": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "list"
+    },
+    "profiles": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict[str, dict]"
+    },
+    "resolve_builtin_adapters": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "module_name",
+       "annotation": "str",
+       "default": "'harness_registry'"
+      }
+     ],
+     "returns": "dict[str, Any]"
+    },
+    "supports_depth": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "depth",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    }
+   },
+   "content_sha256": "601674b2a6fa259472186756f3d962b9af2826f6867823a835a7b7e38fd38143"
+  },
+  "server.py": {
+   "path": "release/legion-service/server.py",
+   "zone": "red",
+   "lines": 2712,
+   "bounds": [
+    2034,
+    3391
+   ],
+   "imports": [
+    "approval_state",
+    "artifact_delivery",
+    "captain_preferences",
+    "catalog_api",
+    "cloud_desktop",
+    "crawler",
+    "cron_dispatch",
+    "cron_jobs",
+    "desktop_fs",
+    "desktop_recipe",
+    "desktop_software",
+    "desktop_transfer",
+    "desktop_workspace",
+    "evolve_config",
+    "external_agent_registry",
+    "file_hub",
+    "harness_profiles",
+    "harness_tool_bus",
+    "harness_view",
+    "human_handoff",
+    "inspire",
+    "install_registry",
+    "legion_core",
+    "legion_memory",
+    "legion_paths",
+    "legion_pilot",
+    "legion_proc_registry",
+    "legion_tool",
+    "media_tools",
+    "mobile_apps",
+    "mobile_device",
+    "mobile_tasks",
+    "model_registry",
+    "my_workspace",
+    "opencli_bridge",
+    "performance_views",
+    "promotion_review",
+    "runtime_manifest",
+    "search_prefs",
+    "sessions",
+    "skill_factory",
+    "team_state",
+    "toolbox",
+    "trace_view",
+    "user_view",
+    "verification_http",
+    "workspace_view"
+   ],
+   "top_level": [
+    "Handler",
+    "LegionServer",
+    "main"
+   ],
+   "critical": [
+    "Handler",
+    "LegionServer",
+    "main"
+   ],
+   "signatures": {
+    "Handler": {
+     "kind": "class",
+     "bases": [
+      "BaseHTTPRequestHandler"
+     ],
+     "keywords": []
+    },
+    "LegionServer": {
+     "kind": "class",
+     "bases": [
+      "ThreadingHTTPServer"
+     ],
+     "keywords": []
+    },
+    "main": {
+     "kind": "function",
+     "params": [],
+     "returns": ""
+    }
+   },
+   "content_sha256": "b56af5f3d875d71e2e506b1c08deb4882de5c44c3b550d8f958c692d2de73298"
+  },
+  "sessions.py": {
+   "path": "release/legion-service/sessions.py",
+   "zone": "yellow",
+   "lines": 566,
+   "bounds": [
+    339,
+    793
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "conversation_context",
+    "export_session",
+    "list_sessions",
+    "load_session",
+    "new_session_id",
+    "render_session_html",
+    "save_turn",
+    "set_continuous"
+   ],
+   "critical": [
+    "conversation_context",
+    "export_session",
+    "list_sessions",
+    "load_session",
+    "new_session_id",
+    "render_session_html",
+    "save_turn",
+    "set_continuous"
+   ],
+   "signatures": {
+    "conversation_context": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "max_turns",
+       "annotation": "int",
+       "default": "6"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "max_chars",
+       "annotation": "int",
+       "default": "24000"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "str"
+    },
+    "export_session": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "out_dir",
+       "annotation": "str | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "list_sessions": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "limit",
+       "annotation": "int",
+       "default": "50"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "list[dict]"
+    },
+    "load_session": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict | None"
+    },
+    "new_session_id": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "ts",
+       "annotation": "float | None",
+       "default": "None"
+      }
+     ],
+     "returns": "str"
+    },
+    "render_session_html": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str | None"
+    },
+    "save_turn": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "result",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mode",
+       "annotation": "str",
+       "default": "'pk'"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    },
+    "set_continuous": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "sid",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "on",
+       "annotation": "bool",
+       "default": "True"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "interval_hint",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "user_id",
+       "annotation": "str",
+       "default": "'default'"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "bfff38a8a9a63cc71555590560e55189b44cf70398b833332913f3bfa20c401b"
+  },
+  "task_memory.py": {
+   "path": "release/legion-service/task_memory.py",
+   "zone": "yellow",
+   "lines": 55,
+   "bounds": [
+    1,
+    115
+   ],
+   "imports": [
+    "legion_paths"
+   ],
+   "top_level": [
+    "context",
+    "load",
+    "update"
+   ],
+   "critical": [
+    "context",
+    "load",
+    "update"
+   ],
+   "signatures": {
+    "context": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "load": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "update": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "var_kw",
+       "name": "facts",
+       "annotation": "",
+       "default": ""
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "0ce3db0a696e9642368759e8e9f7dde7f320447a032d9b3f1ff60b142e6ef293"
+  },
+  "task_outcome.py": {
+   "path": "release/legion-service/task_outcome.py",
+   "zone": "red",
+   "lines": 146,
+   "bounds": [
+    86,
+    206
+   ],
+   "imports": [],
+   "top_level": [
+    "from_dispatch",
+    "from_run_one"
+   ],
+   "critical": [
+    "_artifact_readable",
+    "from_dispatch",
+    "from_run_one"
+   ],
+   "signatures": {
+    "_artifact_readable": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "a",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "from_dispatch": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "out",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "is_cancelled",
+       "annotation": "Any",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "from_run_one": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "result",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "722b3a62896f2fa698933e7d11721f04eb3c589ca2c07b0207093018eaab03d6"
+  },
+  "team_state.py": {
+   "path": "release/legion-service/team_state.py",
+   "zone": "yellow",
+   "lines": 321,
+   "bounds": [
+    192,
+    450
+   ],
+   "imports": [
+    "artifact_store",
+    "legion_paths"
+   ],
+   "top_level": [
+    "append_event",
+    "begin_attempt",
+    "cancel_attempt",
+    "ensure",
+    "finish_attempt",
+    "load",
+    "read_events",
+    "read_messages",
+    "request_cancel",
+    "resolve_message_text",
+    "resolve_result",
+    "select_captain",
+    "send_message"
+   ],
+   "critical": [
+    "append_event",
+    "begin_attempt",
+    "cancel_attempt",
+    "ensure",
+    "finish_attempt",
+    "load",
+    "read_events",
+    "read_messages",
+    "request_cancel",
+    "resolve_message_text",
+    "resolve_result",
+    "select_captain",
+    "send_message"
+   ],
+   "signatures": {
+    "append_event": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event",
+       "annotation": "dict",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "event_type",
+       "annotation": "str",
+       "default": "'step'"
+      }
+     ],
+     "returns": "dict | None"
+    },
+    "begin_attempt": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "int"
+    },
+    "cancel_attempt": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "attempt",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "reason",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "status",
+       "annotation": "str",
+       "default": "'cancelled'"
+      }
+     ],
+     "returns": "bool"
+    },
+    "ensure": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "question",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "tasks",
+       "annotation": "dict[str, str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "dependencies",
+       "annotation": "dict[str, list[str]]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "captain",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "finish_attempt": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "attempt",
+       "annotation": "int",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "result",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "bool"
+    },
+    "load": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict | None"
+    },
+    "read_events": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "after",
+       "annotation": "int",
+       "default": "0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "limit",
+       "annotation": "int",
+       "default": "500"
+      }
+     ],
+     "returns": "list[dict]"
+    },
+    "read_messages": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "recipient",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "mark_read",
+       "annotation": "bool",
+       "default": "True"
+      }
+     ],
+     "returns": "list[dict]"
+    },
+    "request_cancel": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "''"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "reason",
+       "annotation": "str",
+       "default": "'用户停止'"
+      }
+     ],
+     "returns": "bool"
+    },
+    "resolve_message_text": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "message",
+       "annotation": "dict",
+       "default": "<required>"
+      }
+     ],
+     "returns": "str"
+    },
+    "resolve_result": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "key",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "dict"
+    },
+    "select_captain": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "captain",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "bids",
+       "annotation": "list[dict] | None",
+       "default": "None"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "reason",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "send_message": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "team_id",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "sender",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "recipient",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "text",
+       "annotation": "str",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "artifact_refs",
+       "annotation": "list[dict] | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "aa72eb1f4aaa1fb0085472040e440d1d66488bc9cb49506045f0488986faf7e3"
+  },
+  "test_skeleton_guard.py": {
+   "path": "release/legion-service/tests/test_skeleton_guard.py",
+   "zone": "red",
+   "lines": 1092,
+   "bounds": [
+    819,
+    1366
+   ],
+   "imports": [],
+   "top_level": [
+    "SkeletonGuard",
+    "build_manifest"
+   ],
+   "critical": [
+    "SkeletonGuard",
+    "_check_behavior_contracts",
+    "_verify_changes",
+    "build_manifest",
+    "test_e9_critical_behavior_contracts"
+   ],
+   "signatures": {
+    "SkeletonGuard": {
+     "kind": "class",
+     "bases": [
+      "unittest.TestCase"
+     ],
+     "keywords": []
+    },
+    "_check_behavior_contracts": {
+     "kind": "function",
+     "params": [],
+     "returns": "list[str]"
+    },
+    "_verify_changes": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "zones",
+       "annotation": "list[str]",
+       "default": "<required>"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "motivation",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "None"
+    },
+    "build_manifest": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "revision",
+       "annotation": "str | None",
+       "default": "None"
+      }
+     ],
+     "returns": "dict"
+    },
+    "test_e9_critical_behavior_contracts": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "self",
+       "annotation": "",
+       "default": "<required>"
+      }
+     ],
+     "returns": ""
+    }
+   },
+   "content_sha256": "ac718d6bca47b312718ce600cddfcdbabc1a0532416282a4903fc0b2242d08a6"
+  },
+  "toolbox.py": {
+   "path": "release/legion-service/toolbox.py",
+   "zone": "yellow",
+   "lines": 978,
+   "bounds": [
+    586,
+    1370
+   ],
+   "imports": [
+    "agent_tool_provider",
+    "capstack_bridge",
+    "external_agent_registry",
+    "legion_paths",
+    "media_tools",
+    "opencli_bridge",
+    "vision_toolkit_bridge"
+   ],
+   "top_level": [
+    "cached_toolbox",
+    "get_tool",
+    "invalidate_cache",
+    "scan_toolbox",
+    "skill_inventory",
+    "toolbox_page",
+    "toolbox_summary"
+   ],
+   "critical": [
+    "cached_toolbox",
+    "get_tool",
+    "invalidate_cache",
+    "scan_toolbox",
+    "skill_inventory",
+    "toolbox_page",
+    "toolbox_summary"
+   ],
+   "signatures": {
+    "cached_toolbox": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict | None"
+    },
+    "get_tool": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "tool_id",
+       "annotation": "str",
+       "default": "<required>"
+      }
+     ],
+     "returns": "Optional[dict]"
+    },
+    "invalidate_cache": {
+     "kind": "function",
+     "params": [],
+     "returns": "None"
+    },
+    "scan_toolbox": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "force",
+       "annotation": "bool",
+       "default": "False"
+      }
+     ],
+     "returns": "dict"
+    },
+    "skill_inventory": {
+     "kind": "function",
+     "params": [],
+     "returns": "list"
+    },
+    "toolbox_page": {
+     "kind": "function",
+     "params": [
+      {
+       "kind": "pos_or_kw",
+       "name": "limit",
+       "annotation": "int",
+       "default": "50"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "offset",
+       "annotation": "int",
+       "default": "0"
+      },
+      {
+       "kind": "pos_or_kw",
+       "name": "capability",
+       "annotation": "str",
+       "default": "''"
+      }
+     ],
+     "returns": "dict"
+    },
+    "toolbox_summary": {
+     "kind": "function",
+     "params": [],
+     "returns": "dict"
+    }
+   },
+   "content_sha256": "0c49cf22c5a9a3e08d880cfac4028310bdb7f3cfc776a745134433af7c1cb727"
+  }
+ },
+ "claude_anchors": {
+  "sections_min_len": {
+   "## 🩸 必须遵守的铁律": 12744,
+   "## 🗣️ 沟通与 Goal 执行铁律": 657,
+   "## 🚫 已证伪死路黑名单": 882,
+   "## ⛔ 总铁律:永远让军团自救": 3469,
+   "### 🧪 测试隔离铁律:测试绝不碰用户真实家目录": 3117,
+   "### 🔴 UI 验证必须真人级·禁止 curl/DOM 冒充": 755,
+   "### 🔧 丝滑可靠100%:从query到交付全上下游": 2579,
+   "### 🔗 从query到交付100%可靠·一家坏了别家补位接力": 821,
+   "### 🍽️ Eat your own dogfood": 6152,
+   "### 🎯 角色铁律:我修 harness,agent 自己解题": 314
+  },
+  "pinned_sentences": [
+   "谁挡这条底线就降级谁",
+   "绝不碰 `~/.meyo`、`~/.legion` 真目录",
+   "永远让军团自救,绝不我教它们",
+   "一致 ≠ 正确",
+   "我修 harness,agent 自己解题",
+   "先看证据,再开口",
+   "宁可少改、改对、可回放",
+   "真浏览器逐按钮点击",
+   "context not control",
+   "给 Context·不加 Control",
+   "必须查到根因、必须看真实证据",
+   "工具调用标签必须用",
+   "终极面试只认“极限·顶尖·超越”而不是“行业基线”",
+   "判据不是“像行业产品”,而是“这件作品哪里真实超过了当前顶尖"
+  ]
+ }
+}

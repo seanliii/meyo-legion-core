@@ -1,0 +1,243 @@
+{
+  "key": "prime-intellect",
+  "name": "Prime Agent (Prime Intellect)",
+  "kind": "agent",
+  "execution_role": "agent",
+  "url": "https://github.com/PrimeIntellect-ai/prime-agent",
+  "version": "0.9.4+1eee2938b4ee",
+  "revision": "1eee2938b4eeb7a4d72e17035adda669a89b63de",
+  "runtime": {
+    "node": ">=22.8.0",
+    "python": ">=3.11"
+  },
+  "install": [
+    [
+      "{node}",
+      "{npm_cli}",
+      "ci",
+      "--prefix",
+      "{source}"
+    ],
+    [
+      "{node}",
+      "{npm_cli}",
+      "run",
+      "build",
+      "--prefix",
+      "{source}"
+    ],
+    [
+      "{python}",
+      "-m",
+      "venv",
+      "{runtime_dir}/venv"
+    ],
+    [
+      "{runtime_python}",
+      "-m",
+      "pip",
+      "install",
+      "{source}/prime-agent-runtime",
+      "dill",
+      "requests",
+      "httpx",
+      "pyyaml",
+      "tomli",
+      "python-dotenv",
+      "pandas",
+      "numpy",
+      "scipy",
+      "beautifulsoup4",
+      "lxml",
+      "pydantic",
+      "tyro"
+    ],
+    [
+      "{runtime_python}",
+      "-c",
+      "import rlm, rlm.repl, dill, requests, httpx, yaml, tomli, dotenv, pandas, numpy, scipy, bs4, lxml, pydantic, tyro; assert rlm.repl.PROTOCOL_VERSION == 3; assert callable(rlm.spawn); assert callable(rlm.host_request)"
+    ],
+    [
+      "{node}",
+      "{source}/packages/coding-agent/dist/bundle/cli.js",
+      "--version"
+    ]
+  ],
+  "credentials": {
+    "any_of": [
+      "MEYO_UNIFIED_APPID",
+      "AIGC_APPID"
+    ],
+    "help": "由现有统一运行入口传入 appid、gateway、model；不需要 Prime 账号，不写入固定密钥。"
+  },
+  "env": {
+    "PRIME_AGENT_CODING_AGENT_DIR": "{session_dir}/prime-intellect/{session_id}/config",
+    "PRIME_AGENT_SESSION_DIR": "{session_dir}/prime-intellect/{session_id}/sessions",
+    "PRIME_AGENT_KERNEL_PYTHON": "{runtime_python}",
+    "PRIME_AGENT_KERNEL_VENV": "{runtime_dir}/venv",
+    "MEYO_PRIME_INTELLECT_API_KEY": "{appid}",
+    "MEYO_TOOL_CLI": "{tool_cli}",
+    "PI_SKIP_VERSION_CHECK": "1"
+  },
+  "config_template": {
+    "path": "{session_dir}/prime-intellect/{session_id}/config/registry-models.json",
+    "content": {
+      "providers": {
+        "meyo": {
+          "baseUrl": "{gateway}",
+          "api": "openai-completions",
+          "apiKey": "MEYO_PRIME_INTELLECT_API_KEY",
+          "authHeader": true,
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "maxTokensField": "max_tokens"
+          },
+          "models": [
+            {
+              "id": "{model}"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "transports": [
+    {
+      "type": "cli",
+      "command": [
+        "{python}",
+        "{adapter_dir}/prime_cli.py",
+        "--runtime-context",
+        "{runtime_context_json}",
+        "--source",
+        "{source}",
+        "--source-url",
+        "https://github.com/PrimeIntellect-ai/prime-agent",
+        "--revision",
+        "1eee2938b4eeb7a4d72e17035adda669a89b63de",
+        "--runtime-dir",
+        "{runtime_dir}",
+        "--runtime-python",
+        "{runtime_python}",
+        "--session-root",
+        "{session_dir}",
+        "--models-json",
+        "{session_dir}/prime-intellect/{session_id}/config/registry-models.json",
+        "--",
+        "{node}",
+        "{source}/packages/coding-agent/dist/bundle/cli.js",
+        "--mode",
+        "json",
+        "--print",
+        "--daemon-socket",
+        "prime.sock",
+        "--provider",
+        "meyo",
+        "--model",
+        "{model}",
+        "--cwd",
+        "{workdir}",
+        "--session-dir",
+        "{session_dir}/prime-intellect/{session_id}/sessions",
+        "--append-system-prompt",
+        "Meyo shared tool entry point (CLI, not a Python package): {python} {tool_cli}. Run it with --help to discover available commands. Peer source locations are supplied in MEYO_PEER_SOURCE_CONTEXT. Current project directory: {workdir}.",
+        "--",
+        "{task}"
+      ],
+      "native_session_format": "prime_jsonl_v3",
+      "snapshot_terminal": true,
+      "output_contract": {
+        "type": "json",
+        "record_match": {
+          "type": "prime_native_result"
+        },
+        "text_field": "final",
+        "status_field": "status",
+        "completed_statuses": [
+          "ok"
+        ],
+        "session_id_field": "session_id"
+      }
+    }
+  ],
+  "probe": {
+    "method": "cli",
+    "target": "{source}/packages/coding-agent/dist/bundle/cli.js",
+    "command": [
+      "{node}",
+      "{source}/packages/coding-agent/dist/bundle/cli.js",
+      "--version"
+    ]
+  },
+  "capabilities": [
+    "coding",
+    "research",
+    "python-repl",
+    "shell",
+    "files",
+    "recursive-subagents",
+    "skills",
+    "mcp"
+  ],
+  "provided_tools": [
+    "ipython"
+  ],
+  "adapter_capabilities": {
+    "streaming": "events",
+    "resume": true,
+    "tools": true,
+    "artifacts": true,
+    "interrupt": true,
+    "model": "native"
+  },
+  "provenance": {
+    "official": true,
+    "description": "PrimeIntellect-ai 官方仓库；从固定源码构建，不安装 aisa，也不从 npm 安装继承的 pi 包名。"
+  },
+  "source_evidence": {
+    "checked_at": "2026-09-11",
+    "method": "已读本机 /Users/xuan/.npm-global/lib/node_modules/prime-agent 的 package.json、docs/development.md、docs/models.md、dist/core/kernel/bootstrap.js、dist/main.js、dist/modes/print-mode.js；再用公开 GitHub raw 核对目标固定 revision 的差异。",
+    "local_installation": {
+      "package": "prime-agent",
+      "version": "0.8.0",
+      "binary": "/Users/xuan/.npm-global/bin/prime-agent",
+      "resolved_entry": "/Users/xuan/.npm-global/lib/node_modules/prime-agent/dist/bundle/cli.js",
+      "observed_version_command": "node /Users/xuan/.npm-global/lib/node_modules/prime-agent/dist/bundle/cli.js --version",
+      "observed_result": "exit=0, version=0.8.0；--help 也 exit=0；没有发模型请求或启动/重启服务",
+      "runtime_difference": "本机0.8.0 bootstrap检查 rlm.run/可调用rlm；目标HEAD检查 rlm.spawn/create_session 且禁止旧rlm.run。不能用本机旧Python runtime验证目标HEAD。"
+    },
+    "raw_base": "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent/1eee2938b4eeb7a4d72e17035adda669a89b63de/",
+    "release_tag_reference": {
+      "tag": "v0.9.4",
+      "revision": "f771dfcedd684d1afff84ca2c6fa95c7a21efbc2",
+      "source": "用户提供；本 spec 使用所给 HEAD，不将两者混称同一提交"
+    },
+    "package_identity": "根 package.json 为 private monorepo；源码 workspace 名 @earendil-works/pi-coding-agent，bin.pi=dist/bundle/cli.js；官方 release packer 改名为 prime-agent，产出私有分发 tgz，不把继承 npm 名当成公开安装路径。",
+    "references": [
+      "package.json",
+      "packages/coding-agent/package.json",
+      "packages/coding-agent/docs/development.md",
+      "scripts/pack-prime-agent-release.mjs",
+      "packages/coding-agent/src/cli/args.ts:87-95,102-108,131-149,178-179",
+      "packages/coding-agent/src/modes/print-mode.ts:96-107,121-171",
+      "packages/coding-agent/src/main.ts:207-208,239-251",
+      "packages/coding-agent/docs/models.md",
+      "packages/coding-agent/src/core/model-registry.ts:109-117,195-205,1226-1232",
+      "prime-agent-runtime/pyproject.toml",
+      "packages/coding-agent/src/core/kernel/bootstrap.ts:15-35,885-919",
+      "packages/coding-agent/src/modes/daemon/daemon-socket.ts:70-75"
+    ]
+  },
+  "verification_notes": {
+    "scope": "Prime JSONL v3 接线与无网 fixture 回归；未安装、未模型实跑、未验证跨版本 kernel 快照。",
+    "resume": "Prime专属CLI读取runtime_context_json及原JSONL旁身份记录；保留路径/ID/daemon socket。通用registry及parser不改。",
+    "runtime": "沿用 b93c72c 固定官方 revision、CLI、独立 Python venv；不混用本机0.8 runtime。",
+    "pending": [
+      "A窗口同包真实CLI、模型及工具运行",
+      "原生取消/daemon回收",
+      "同版本及跨版本kernel快照恢复验证"
+    ]
+  }
+}

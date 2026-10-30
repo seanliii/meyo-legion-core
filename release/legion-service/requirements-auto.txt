@@ -1,0 +1,9 @@
+# 可选的 Auto/DeepAgents Python 依赖；不是原生成员 CLI 的前置。
+# 安装这些包不等于成员源码、授权和真实执行已经就绪。
+deepagents>=0.7.0
+langchain>=1.0.0
+langchain-openai>=1.0.0
+langchain-anthropic>=1.0.0
+langgraph>=1.0.0
+# DeepAgents 原生恢复直接导入的 SqliteSaver 来自独立发行包。
+langgraph-checkpoint-sqlite

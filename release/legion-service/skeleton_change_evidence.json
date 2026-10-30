@@ -1,0 +1,38 @@
+{
+ "red": {
+  "version": 3,
+  "files": [
+   "server.py",
+   "test_skeleton_guard.py"
+  ],
+  "digest": "b6709c48989e9e56b42ee981cc3c03a672fada2179455aa3c450a59d023941a2",
+  "guards_passed": true,
+  "structure_changes": [
+   "[E4] server.py(红区)新增本地依赖边: ['verification_http'](冻结边集=['approval_state', 'artifact_delivery', 'captain_preferences', 'catalog_api', 'cloud_desktop', 'crawler', 'cron_dispatch', 'cron_jobs', 'desktop_fs', 'evolve_config', 'external_agent_registry', 'file_hub', 'harness_profiles', 'harness_tool_bus', 'harness_view', 'inspire', 'install_registry', 'legion_core', 'legion_memory', 'legion_paths', 'legion_pilot', 'legion_proc_registry', 'legion_tool', 'media_tools', 'mobile_device', 'model_registry', 'my_workspace', 'opencli_bridge', 'performance_views', 'promotion_review', 'runtime_manifest', 'search_prefs', 'sessions', 'skill_factory', 'team_state', 'toolbox', 'trace_view', 'user_view', 'workspace_view'])——防模块耦合改乱。确需新依赖:--update-manifest 显式声明并在 commit 说明动机"
+  ],
+  "main_suite_passed": 321,
+  "all_harness_smoke_passed": true,
+  "smoke_output_sha256": "not-required",
+  "motivation": "恢复已验证的验收中心、SIGTERM、会话与工具性能、零复制，并让Guard自身及关键行为锁受保护；红黄改动共享一次完整验收，禁止旧基线机械回退新功能。",
+  "generated_at": "2026-09-04T08:19:27"
+ },
+ "commit_digest": "37e0798dc0916d9391297ac5614eb0a4f5ea9210f667474b14bb35427d4056bd",
+ "yellow": {
+  "version": 3,
+  "files": [
+   "artifact_delivery.py",
+   "legion_sandbox.py",
+   "legion_tool.py",
+   "sessions.py",
+   "toolbox.py"
+  ],
+  "digest": "16812ccf4576cc342516dc1f69da1e0ef4bd0e6a3185e4b97e628f0204c32801",
+  "guards_passed": true,
+  "structure_changes": [],
+  "main_suite_passed": 321,
+  "all_harness_smoke_passed": true,
+  "smoke_output_sha256": "fbc9b3e488d876e0679fbb4f8024569925e74cdf4439cc8ef8bcd908a69209bc",
+  "motivation": "恢复已验证的验收中心、SIGTERM、会话与工具性能、零复制，并让Guard自身及关键行为锁受保护；红黄改动共享一次完整验收，禁止旧基线机械回退新功能。",
+  "generated_at": "2026-09-04T08:19:27"
+ }
+}

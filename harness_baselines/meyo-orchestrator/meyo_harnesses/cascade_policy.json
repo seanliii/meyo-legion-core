@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "trained_on": "fair_bench_40 current traces",
+  "primary": "cc",
+  "fallback": "deepagents",
+  "features": [
+    "search_count",
+    "elapsed",
+    "final_len",
+    "timeout"
+  ],
+  "scaler_mean": [
+    37.375,
+    637.6599999999997,
+    140.275,
+    0.225
+  ],
+  "scaler_scale": [
+    35.27654142627931,
+    403.19585240922305,
+    135.37226220684946,
+    0.41758232721225175
+  ],
+  "coef": [
+    0.33805858103984865,
+    0.5713651916929194,
+    -0.8835498022278783,
+    0.5140484942424026
+  ],
+  "intercept": 0.7229017518617267,
+  "threshold": 0.5,
+  "calibration_n": 40
+}

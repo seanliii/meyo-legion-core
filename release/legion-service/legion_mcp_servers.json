@@ -1,0 +1,177 @@
+{
+ "_doc": "军团已装/可用MCP服务器接入清单(2026-08-27)。设计依据:deepseek-harness/examples/mcp-memory/mcp-reference-memory.cordis.yml——声明式配置(name/command/transport/env)+版本pin(不用@latest·避免漂移)+装启分离(只声明启动·装是另一步)。",
+ "_evidence": "deepseek-harness/examples/mcp-memory/README.zh.md:20 + mcp-reference-memory.cordis.yml:1-13(transport=stdio·env落jsonl·pin版本)。hermes-agent/AGENTS.md:198-204(MCP=Footprint Ladder第5档·zero core-schema footprint·任意MCP host可复用)。",
+ "_how_to_add": "Claude Code原生接入: claude mcp add <name> -- <command...>。军团全家通过 legion_tool 按需发现并使用等价共享能力；原生支持MCP的成员可直连。装启分离:先确保包已装,再add启动。",
+ "servers": [
+  {
+   "name": "cua-computer",
+   "package": "cua-cli[mcp]",
+   "version": "0.1.15",
+   "installed": true,
+   "transport": "stdio",
+   "command": ["cua", "serve-mcp"],
+   "add_cmd": "claude mcp add --scope user cua-computer -- cua serve-mcp",
+   "cap": "官方 CUA sandbox 管理、截图与 GUI 控制",
+   "needs_key": false,
+   "note": "通过统一 MCP bus 供军团 search/list 发现。只有绑定官方 CUA sandbox 后才会执行 GUI；本地 sandbox 依赖 Docker daemon，云端 sandbox 需 cua auth login。"
+  },
+  {
+   "name": "memory",
+   "package": "@modelcontextprotocol/server-memory",
+   "version": "2026.7.4",
+   "installed": true,
+   "transport": "stdio",
+   "install": [
+    "npm",
+    "install",
+    "-g",
+    "@modelcontextprotocol/server-memory@2026.7.4"
+   ],
+   "command": [
+    "$HOME/.npm-global/bin/mcp-server-memory"
+   ],
+   "add_cmd": "claude mcp add --scope user memory -e MEMORY_FILE_PATH=$HOME/.meyo/legion/mcp-memory.jsonl -- $HOME/.npm-global/bin/mcp-server-memory",
+   "cap": "长期记忆(知识图谱·jsonl落盘·无向量库无grpc)",
+   "needs_key": false,
+   "env": {
+    "MEMORY_FILE_PATH": "$HOME/.meyo/legion/memory.jsonl"
+   },
+   "evidence": "deepseek-harness官方验证的记忆方案(examples/mcp-memory)·比Mem0轻(无qdrant/grpc)。已装mcp-server-memory@2026.7.4",
+   "note": "军团记忆【可选后端之一】·非唯一(见dev/legion-memory-harness-study.md:四家记忆哲学不同·军团做可插拔层学hermes MemoryProvider·各家自有记忆不动)"
+  },
+  {
+   "name": "playwright",
+   "package": "@playwright/mcp",
+   "version": "0.0.79",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "node",
+    "<军团编排源码>/meyo_harnesses/playwright_runtime.cjs"
+   ],
+   "add_cmd": "claude mcp add --scope user playwright -- node <军团编排源码>/meyo_harnesses/playwright_runtime.cjs",
+   "cap": "浏览器自动化/DOM读取/表单交互/网络与控制台诊断",
+   "needs_key": false,
+   "note": "共享调用由现有 mcp_list/mcp_call 解析实际编排目录。原CLI复用已安装包；可选固定运行配置提供库与字体，显式启用sandbox，不在任务中安装。缺失或损坏如实报错；独立mcp_call不承诺跨调用保留页面。"
+  },
+  {
+   "name": "filesystem",
+   "package": "@modelcontextprotocol/server-filesystem",
+   "version": "2026.7.10",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "$HOME/.npm-global/bin/mcp-server-filesystem",
+    "<当前仓库>",
+    "$HOME/.meyo/legion/outputs",
+    "$HOME/.meyo/legion/repos"
+   ],
+   "add_cmd": "claude mcp add --scope user filesystem -- $HOME/.npm-global/bin/mcp-server-filesystem <当前仓库> $HOME/.meyo/legion/outputs $HOME/.meyo/legion/repos",
+   "cap": "受限目录内的文件读取、搜索、编辑与目录操作",
+   "needs_key": false,
+   "note": "已验证只允许当前仓库、军团输出和下载目录；读取 /etc/hosts 会被拒绝"
+  },
+  {
+   "name": "git",
+   "package": "mcp-server-git",
+   "version": "uvx-resolved",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "$HOME/.local/bin/uvx",
+    "--from",
+    "mcp-server-git",
+    "mcp-server-git",
+    "--repository",
+    "<当前仓库>"
+   ],
+   "add_cmd": "claude mcp add --scope user git -- $HOME/.local/bin/uvx --from mcp-server-git mcp-server-git --repository <当前仓库>",
+   "cap": "Git状态、日志、差异、分支与本地提交",
+   "needs_key": false,
+   "note": "已真读当前仓库status；不提供push，外发仍由产品确认边界控制"
+  },
+  {
+   "name": "fetch",
+   "package": "mcp-server-fetch",
+   "version": "uvx-resolved",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "$HOME/.local/bin/uvx",
+    "mcp-server-fetch",
+    "--proxy-url",
+    "<当前HTTP代理>"
+   ],
+   "add_cmd": "claude mcp add --scope user fetch -- $HOME/.local/bin/uvx mcp-server-fetch --proxy-url <当前HTTP代理>",
+   "cap": "抓取公开网页并转换为适合模型阅读的Markdown",
+   "needs_key": false,
+   "note": "已通过本机系统代理真抓 modelcontextprotocol.io；与WebFetch并列，受限网络或军团独立进程可用"
+  },
+  {
+   "name": "time",
+   "package": "mcp-server-time",
+   "version": "uvx-resolved",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "$HOME/.local/bin/uvx",
+    "mcp-server-time",
+    "--local-timezone",
+    "Asia/Shanghai"
+   ],
+   "add_cmd": "claude mcp add --scope user time -- $HOME/.local/bin/uvx mcp-server-time --local-timezone Asia/Shanghai",
+   "cap": "当前时间与IANA时区转换",
+   "needs_key": false,
+   "note": "已真返回Asia/Shanghai当前时间与星期；确定性工具，成本低"
+  },
+  {
+   "name": "github",
+   "package": "github/github-mcp-server",
+   "version": "remote",
+   "installed": true,
+   "transport": "http",
+   "url": "https://api.githubcopilot.com/mcp",
+   "command": [],
+   "add_cmd": "claude mcp add-json github '{\"type\":\"http\",\"url\":\"https://api.githubcopilot.com/mcp\",\"headers\":{\"Authorization\":\"Bearer <YOUR_GITHUB_PAT>\"}}' --scope user",
+   "cap": "搜索/审阅GitHub开源项目、仓库代码、Release、Issue与PR",
+   "needs_key": true,
+   "key_env": "GITHUB_PERSONAL_ACCESS_TOKEN|GH_TOKEN|gh auth token",
+   "auth_command": "gh auth login",
+   "auth_mode": "per_user",
+   "deprecated_replacement": "@modelcontextprotocol/server-github 已于2025年4月弃用，改用 GitHub 官方远程 MCP",
+   "note": "军团全家通过统一 legion_tool 获得搜索/下载能力；原生支持MCP的成员还可连接官方远程服务。未授权可匿名搜公开项目，用到更高限额或私有仓库时向用户展示 gh auth login。凭证不进入任务上下文。"
+  },
+  {
+   "name": "firecrawl",
+   "package": "firecrawl-mcp",
+   "version": "3.24.0",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "npx",
+    "firecrawl-mcp@3.24.0"
+   ],
+   "add_cmd": "claude mcp add firecrawl -e FIRECRAWL_API_KEY=<key> -- npx firecrawl-mcp@3.24.0",
+   "cap": "网页→干净Markdown",
+   "needs_key": true,
+   "key_env": "FIRECRAWL_API_KEY",
+   "note": "底层firecrawl-py已装·可直调不必MCP"
+  },
+  {
+   "name": "exa",
+   "package": "exa-mcp-server",
+   "version": "3.4.1",
+   "installed": true,
+   "transport": "stdio",
+   "command": [
+    "npx",
+    "exa-mcp-server@3.4.1"
+   ],
+   "add_cmd": "claude mcp add exa -e EXA_API_KEY=<key> -- npx exa-mcp-server@3.4.1",
+   "cap": "为Agent调优的语义搜索",
+   "needs_key": true,
+   "key_env": "EXA_API_KEY",
+   "note": "底层exa-py已装·可直调不必MCP"
+  }
+ ]
+}

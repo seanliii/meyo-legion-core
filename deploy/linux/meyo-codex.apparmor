@@ -1,0 +1,9 @@
+# Ubuntu's application-specific user-namespace exception, not a host-wide bypass.
+# The executable and its parent directories must remain root-owned and non-writable
+# by the service. Codex's own bubblewrap filesystem and seccomp policies stay active.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile meyo-legion-codex /opt/meyo-legion/native/codex flags=(unconfined) {
+  userns,
+}

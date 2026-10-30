@@ -1,0 +1,16 @@
+# Install into /etc/meyo-legion/routes/ only after configure-devices and a
+# verified rootless desktop. The same gate protects files and WS handshakes.
+handle_path {$MEYO_DESKTOP_PUBLIC_PATH}/* {
+	uri query -ticket
+	forward_auth {$MEYO_UPSTREAM} {
+		uri /api/legion/cloud_desktop/display/auth?
+	}
+	header Cache-Control "no-store"
+	reverse_proxy {$MEYO_DESKTOP_UPSTREAM} {
+		header_up -Authorization
+		header_up -Cookie
+		header_up -X-Legion-Token
+		header_up -X-Legion-Ticket
+		flush_interval -1
+	}
+}

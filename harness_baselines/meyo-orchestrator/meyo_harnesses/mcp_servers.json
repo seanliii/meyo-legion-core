@@ -1,0 +1,90 @@
+{
+  "_doc": "声明式军团 MCP 注册表。只提供能力清单和调用通道，不按任务替模型路由。路径占位符由 mcp_bridge 在运行时展开。",
+  "servers": {
+    "cua-computer": {
+      "_desc": "CUA 官方 Computer Use MCP server；由军团 MCP bus 按需发现，sandbox 由调用方在任务现场指定。",
+      "command": "cua",
+      "args": ["serve-mcp"],
+      "env": {},
+      "enabled": true
+    },
+    "supervision-cv": {
+      "_desc": "supervision 视觉/CV 工具（经 meyo MCP wrapper 暴露）。",
+      "command": "python3.12",
+      "args": ["meyo_mcp_servers/supervision_server.py"],
+      "cwd": "__ORCH_ROOT__",
+      "env": {},
+      "enabled": true
+    },
+    "memory": {
+      "_desc": "知识图谱持久记忆；与 legion_memory 并列可选。",
+      "command": "__HOME__/.npm-global/bin/mcp-server-memory",
+      "args": [],
+      "env": {"MEMORY_FILE_PATH": "__LEGION_DIR__/mcp-memory.jsonl"},
+      "enabled": true
+    },
+    "filesystem": {
+      "_desc": "仅访问仓库、军团产出和下载目录的文件工具。",
+      "command": "__HOME__/.npm-global/bin/mcp-server-filesystem",
+      "args": ["__REPO_ROOT__", "__LEGION_DIR__/outputs", "__LEGION_DIR__/repos"],
+      "env": {},
+      "enabled": true
+    },
+    "playwright": {
+      "_desc": "原生Playwright MCP；复用已安装浏览器及可选固定运行材料，显式保留sandbox，不在任务里安装。",
+      "command": "node",
+      "args": ["__ORCH_ROOT__/meyo_harnesses/playwright_runtime.cjs"],
+      "env": {},
+      "enabled": true
+    },
+    "git": {
+      "_desc": "当前仓库 Git 状态、日志、差异、分支和本地提交。",
+      "command": "__HOME__/.local/bin/uvx",
+      "args": ["--from", "mcp-server-git", "mcp-server-git", "--repository", "__REPO_ROOT__"],
+      "env": {},
+      "enabled": true
+    },
+    "fetch": {
+      "_desc": "抓取公开网页并转为 Markdown。",
+      "command": "__HOME__/.local/bin/uvx",
+      "args": ["mcp-server-fetch"],
+      "optional_args": {"proxy": ["--proxy-url", "__PROXY_URL__"]},
+      "env": {},
+      "enabled": true
+    },
+    "time": {
+      "_desc": "当前时间和 IANA 时区转换。",
+      "command": "__HOME__/.local/bin/uvx",
+      "args": ["mcp-server-time", "--local-timezone", "Asia/Shanghai"],
+      "env": {},
+      "enabled": true
+    },
+    "github": {
+      "_desc": "GitHub 官方远程 MCP。HTTP 传输由当前用户 gh keyring 授权。",
+      "transport": "http",
+      "url": "https://api.githubcopilot.com/mcp",
+      "auth": "github",
+      "enabled": true
+    },
+    "firecrawl": {
+      "_desc": "Firecrawl网页提取；使用预装CLI，凭证从运行环境继承，缺凭证由服务如实报错。",
+      "command": "__HOME__/.npm-global/bin/firecrawl-mcp",
+      "args": [],
+      "env": {},
+      "enabled": true
+    },
+    "exa": {
+      "_desc": "Exa语义搜索；使用预装CLI，凭证从运行环境继承，缺凭证不视为执行成功。",
+      "command": "__HOME__/.npm-global/bin/exa-mcp-server",
+      "args": [],
+      "env": {},
+      "enabled": true
+    },
+    "context7": {
+      "_desc": "Context7 最新库文档。远程服务无需项目凭证。",
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true
+    }
+  }
+}

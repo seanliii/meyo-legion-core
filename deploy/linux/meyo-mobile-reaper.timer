@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the authorized lifetime of Meyo cloud mobile sessions
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Unit=meyo-mobile-reaper.service
+
+[Install]
+WantedBy=timers.target

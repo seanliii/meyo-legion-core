@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@1jehuang/jcode-sdk": "1.1.0",
+    "ajv": "8.20.0"
+  }
+}

@@ -1,0 +1,630 @@
+{
+ "source": "KM 模型可用性实测报告 2781925462(真实请求验证)",
+ "verified_at": "2026-08-27",
+ "count": 89,
+ "models": [
+  {
+   "model": "LongCat-2.0",
+   "family": "自研 LongCat 系列",
+   "latency_s": 1.26,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-8B-Chat-0523",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.22,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-Flash-Chat",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.55,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-Flash-Chat-Eco",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.52,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-Flash-Thinking-2601",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.42,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-sales-8B-Chat",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.19,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-sales-30B-Chat",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.27,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-Lite-V2-Chat",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.46,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "LongCat-35B-A3B-Chat-Meituan",
+   "family": "自研 LongCat 系列",
+   "latency_s": 0.27,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-v4-flash-meituan",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 0.34,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "glm-52-meituan",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 0.55,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-5.3",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 1.04,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-5.2",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 0.95,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-v4-flash",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 1.27,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-v4-pro",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 1.22,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Kimi-k3",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 2.46,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-chat",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 1.26,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-reasoner",
+   "family": "美团自部署/DeepSeek官方线路",
+   "latency_s": 1.31,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-4o-2024-08-06",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.71,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-4o-2024-11-20",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.3,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-4o-mini",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 0.61,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-4.1",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.8,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-4.1-nano",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.22,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-4.1-mini",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.33,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 4.52,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5-chat",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 2.19,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.1",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 2.03,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.2",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.81,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.4",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 2.07,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.4-mini",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.98,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.5",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 3.63,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.6-sol",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.67,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.6-terra",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.98,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gpt-5.6-luna",
+   "family": "OpenAI GPT 系列",
+   "latency_s": 1.69,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gemini-2.5-flash-lite",
+   "family": "Google Gemini 系列",
+   "latency_s": 2.13,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gemini-3-flash-preview",
+   "family": "Google Gemini 系列",
+   "latency_s": 2.56,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gemini-3.1-flash-lite",
+   "family": "Google Gemini 系列",
+   "latency_s": 2.67,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "gemini-3.5-flash-lite",
+   "family": "Google Gemini 系列",
+   "latency_s": 2.33,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "aws.claude-haiku-4.5",
+   "family": "Claude 系列（AWS/Vertex）",
+   "latency_s": 2.05,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "aws.claude-opus-4.7",
+   "family": "Claude 系列（AWS/Vertex）",
+   "latency_s": 2.02,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "MiniMax-M1",
+   "family": "MiniMax 系列",
+   "latency_s": 1.31,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "MiniMax-M2",
+   "family": "MiniMax 系列",
+   "latency_s": 2.14,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "MiniMax-M2.1",
+   "family": "MiniMax 系列",
+   "latency_s": 1.23,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "MiniMax-M2.5",
+   "family": "MiniMax 系列",
+   "latency_s": 1.54,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "MiniMax-M2.7",
+   "family": "MiniMax 系列",
+   "latency_s": 1.09,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "MiniMax-M3",
+   "family": "MiniMax 系列",
+   "latency_s": 1.26,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4-Air",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.42,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4-Airx",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.44,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4-Flash",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.51,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-Z1-Air",
+   "family": "智谱 GLM 系列",
+   "latency_s": 14.14,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-Z1-AirX",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.53,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-Z1-Flash",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.41,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.5",
+   "family": "智谱 GLM 系列",
+   "latency_s": 5.9,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.5-Air",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.89,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.5-Airx",
+   "family": "智谱 GLM 系列",
+   "latency_s": 1.27,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.5-X",
+   "family": "智谱 GLM 系列",
+   "latency_s": 8.25,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.5v",
+   "family": "智谱 GLM 系列",
+   "latency_s": 8.89,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.6",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.91,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.6v",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.9,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-4.7",
+   "family": "智谱 GLM 系列",
+   "latency_s": 3.18,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-5",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.76,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-5-Turbo",
+   "family": "智谱 GLM 系列",
+   "latency_s": 2.48,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-5v-turbo",
+   "family": "智谱 GLM 系列",
+   "latency_s": 0.52,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "GLM-5.1",
+   "family": "智谱 GLM 系列",
+   "latency_s": 4.61,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "kimi-k2.5-tencent",
+   "family": "腾讯系（云上转售）",
+   "latency_s": 0.69,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "glm-5-tencent",
+   "family": "腾讯系（云上转售）",
+   "latency_s": 1.24,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "moonshot-v1-8k",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 0.55,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "moonshot-v1-32k",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 0.54,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "moonshot-v1-128k",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 0.51,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "kimi-k2.5",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 0.79,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "kimi-k2.6",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 0.74,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "kimi-k2.7-code",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 0.58,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "kimi-k3",
+   "family": "Moonshot/Kimi 官方",
+   "latency_s": 1.79,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Qwen-Plus-Latest",
+   "family": "阿里千问 Qwen 系列",
+   "latency_s": 0.57,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "qwen3.5-plus",
+   "family": "阿里千问 Qwen 系列",
+   "latency_s": 4.8,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-deepseek-v3",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 1.1,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-deepseek-r1",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 2.51,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-1.5-thinking-vision-pro-0428",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 1.99,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-1.5-vision-pro-32k",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 1.1,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-1.5-lite-32k",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 0.81,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-Seed-1.6",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 1.97,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-Seed-1.6-thinking",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 2.16,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-Seed-1.6-flash",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 0.63,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-Seed-1.8",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 1.26,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-Seed-2.0-pro",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 2.27,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "Doubao-Seed-2.0-lite",
+   "family": "字节豆包 Doubao 系列",
+   "latency_s": 1.77,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-r1-huawei",
+   "family": "华为系（云上转售）",
+   "latency_s": 1.76,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "deepseek-v3-huawei",
+   "family": "华为系（云上转售）",
+   "latency_s": 0.88,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  },
+  {
+   "model": "glm-5-huawei",
+   "family": "华为系（云上转售）",
+   "latency_s": 3.53,
+   "verified": true,
+   "verified_at": "2026-08-27"
+  }
+ ]
+}

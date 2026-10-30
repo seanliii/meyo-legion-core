@@ -1,0 +1,120 @@
+{
+  "key": "cline",
+  "name": "Cline",
+  "kind": "agent",
+  "url": "https://github.com/cline/cline",
+  "version": "2.5.0",
+  "revision": "452733c3fddb6fffa9b06fbd4c96a0f5e88400d8",
+  "runtime": {
+    "node": true,
+    "npm": true
+  },
+  "install": [
+    [
+      "npm",
+      "install",
+      "--prefix",
+      "{runtime_dir}",
+      "cline@2.5.0"
+    ]
+  ],
+  "credentials": {
+    "any_of": [
+      "MEYO_UNIFIED_APPID",
+      "AIGC_APPID"
+    ],
+    "help": "模型授权由当前请求的appid/gateway传入私有配置；不共用运行目录auth。"
+  },
+  "transports": [
+    {
+      "type": "cli",
+      "command": [
+        "{python}",
+        "{adapter_dir}/cline_cli.py",
+        "--runtime-dir",
+        "{runtime_dir}",
+        "--source",
+        "{source}",
+        "--model",
+        "{model}",
+        "--gateway",
+        "{gateway}",
+        "--runtime-context",
+        "{runtime_context_json}",
+        "--",
+        "{task}"
+      ],
+      "snapshot_terminal": true,
+      "output_contract": {
+        "type": "json",
+        "record_match": {
+          "type": "cline_native_result"
+        },
+        "text_field": "final",
+        "status_field": "status",
+        "completed_statuses": [
+          "ok"
+        ],
+        "session_id_field": "session_id",
+        "error_message_field": "error"
+      },
+      "resume_command": [
+        "{python}",
+        "{adapter_dir}/cline_cli.py",
+        "--runtime-dir",
+        "{runtime_dir}",
+        "--source",
+        "{source}",
+        "--model",
+        "{model}",
+        "--gateway",
+        "{gateway}",
+        "--runtime-context",
+        "{runtime_context_json}",
+        "--",
+        "{task}"
+      ],
+      "native_checkpoint_event_type": "cline_native_checkpoint"
+    }
+  ],
+  "probe": {
+    "method": "cli",
+    "target": "{runtime_dir}/node_modules/.bin/cline",
+    "command": [
+      "{runtime_dir}/node_modules/.bin/cline",
+      "--version"
+    ]
+  },
+  "capabilities": [
+    "coding agent",
+    "mcp",
+    "sdk",
+    "cli",
+    "headless"
+  ],
+  "update": {
+    "strategy": "github_commit",
+    "branch": "v2.5.0-cli",
+    "channel": "stable",
+    "current_ref": "v2.5.0-cli"
+  },
+  "adapter_capabilities": {
+    "streaming": "events",
+    "resume": "native",
+    "tools": true,
+    "artifacts": true,
+    "interrupt": true,
+    "model": "native"
+  },
+  "model_compat": {
+    "gpt-5.6-sol": "deepseek-v4-pro"
+  },
+  "env": {
+    "MEYO_CLINE_API_KEY": "{appid}",
+    "CLINE_NO_AUTO_UPDATE": "1"
+  },
+  "session_env": [
+    "MEYO_CLINE_API_KEY",
+    "CLINE_NO_AUTO_UPDATE"
+  ]
+}

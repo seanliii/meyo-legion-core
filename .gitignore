@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.*
+!.env.example
+state/
+results/
+.venv/
+node_modules/
+secrets/
+.meyo/
+.legion/
+.codex/auth.json
+.external_agents.lock

@@ -1,0 +1,96 @@
+{
+  "key": "ohmygame",
+  "name": "OhMyGame · 游戏协作工作室",
+  "kind": "agent-platform",
+  "execution_role": "ui-platform",
+  "url": "https://github.com/WhiteTowerAI/ohmygame",
+  "version": "0.0.0-beta.4.7",
+  "revision": "29bd5d4747064cf30432c09d64510e00629bced5",
+  "platform_target": "macos-native",
+  "description": "用户指定的游戏协作伙伴。原生 Pi Agent 与设计画布、美术资产、2D/3D 工程、可视化试玩和迭代共用同一工作室。游戏需求可优先评估与它协作：保留原需求和已有工程，通过 delegate/continue 交给它，再用 result 读取真实进展与成果。它是可信本机桌面工作室，不伪装成普通 CLI 答题成员；受理不是完成，制作需要其原生语言模型连接，图像/视频/3D另需对应连接。",
+  "capabilities": [
+    "游戏设计与可交互体验",
+    "原生 Pi Agent 游戏协作",
+    "已有游戏工程接手与持续返工",
+    "2D/3D 美术、画布和资产管理",
+    "原生 game_use 可视化试玩",
+    "会话、工程与成果持久恢复"
+  ],
+  "runtime": {"python": ">=3.12", "node": ">=22.19.0", "architecture": "arm64"},
+  "credentials": {
+    "any_of": [],
+    "help": "安装、打开与读状态不需要模型密钥。制作任务只使用 OhMyGame 自己明确连接的模型；不会借用军团的公司凭据。请在 OhMyGame 原生 Settings → Providers & Models 中连接。"
+  },
+  "install": [
+    ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_install.py", "--runtime-dir", "{runtime_dir}"]
+  ],
+  "build_probe": {
+    "method": "command",
+    "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_install.py", "--runtime-dir", "{runtime_dir}", "--check"]
+  },
+  "probe": {
+    "method": "cli",
+    "target": "{runtime_dir}/app/OhMyGame.app/Contents/MacOS/OhMyGame",
+    "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "installed"]
+  },
+  "transports": [],
+  "adapter_capabilities": {"streaming": "native-async", "tools": true, "artifacts": true, "model": "native-configured"},
+  "capability_actions": {
+    "open": {
+      "description": "打开本实例专属的完整 OhMyGame 桌面工作室，保留原生试玩窗口。不会提交模型任务。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "open"],
+      "params": [], "timeout_s": 120
+    },
+    "status": {
+      "description": "只读本实例的桌面连接和模型就绪状态；不启动第二个工作室，不把已安装当作已能制作。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "status"],
+      "params": [], "timeout_s": 45
+    },
+    "delegate": {
+      "description": "把原始游戏需求和已有工程交给原生 Pi Agent。request_file 为本任务 JSON 文件，含 prompt、projectId 或 workspacePath，可指定 conversationId 继续。返回 native ID 与 accepted，不代表完成；用 result 跟进。无模型时不提交，不自动重试未知提交。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "delegate", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 90
+    },
+    "continue": {
+      "description": "沿原 OhMyGame projectId/conversationId 继续，原样传递真实反馈与返工要求；不另建会话、不更换模型。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "continue", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 90
+    },
+    "result": {
+      "description": "读取原生会话真实状态、失败与结果。JSON 含 projectId/conversationId；大结果提供 output_file（绝对的新文件路径），保存完整原生结果供验读。不得以工具调用成功代替作品验收。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "result", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 60
+    },
+    "projects": {
+      "description": "列出本工作室工程；JSON 可指定 output_file 保存完整清单。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "projects", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 60
+    },
+    "inspect": {
+      "description": "读取指定原生工程与会话目录。request_file 含 projectId，可指定 output_file；从返回的真实会话ID接续，不另猜或复制旧会话。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "inspect", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 60
+    },
+    "models": {
+      "description": "只读 OhMyGame 实际已连接且可见的模型，不读取模型密钥。request_file 可为 {}，大量模型可用 output_file 完整保存。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "models", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 60
+    },
+    "create": {
+      "description": "通过原生 API 建立工程，或用 workspacePath 接入已有工程。name/type 由当前需求决定，不限定技术栈；不提交模型任务。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "create", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 60
+    },
+    "cancel": {
+      "description": "只在明确需要取消所属任务时，按 projectId/conversationId/turnId 请求原生取消。不关闭工作室或其他任务。",
+      "command": ["{python}", "-I", "-S", "{adapter_dir}/ohmygame_native.py", "--runtime-dir", "{runtime_dir}", "--node", "{node}", "cancel", "--request-file", "{request_file}"],
+      "params": ["request_file"], "timeout_s": 60
+    }
+  },
+  "onboard_checks": [
+    {"action": "open", "stdout_contains": "desktop_connected"},
+    {"action": "status", "stdout_contains": "needs_model_setup"}
+  ],
+  "provenance": {"official": true, "description": "官方 Apache-2.0 源码与同提交 Mac arm64 发布包。包不改签名、插件或原生 game_use；名称和标识按原项目保留。"},
+  "update": {"strategy": "github_commit", "branch": "main", "current_ref": "v0.0.0-beta.4.7"}
+}

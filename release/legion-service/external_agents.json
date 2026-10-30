@@ -1,0 +1,3256 @@
+{
+  "schema_version": 2,
+  "locked_at": "2026-08-28",
+  "agents": [
+    {
+      "key": "cowagent",
+      "name": "CowAgent",
+      "kind": "agent-platform",
+      "url": "https://github.com/zhayujie/CowAgent",
+      "version": "2.1.7",
+      "revision": "bdbae391b2ad05e90de8df92ab0c9d947a30ba4e",
+      "runtime": {
+        "python": ">=3.7"
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "-r",
+          "{source}/requirements.txt"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://docs.cowagent.ai/guide/quick-start",
+        "help": "配置任一兼容模型凭证；觅游网关用户可直接使用 MEYO_UNIFIED_APPID。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_python}",
+            "{adapter_dir}/cowagent_run_worker.py"
+          ],
+          "native_resume": true
+        }
+      ],
+      "probe": {
+        "method": "path",
+        "target": "{runtime_dir}/venv/bin/python"
+      },
+      "capabilities": [
+        "assistant",
+        "wechat",
+        "feishu",
+        "web",
+        "mcp"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "2.1.7"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      },
+      "env": {
+        "CW_SOURCE": "{source}",
+        "CW_TASK": "{task}",
+        "CW_MODEL": "{model}",
+        "CW_APPID": "{appid}",
+        "CW_GATEWAY": "{gateway}",
+        "CW_DATA_DIR": "{session_dir}/cow-data",
+        "CW_SESSION_ID": "{session_id}"
+      }
+    },
+    {
+      "key": "paperclip",
+      "name": "Paperclip",
+      "kind": "orchestrator",
+      "url": "https://github.com/paperclipai/paperclip",
+      "version": "v2026.831.1",
+      "revision": "65ec059bde30d98c92165b24a30a540800dd1f6f",
+      "runtime": {
+        "node": ">=20",
+        "pnpm": "9.15.4",
+        "docker": true
+      },
+      "install": [
+        [
+          "corepack",
+          "prepare",
+          "pnpm@9.15.4",
+          "--activate"
+        ],
+        [
+          "corepack",
+          "pnpm@9.15.4",
+          "install",
+          "--frozen-lockfile"
+        ],
+        [
+          "{python}",
+          "{adapter_dir}/pnpm_build.py",
+          "{runtime_dir}",
+          "9.15.4",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "ANTHROPIC_API_KEY",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://docs.paperclip.ing",
+        "help": "先创建 Paperclip 公司，再配置至少一个 Agent provider；支持 Anthropic、OpenAI 等。"
+      },
+      "services": [
+        {
+          "command": [
+            "docker",
+            "compose",
+            "-f",
+            "docker/docker-compose.quickstart.yml",
+            "up",
+            "-d",
+            "--build"
+          ],
+          "url": "http://127.0.0.1:3100"
+        }
+      ],
+      "transports": [
+        {
+          "type": "http",
+          "url": "http://127.0.0.1:3100/api/health",
+          "role": "control-plane"
+        }
+      ],
+      "probe": {
+        "method": "http",
+        "target": "http://127.0.0.1:3100"
+      },
+      "execution_role": "control-plane",
+      "capabilities": [
+        "agent company",
+        "team management",
+        "orchestration",
+        "http"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v2026.831.1"
+      },
+      "build_probe": {
+        "method": "command",
+        "command": [
+          "{node}",
+          "--input-type=module",
+          "-e",
+          "import fs from 'node:fs'; import cp from 'node:child_process'; const files=['server/dist/index.js','ui/dist/index.html','server/node_modules/tsx/dist/loader.mjs','packages/paperclip-runner/dist/bin/paperclip-runnerd','server/dist/vendor/paperclip-runner/bin/paperclip-runnerd']; for (const f of files) if(!fs.statSync(f).isFile()) throw Error(f); if(!fs.readFileSync('packages/paperclip-runner/dist/bin/paperclip-runnerd').equals(fs.readFileSync('server/dist/vendor/paperclip-runner/bin/paperclip-runnerd'))) throw Error('stale server runner copy'); cp.execFileSync(process.execPath,['--check','server/dist/index.js']); console.log('Paperclip build outputs verified; service acceptance not run');"
+        ]
+      }
+    },
+    {
+      "key": "deer-flow",
+      "name": "DeerFlow",
+      "kind": "orchestrator",
+      "url": "https://github.com/bytedance/deer-flow",
+      "version": "v2.0.0",
+      "revision": "7e7f0410797693cf882594555ba414e0361d4c6f",
+      "runtime": {
+        "python": ">=3.12",
+        "docker": true,
+        "compose": ">=2.24"
+      },
+      "install": [
+        [
+          "{python}",
+          "{adapter_dir}/deerflow_install.py",
+          "{runtime_dir}",
+          "{source}",
+          "{repo_root}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY"
+        ],
+        "signup_url": "https://github.com/bytedance/deer-flow/blob/main/Install.md",
+        "help": "在 config.yaml/.env 配置至少一个模型；也可复用 Codex 或 Claude Code 登录态。"
+      },
+      "services": [
+        {
+          "command": [
+            "make",
+            "docker-start"
+          ]
+        }
+      ],
+      "transports": [
+        {
+          "type": "sdk",
+          "worker": [
+            "{runtime_python}",
+            "{adapter_dir}/deerflow_sdk_worker.py"
+          ],
+          "native_resume": true
+        }
+      ],
+      "probe": {
+        "method": "command",
+        "command": [
+          "{runtime_python}",
+          "-c",
+          "from deerflow.client import DeerFlowClient; print(\"deerflow SDK ready\")"
+        ]
+      },
+      "capabilities": [
+        "research",
+        "coding",
+        "creation",
+        "sandbox",
+        "subagent",
+        "sdk",
+        "mcp",
+        "acp"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v2.0.0"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      }
+    },
+    {
+      "key": "cline",
+      "name": "Cline",
+      "kind": "agent",
+      "url": "https://github.com/cline/cline",
+      "version": "2.5.0",
+      "revision": "452733c3fddb6fffa9b06fbd4c96a0f5e88400d8",
+      "runtime": {
+        "node": true,
+        "npm": true
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "cline@2.5.0"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "AIGC_APPID"
+        ],
+        "help": "模型授权由当前请求的appid/gateway传入私有配置；不共用运行目录auth。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{python}",
+            "{adapter_dir}/cline_cli.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--source",
+            "{source}",
+            "--model",
+            "{model}",
+            "--gateway",
+            "{gateway}",
+            "--runtime-context",
+            "{runtime_context_json}",
+            "--",
+            "{task}"
+          ],
+          "snapshot_terminal": true,
+          "output_contract": {
+            "type": "json",
+            "record_match": {
+              "type": "cline_native_result"
+            },
+            "text_field": "final",
+            "status_field": "status",
+            "completed_statuses": [
+              "ok"
+            ],
+            "session_id_field": "session_id",
+            "error_message_field": "error"
+          },
+          "resume_command": [
+            "{python}",
+            "{adapter_dir}/cline_cli.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--source",
+            "{source}",
+            "--model",
+            "{model}",
+            "--gateway",
+            "{gateway}",
+            "--runtime-context",
+            "{runtime_context_json}",
+            "--",
+            "{task}"
+          ],
+          "native_checkpoint_event_type": "cline_native_checkpoint"
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/node_modules/.bin/cline",
+        "command": [
+          "{runtime_dir}/node_modules/.bin/cline",
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding agent",
+        "mcp",
+        "sdk",
+        "cli",
+        "headless"
+      ],
+      "update": {
+        "strategy": "github_commit",
+        "branch": "v2.5.0-cli",
+        "channel": "stable",
+        "current_ref": "v2.5.0-cli"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      },
+      "model_compat": {
+        "gpt-5.6-sol": "deepseek-v4-pro"
+      },
+      "env": {
+        "MEYO_CLINE_API_KEY": "{appid}",
+        "CLINE_NO_AUTO_UPDATE": "1"
+      },
+      "session_env": [
+        "MEYO_CLINE_API_KEY",
+        "CLINE_NO_AUTO_UPDATE"
+      ]
+    },
+    {
+      "key": "goose",
+      "name": "Goose",
+      "kind": "agent",
+      "url": "https://github.com/aaif-goose/goose",
+      "version": "v1.49.0",
+      "revision": "71fc4be1ed729e26b1dc0a4466abdd03be548a53",
+      "runtime": {
+        "binary": true
+      },
+      "install": [
+        [
+          "{python}",
+          "{adapter_dir}/goose_install.py",
+          "{runtime_dir}",
+          "{source}",
+          "{repo_root}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY"
+        ],
+        "signup_url": "https://goose-docs.ai/docs/getting-started/providers",
+        "help": "运行 goose configure 选择 provider，或配置所选 provider 的 API key。"
+      },
+      "env": {
+        "GOOSE_PROVIDER": "openai",
+        "GOOSE_MODEL": "{model}",
+        "GOOSE_PATH_ROOT": "{session_dir}/goose/{session_id}"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/bin/goose",
+            "run",
+            "--with-builtin",
+            "developer",
+            "--output-format",
+            "stream-json",
+            "--provider",
+            "openai",
+            "--model",
+            "{model}",
+            "--name",
+            "{session_id}",
+            "-t",
+            "{task}"
+          ],
+          "first_command": [
+            "{runtime_dir}/bin/goose",
+            "run",
+            "--with-builtin",
+            "developer",
+            "--output-format",
+            "stream-json",
+            "--provider",
+            "openai",
+            "--model",
+            "{model}",
+            "--name",
+            "{session_id}",
+            "-t",
+            "{task}"
+          ],
+          "resume_command": [
+            "{runtime_dir}/bin/goose",
+            "run",
+            "--with-builtin",
+            "developer",
+            "--output-format",
+            "stream-json",
+            "--provider",
+            "openai",
+            "--model",
+            "{model}",
+            "--resume",
+            "--name",
+            "{session_id}",
+            "-t",
+            "{task}"
+          ],
+          "native_resume": true
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/bin/goose",
+        "command": [
+          "{runtime_dir}/bin/goose",
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding agent",
+        "extensions",
+        "cli",
+        "api",
+        "acp",
+        "mcp"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v1.49.0"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      }
+    },
+    {
+      "key": "openclaw",
+      "name": "OpenClaw",
+      "kind": "agent-platform",
+      "url": "https://github.com/openclaw/openclaw",
+      "version": "v2026.9.2",
+      "revision": "3928bad9badfcb6c7d140530435e806fb8092190",
+      "runtime": {
+        "node": ">=22.22.3",
+        "npm": ">=11.16",
+        "npm_cli": "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js"
+      },
+      "install": [
+        [
+          "{node}",
+          "{npm_cli}",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "openclaw@2026.9.2"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY"
+        ],
+        "signup_url": "https://docs.openclaw.ai/install",
+        "help": "运行 openclaw onboard --install-daemon，并在模型认证页登录或粘贴 API key。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/node_modules/.bin/openclaw",
+            "--profile",
+            "meyo-legion",
+            "agent",
+            "--local",
+            "--json",
+            "--session-id",
+            "{session_id}",
+            "--model",
+            "meyo/{model}",
+            "--message",
+            "{task}"
+          ],
+          "native_resume": true
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/node_modules/.bin/openclaw",
+        "command": [
+          "{runtime_dir}/node_modules/.bin/openclaw",
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "assistant",
+        "skills",
+        "memory",
+        "im",
+        "automation",
+        "gateway"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v2026.9.2",
+        "npm_package": "openclaw"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      },
+      "config_template": {
+        "path": "{session_dir}/openclaw/{session_id}/openclaw.json",
+        "content": {
+          "agents": {
+            "defaults": {
+              "workspace": "{workdir}"
+            }
+          },
+          "models": {
+            "providers": {
+              "meyo": {
+                "baseUrl": "{gateway}",
+                "apiKey": "{appid}",
+                "api": "openai-completions",
+                "models": [
+                  {
+                    "id": "{model}",
+                    "name": "{model}",
+                    "contextWindow": 128000,
+                    "maxTokens": 8192
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "env": {
+        "OPENCLAW_STATE_DIR": "{session_dir}/openclaw/{session_id}",
+        "OPENCLAW_CONFIG_PATH": "{session_dir}/openclaw/{session_id}/openclaw.json"
+      }
+    },
+    {
+      "key": "pi",
+      "name": "pi Coding Agent",
+      "kind": "agent",
+      "url": "https://github.com/earendil-works/pi",
+      "version": "v0.85.1",
+      "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+      "source_override": "/Users/xuan/.meyo/legion/repos/candidate-agents/pi",
+      "runtime": {
+        "node": ">=22.19.0"
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{source}",
+          "--ignore-scripts"
+        ],
+        [
+          "npm",
+          "run",
+          "build:offline",
+          "--prefix",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY"
+        ],
+        "signup_url": "https://github.com/earendil-works/pi#readme",
+        "help": "默认复用觅游统一网关；也支持 OpenAI/Anthropic provider 凭证。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{source}/packages/coding-agent/dist/bundle/cli.js",
+            "-p",
+            "--mode",
+            "json",
+            "--session-id",
+            "{session_id}",
+            "--session-dir",
+            "{session_dir}",
+            "--model",
+            "meyo/{model}",
+            "{task}"
+          ],
+          "native_resume": true
+        }
+      ],
+      "probe": {
+        "method": "path",
+        "target": "{source}/packages/coding-agent/dist/bundle/cli.js"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "extensions",
+        "session"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v0.85.1"
+      },
+      "capabilities": [
+        "coding agent",
+        "cli",
+        "tui",
+        "agent loop",
+        "sessions",
+        "tools",
+        "extensions"
+      ],
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/pi",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{session_dir}/pi-agent",
+        "PI_SKIP_VERSION_CHECK": "1"
+      },
+      "config_template": [
+        {
+          "path": "{session_dir}/pi-agent/models.json",
+          "content": {
+            "providers": {
+              "meyo": {
+                "name": "Meyo Gateway",
+                "baseUrl": "{gateway}",
+                "apiKey": "{appid}",
+                "api": "openai-completions",
+                "models": [
+                  {
+                    "id": "{model}",
+                    "name": "{model}",
+                    "api": "openai-completions",
+                    "reasoning": false,
+                    "contextWindow": 128000,
+                    "maxTokens": 8192
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "path": "{session_dir}/pi-agent/auth.json",
+          "content": {
+            "meyo": {
+              "type": "api_key",
+              "key": "{appid}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "nanobot",
+      "name": "nanobot",
+      "kind": "agent",
+      "url": "https://github.com/HKUDS/nanobot",
+      "version": "main",
+      "revision": "c4a25c9a0977f5729ffabde0b10f641dae08774d",
+      "source_override": "/Users/xuan/.meyo/legion/repos/candidate-agents/nanobot",
+      "runtime": {
+        "python": true
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/HKUDS/nanobot#readme",
+        "help": "默认复用觅游统一模型网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_python}",
+            "{adapter_dir}/nanobot_wrapper.py"
+          ],
+          "output_ignore_patterns": [
+            "nanobot_config\\.json$",
+            "^🐈",
+            "^Using config:",
+            "^=="
+          ],
+          "final_nonempty_line": true
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_bin}/nanobot",
+        "command": [
+          "{runtime_bin}/nanobot",
+          "--help"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "cold_replay",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "mcp"
+      ],
+      "capabilities": [
+        "assistant",
+        "cli",
+        "mcp",
+        "channels"
+      ],
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/nanobot",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "config_template": {
+        "path": "{session_dir}/nanobot_config.json",
+        "content": {
+          "agents": {
+            "defaults": {
+              "model": "{model}",
+              "provider": "custom",
+              "workspace": "{workdir}"
+            }
+          },
+          "providers": {
+            "custom": {
+              "displayName": "MeyoGateway",
+              "apiKey": "{appid}",
+              "apiBase": "{gateway}"
+            }
+          }
+        }
+      },
+      "env": {
+        "NANOBOT_HOME": "{runtime_dir}/home",
+        "NANOBOT_TASK": "{task}",
+        "NANOBOT_CONFIG": "{session_dir}/nanobot_config.json",
+        "NANOBOT_ADAPTER_DIR": "{adapter_dir}"
+      },
+      "install_env": {
+        "npm_config_package_lock": "false"
+      }
+    },
+    {
+      "key": "genericagent",
+      "name": "GenericAgent",
+      "kind": "agent",
+      "url": "https://github.com/lsdefine/GenericAgent",
+      "version": "main",
+      "revision": "f6e5657fbe9c4fc57fae65dcf3789f71937dc97e",
+      "source_override": "/Users/xuan/.meyo/legion/repos/candidate-agents/genericagent",
+      "runtime": {
+        "python": true
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/lsdefine/GenericAgent#readme",
+        "help": "默认复用觅游统一模型网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_python}",
+            "{adapter_dir}/genericagent_func_worker.py"
+          ]
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_bin}/ga",
+        "command": [
+          "{runtime_bin}/ga",
+          "--help"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "cold_replay",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "mcp"
+      ],
+      "capabilities": [
+        "assistant",
+        "cli",
+        "mcp"
+      ],
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/genericagent",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "env": {
+        "GA_SOURCE": "{source}",
+        "GA_TASK": "{task}",
+        "GA_MODEL": "{model}",
+        "GA_APPID": "{appid}",
+        "GA_GATEWAY": "{gateway}",
+        "GA_WORKDIR": "{workdir}",
+        "GA_TIMEOUT": "600"
+      }
+    },
+    {
+      "key": "omniagent",
+      "name": "OmniAgent",
+      "kind": "agent",
+      "url": "https://github.com/YeQing17-2026/OmniAgent",
+      "version": "locked-main",
+      "revision": "12b98c520959eff88a6cfa3dd233497084360ab0",
+      "source_override": "/Users/xuan/.meyo/legion/repos/candidate-agents/omniagent",
+      "runtime": {
+        "python": true
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/YeQing17-2026/OmniAgent#readme",
+        "help": "默认复用觅游统一模型网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_python}",
+            "{adapter_dir}/omniagent_run_worker.py"
+          ]
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_bin}/omniagent",
+        "command": [
+          "{runtime_bin}/omniagent",
+          "--help"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "cold_replay",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "mcp"
+      ],
+      "capabilities": [
+        "assistant",
+        "cli",
+        "orchestration"
+      ],
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/omniagent",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "12b98c520959eff88a6cfa3dd233497084360ab0"
+      },
+      "env": {
+        "OA_SOURCE": "{source}",
+        "OA_TASK": "{task}",
+        "OA_MODEL": "{model}",
+        "OA_APPID": "{appid}",
+        "OA_GATEWAY": "{gateway}",
+        "OA_WORKDIR": "{workdir}"
+      }
+    },
+    {
+      "key": "kimi-code",
+      "name": "Kimi Code CLI",
+      "kind": "agent",
+      "url": "https://github.com/MoonshotAI/kimi-code",
+      "version": "main",
+      "revision": "f12d59e089e2531a33fbca30b26ffeabd5862b45",
+      "source_override": "/Users/xuan/.meyo/legion/repos/candidate-agents/kimi-code",
+      "runtime": {
+        "node": ">=24.15.0",
+        "pnpm": "10.33.0",
+        "node_binary": "{repo_root}/node_modules/node/bin/node",
+        "npm_cli": "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js"
+      },
+      "install": [
+        [
+          "corepack",
+          "pnpm@10.33.0",
+          "install",
+          "--frozen-lockfile"
+        ],
+        [
+          "{python}",
+          "{adapter_dir}/pnpm_build.py",
+          "{runtime_dir}",
+          "10.33.0",
+          "{source}",
+          "--filter",
+          "@moonshot-ai/kimi-code",
+          "build"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "MOONSHOT_API_KEY",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/MoonshotAI/kimi-code#readme",
+        "help": "默认复用觅游统一网关，亦支持 Moonshot 凭证。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{node}",
+            "{source}/apps/kimi-code/dist/main.mjs",
+            "--prompt",
+            "{task}",
+            "--output-format",
+            "stream-json",
+            "--skills-dir",
+            "{memory_dir}/../skills/active"
+          ]
+        }
+      ],
+      "probe": {
+        "method": "path",
+        "target": "{source}/apps/kimi-code/dist/main.mjs"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "cold_replay",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "mcp",
+        "acp",
+        "session"
+      ],
+      "capabilities": [
+        "coding agent",
+        "cli",
+        "acp",
+        "mcp",
+        "web"
+      ],
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/kimi-code",
+      "env": {
+        "KIMI_CODE_HOME": "{session_dir}/kimi-code/{session_id}",
+        "KIMI_MODEL_NAME": "{model}",
+        "KIMI_MODEL_API_KEY": "{appid}",
+        "KIMI_MODEL_BASE_URL": "{gateway}",
+        "KIMI_MODEL_PROVIDER_TYPE": "openai",
+        "KIMI_MODEL_MAX_OUTPUT_SIZE": "8192",
+        "KIMI_MODEL_MAX_CONTEXT_SIZE": "128000"
+      },
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "config_template": {
+        "path": "{session_dir}/kimi-code/{session_id}/config.toml",
+        "content": "",
+        "content_by_model": {
+          "GLM-5.3": "[thinking]\nenabled = true\neffort = \"high\"\n"
+        }
+      },
+      "session_env": [
+        "KIMI_CODE_HOME"
+      ]
+    },
+    {
+      "key": "ironclaw",
+      "name": "IronClaw",
+      "kind": "agent-platform",
+      "url": "https://github.com/nearai/ironclaw",
+      "version": "ironclaw-v1.4.0",
+      "revision": "4cb47cfaf3fbacd3a2f575a8da654a6542d5fdfe",
+      "source_override": "/Users/xuan/.meyo/legion/repos/candidate-agents/ironclaw",
+      "runtime": {
+        "cargo": true
+      },
+      "install": [
+        [
+          "cargo",
+          "install",
+          "--locked",
+          "--root",
+          "{runtime_dir}",
+          "--path",
+          "{source}/crates/app/ironclaw_cli"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/nearai/ironclaw#readme",
+        "help": "默认复用觅游统一网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{python}",
+            "{adapter_dir}/ironclaw_run_worker.py"
+          ],
+          "native_resume": true
+        }
+      ],
+      "probe": {
+        "method": "path",
+        "target": "{runtime_dir}/bin/ironclaw"
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "cold_replay",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "mcp",
+        "memory",
+        "sandbox",
+        "approvals"
+      ],
+      "capabilities": [
+        "assistant",
+        "cli",
+        "mcp",
+        "memory",
+        "sandbox",
+        "approvals"
+      ],
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/ironclaw",
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "ironclaw-v1.4.0"
+      },
+      "env": {
+        "IC_BIN": "{runtime_dir}/bin/ironclaw",
+        "IC_TASK": "{task}",
+        "IC_MODEL": "{model}",
+        "IC_APPID": "{appid}",
+        "IC_GATEWAY": "{gateway}",
+        "IC_TIMEOUT": "600",
+        "IC_WORKDIR": "{workdir}"
+      }
+    },
+    {
+      "key": "aeon",
+      "name": "Aeon",
+      "kind": "agent-platform",
+      "url": "https://github.com/aeonfun/aeon",
+      "version": "v0.1.0+meyo.directory-fix",
+      "revision": "147502a2f50a60f07f269f36549f260b4be4b805",
+      "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/aeon",
+      "runtime": {
+        "node": ">=22"
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{source}/apps/cli"
+        ],
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{source}/apps/dashboard"
+        ],
+        [
+          "npm",
+          "run",
+          "build",
+          "--prefix",
+          "{source}/apps/dashboard",
+          "--",
+          "--webpack"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/aeonfun/aeon#readme",
+        "help": "默认复用觅游统一网关。"
+      },
+      "transports": [],
+      "probe": {
+        "method": "cli",
+        "target": "{source}/apps/cli/aeon",
+        "command": [
+          "{source}/apps/cli/aeon",
+          "--help"
+        ]
+      },
+      "execution_role": "control-plane",
+      "services": [
+        {
+          "name": "dashboard",
+          "command": [
+            "npm",
+            "run",
+            "start",
+            "--prefix",
+            "{source}/apps/dashboard"
+          ],
+          "url": "http://127.0.0.1:3000"
+        }
+      ],
+      "provided_tools": [
+        "skills",
+        "runs",
+        "logs",
+        "secrets",
+        "config",
+        "memory",
+        "packs",
+        "mcp",
+        "strategy",
+        "schedule"
+      ],
+      "capabilities": [
+        "skill factory",
+        "mcp",
+        "memory",
+        "workflow runs",
+        "dashboard",
+        "control plane"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v0.1.0"
+      },
+      "upstream_revision": "2083bc7af60aa8fd301cc2e7afba7e63ba5d109e",
+      "backport_from": "dfc5ecb6cf57cfc8cf711c69db49f3865f52b0ee"
+    },
+    {
+      "key": "qwen-code",
+      "name": "Qwen Code CLI",
+      "kind": "agent",
+      "url": "https://github.com/QwenLM/qwen-code",
+      "version": "v0.23.0",
+      "runtime": {
+        "node": ">=20"
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "@qwen-code/qwen-code@0.22.3",
+          "--no-fund",
+          "--no-audit"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/QwenLM/qwen-code#readme",
+        "help": "默认复用觅游统一网关(OPENAI兼容)。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/node_modules/.bin/qwen",
+            "-p",
+            "{task}",
+            "-o",
+            "stream-json",
+            "-y"
+          ],
+          "streaming_protocol": "stream-json"
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/node_modules/.bin/qwen",
+        "command": [
+          "{runtime_dir}/node_modules/.bin/qwen",
+          "--version"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "cold_replay",
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "web_fetch",
+        "subagent"
+      ],
+      "capabilities": [
+        "coding agent",
+        "cli",
+        "mcp",
+        "computer-use",
+        "subagents"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v0.23.0"
+      },
+      "env": {
+        "OPENAI_BASE_URL": "{gateway}",
+        "OPENAI_API_KEY": "{appid}",
+        "OPENAI_MODEL": "{model}",
+        "QWEN_CODE_SUPPRESS_YOLO_WARNING": "1"
+      },
+      "revision": "98a9c964158697dd5631d15a62174684ff7bbb53"
+    },
+    {
+      "key": "aider",
+      "name": "Aider",
+      "kind": "agent",
+      "url": "https://github.com/paul-gauthier/aider",
+      "version": "main",
+      "revision": "5dc9490bb35f9729ef2c95d00a19ccd30c26339c",
+      "runtime": {
+        "python": true
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "aider-chat"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/paul-gauthier/aider#readme",
+        "help": "默认复用觅游统一网关(OpenAI兼容)。"
+      },
+      "transports": [
+        {
+          "type": "sdk",
+          "worker": [
+            "{runtime_python}",
+            "{adapter_dir}/aider_sdk_worker.py"
+          ],
+          "request": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "run",
+            "params": {
+              "task": "{task}",
+              "model": "{model}",
+              "gateway": "{gateway}",
+              "appid": "{appid}",
+              "session_dir": "{session_dir}",
+              "model_settings_file": "{session_dir}/aider-model-settings.yml"
+            }
+          }
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/venv/bin/aider",
+        "command": [
+          "{runtime_dir}/venv/bin/aider",
+          "--version"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "text",
+        "tools": true,
+        "artifacts": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search"
+      ],
+      "capabilities": [
+        "coding agent",
+        "cli",
+        "git",
+        "pair programming"
+      ],
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "env": {
+        "AIDER_DARK_MODE": "true"
+      },
+      "config_template": {
+        "path": "{session_dir}/aider-model-settings.yml",
+        "content": "[]\n",
+        "content_by_model": {
+          "deepseek-v4-pro": "- name: aider/extra_params\n  extra_params:\n    max_tokens: 32768\n"
+        }
+      }
+    },
+    {
+      "key": "opencode",
+      "name": "OpenCode",
+      "kind": "agent",
+      "url": "https://github.com/sst/opencode",
+      "version": "v1.18.29",
+      "revision": "16747470f976aca3d362ad730bcd3fe82ecc2c9a",
+      "runtime": {
+        "node": ">=20"
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "opencode-ai@1.18.26",
+          "@ai-sdk/openai-compatible",
+          "--no-fund",
+          "--no-audit"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/sst/opencode#readme",
+        "help": "默认复用觅游统一网关(OpenAI兼容)。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/node_modules/.bin/opencode",
+            "run",
+            "--model",
+            "meyo/{model}",
+            "--format",
+            "json",
+            "{task}"
+          ],
+          "streaming_protocol": "json-events"
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/node_modules/.bin/opencode",
+        "command": [
+          "{runtime_dir}/node_modules/.bin/opencode",
+          "--version"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "events",
+        "tools": true,
+        "artifacts": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "search",
+        "lsp"
+      ],
+      "capabilities": [
+        "coding agent",
+        "cli",
+        "lsp",
+        "mcp",
+        "tui"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v1.18.29"
+      },
+      "env": {
+        "OPENCODE_CONFIG": "{session_dir}/opencode.json",
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
+        "OPENAI_API_KEY": "{appid}",
+        "OPENAI_BASE_URL": "{gateway}"
+      },
+      "config_template": {
+        "path": "{session_dir}/opencode.json",
+        "content": {
+          "$schema": "https://opencode.ai/config.json",
+          "provider": {
+            "meyo": {
+              "npm": "@ai-sdk/openai-compatible",
+              "name": "Meyo AIGC Gateway",
+              "options": {
+                "baseURL": "{gateway}",
+                "apiKey": "{appid}"
+              },
+              "models": {
+                "{model}": {
+                  "name": "{model}"
+                }
+              }
+            }
+          },
+          "share": "disabled",
+          "autoupdate": false
+        }
+      }
+    },
+    {
+      "key": "browser-use",
+      "name": "Browser Use",
+      "kind": "agent",
+      "url": "https://github.com/browser-use/browser-use",
+      "version": "0.13.10",
+      "revision": "5c892e013a73e6622e6f50336e1eb0aa2c4405f2",
+      "runtime": {
+        "python": true
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "browser-use==0.13.10"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/browser-use/browser-use#readme",
+        "help": "默认复用觅游统一网关(OpenAI兼容)。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/venv/bin/browser-use",
+            "doctor"
+          ],
+          "streaming_protocol": "text"
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/venv/bin/browser-use",
+        "command": [
+          "{runtime_dir}/venv/bin/browser-use",
+          "--version"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "text",
+        "tools": true,
+        "artifacts": true
+      },
+      "provided_tools": [
+        "browser",
+        "shell",
+        "read",
+        "write"
+      ],
+      "capabilities": [
+        "browser automation agent",
+        "cli",
+        "web tasks"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "0.13.10"
+      },
+      "execution_role": "capability",
+      "description": "能力后端:浏览器自动化原语(112k星)·daemon连接真实浏览器·军团各家借它做网页任务"
+    },
+    {
+      "key": "gnhf",
+      "name": "GNHF Good Night Have Fun",
+      "kind": "agent",
+      "url": "https://github.com/kunchenguid/gnhf",
+      "version": "gnhf-v0.1.49",
+      "revision": "0227fe415d38e6df0fad4828c7999ba2a3b065de",
+      "runtime": {
+        "node": ">=20"
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "gnhf@0.1.47",
+          "--no-fund",
+          "--no-audit"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/kunchenguid/gnhf#readme",
+        "help": "默认复用觅游统一网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{python}",
+            "{adapter_dir}/gnhf_run_worker.py",
+            "{runtime_dir}/node_modules/.bin/gnhf",
+            "{task}",
+            "{model}"
+          ],
+          "streaming_protocol": "text",
+          "output_contract": {
+            "type": "json",
+            "source_glob": ".gnhf/runs/*/iteration-*.jsonl",
+            "record_match": {
+              "type": "result"
+            },
+            "text_field": "structured_output.summary",
+            "status_field": "subtype",
+            "session_id_field": "session_id",
+            "completed_statuses": [
+              "success"
+            ],
+            "success_field": "structured_output.success",
+            "error_field": "is_error"
+          },
+          "snapshot_terminal": true
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/node_modules/.bin/gnhf",
+        "command": [
+          "{runtime_dir}/node_modules/.bin/gnhf",
+          "--version"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "text",
+        "tools": true,
+        "artifacts": true
+      },
+      "provided_tools": [
+        "shell",
+        "read",
+        "write",
+        "agent-orchestration"
+      ],
+      "capabilities": [
+        "agent control hub",
+        "cli",
+        "orchestration",
+        "prevent sleep"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "gnhf-v0.1.49"
+      },
+      "description": "meta-runner:把任务派给本机 coding agent(claude/codex...)并看护(防失控/预算控制)",
+      "requires_git": true
+    },
+    {
+      "key": "macos-harness",
+      "name": "macOS Harness (browser-use)",
+      "kind": "agent",
+      "url": "https://github.com/browser-use/macos-harness",
+      "version": "v0.1.2",
+      "revision": "b88e4d77403bbcac35752eef4f4dd72db3663fd6",
+      "runtime": {
+        "python": "3.12"
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "-i",
+          "https://mirrors.aliyun.com/pypi/simple/",
+          "macos-harness==0.1.2"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/browser-use/macos-harness#readme",
+        "help": "默认复用觅游统一网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/venv/bin/macos-harness",
+            "apps"
+          ],
+          "streaming_protocol": "text"
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/venv/bin/macos-harness",
+        "command": [
+          "{runtime_dir}/venv/bin/macos-harness",
+          "--help"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "text",
+        "tools": true,
+        "artifacts": true
+      },
+      "provided_tools": [
+        "desktop",
+        "screenshot",
+        "click",
+        "type",
+        "key",
+        "ax",
+        "script"
+      ],
+      "capabilities": [
+        "macos desktop automation",
+        "cli",
+        "computer use"
+      ],
+      "update": {
+        "strategy": "github_release",
+        "channel": "stable",
+        "current_ref": "v0.1.2"
+      },
+      "execution_role": "capability",
+      "description": "能力后端:macOS桌面控制原语(see/key/type/click/ax/script)·browser-use同团队·军团借它控真机",
+      "platform_target": "macos-native"
+    },
+    {
+      "key": "headlong",
+      "name": "Headlong llm",
+      "kind": "agent",
+      "url": "https://github.com/laude-institute/headlong",
+      "version": "main",
+      "revision": "5458fee8e722c9eb45a75739e9fa1f92419ebafc",
+      "runtime": {
+        "shell": true
+      },
+      "install": [],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "OPENAI_API_KEY"
+        ],
+        "signup_url": "https://github.com/laude-institute/headlong",
+        "help": "默认复用觅游统一网关。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{source}/bin/llm",
+            "--provider",
+            "openai-compatible",
+            "-m",
+            "{model}",
+            "--no-stream",
+            "{task}"
+          ],
+          "streaming_protocol": "text",
+          "output_ignore_patterns": [
+            "^llm: warning"
+          ]
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{source}/bin/llm",
+        "command": [
+          "{source}/bin/llm",
+          "--help"
+        ]
+      },
+      "adapter_capabilities": {
+        "streaming": "text",
+        "tools": false,
+        "artifacts": false
+      },
+      "provided_tools": [],
+      "capabilities": [
+        "llm proxy cli",
+        "zero-dependency shell",
+        "multi-provider"
+      ],
+      "description": "纯shell零依赖LLM直连CLI(curl+jq),军团轻量单发通道",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "env": {
+        "LLM_API_URL": "{gateway}/chat/completions",
+        "LLM_API_KEY": "{appid}"
+      }
+    },
+    {
+      "key": "harness-anything",
+      "name": "Harness Anything",
+      "kind": "capability",
+      "url": "https://github.com/yb2460/harness-anything",
+      "version": "main",
+      "revision": "dcb3e516dee1e7b4c83e1909a07062a0bb8dea0a",
+      "runtime": {
+        "python": true,
+        "platform": "windows"
+      },
+      "install": [],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID"
+        ],
+        "signup_url": "https://github.com/yb2460/harness-anything",
+        "help": "部署于云Windows真机。"
+      },
+      "transports": [],
+      "probe": {
+        "method": "path",
+        "target": "{source}"
+      },
+      "execution_role": "capability",
+      "platform_target": "cloud-windows-vm",
+      "provided_tools": [
+        "wps-office-com",
+        "word",
+        "excel",
+        "powerpoint",
+        "zotero",
+        "photoshop",
+        "illustrator"
+      ],
+      "capabilities": [
+        "office automation",
+        "com",
+        "wps",
+        "ms office",
+        "zotero",
+        "adobe"
+      ],
+      "description": "47个CLI命令COM操控WPS/MSOffice(Word/Excel/PPT)+Zotero学术+PS/AI·部署目标=云Windows真机供全员调用·macOS本机不可装(Win COM)",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "source_evidence": {
+        "method": "official remote HEAD verified and README read",
+        "previous_revision": "truncated hash padded with zeros",
+        "runtime_status": "Windows COM execution unverified"
+      }
+    },
+    {
+      "key": "hass-agent",
+      "name": "HASS.Agent",
+      "kind": "capability",
+      "url": "https://github.com/hass-agent/HASS.Agent",
+      "version": "main",
+      "revision": "bb97a9f365950c7dadd6fa4c4ebf1b61e8901667",
+      "runtime": {
+        "dotnet": true,
+        "platform": "windows"
+      },
+      "install": [],
+      "credentials": {
+        "any_of": [],
+        "signup_url": "https://github.com/hass-agent/HASS.Agent",
+        "help": "部署于云Windows真机。"
+      },
+      "transports": [],
+      "probe": {
+        "method": "path",
+        "target": "{source}"
+      },
+      "execution_role": "capability",
+      "platform_target": "cloud-windows-vm",
+      "provided_tools": [
+        "home-assistant",
+        "desktop-widgets",
+        "notifications",
+        "commands"
+      ],
+      "capabilities": [
+        "home assistant integration",
+        "windows desktop",
+        "iot"
+      ],
+      "description": "Windows桌面Home Assistant客户端(桌面小部件/通知/命令)·部署目标=云Windows真机供全员调用·macOS本机不可装(C#/.NET)",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "source_evidence": {
+        "method": "git HEAD and README from existing local official remote",
+        "runtime_status": "Windows companion; no executable transport verified on Linux",
+        "previous_revision": "all-zero placeholder, not a real Git commit"
+      }
+    },
+    {
+      "key": "loopx",
+      "name": "LoopX",
+      "kind": "capability",
+      "url": "https://github.com/huangruiteng/loopx",
+      "version": "1.0.2",
+      "revision": "a5374d5bd01b7fdd2a9614d99f8d4a847a792b81",
+      "runtime": {
+        "python": ">=3.11",
+        "node": ">=22.6"
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "--index-url",
+          "https://pypi.org/simple",
+          "{source}"
+        ]
+      ],
+      "credentials": {
+        "any_of": [],
+        "help": "本地持久状态工具无需模型凭证"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_dir}/venv/bin/loopx",
+            "status"
+          ],
+          "streaming_protocol": "text"
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/venv/bin/loopx",
+        "command": [
+          "{runtime_dir}/venv/bin/loopx",
+          "--help"
+        ]
+      },
+      "execution_role": "capability",
+      "provided_tools": [
+        "goals",
+        "todos",
+        "gates",
+        "quota",
+        "evidence",
+        "task-lease",
+        "ready-score"
+      ],
+      "capabilities": [
+        "long-horizon state kernel",
+        "durable goals",
+        "agent control plane"
+      ],
+      "description": "长任务状态内核(5.4k星):目标/待办/门禁/配额/证据在agent轮次间持久化·军团长任务成员借它跑durable工作(不自身答题·驱动宿主coding agent)",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "v1.0.2"
+      },
+      "capability_actions": {
+        "help": {
+          "command": [
+            "{runtime_python}",
+            "{runtime_dir}/venv/bin/loopx",
+            "--help"
+          ],
+          "timeout_s": 20
+        },
+        "status": {
+          "command": [
+            "{runtime_python}",
+            "{runtime_dir}/venv/bin/loopx",
+            "status"
+          ],
+          "timeout_s": 30
+        }
+      },
+      "onboard_checks": [
+        {
+          "action": "help",
+          "stdout_contains": "loopx",
+          "timeout_s": 20
+        }
+      ]
+    },
+    {
+      "key": "openhands",
+      "name": "OpenHands",
+      "kind": "agent",
+      "url": "https://github.com/All-Hands-AI/OpenHands",
+      "version": "main",
+      "revision": "f7fb0c4b21f5ed726edbba8a6309634ef434b004",
+      "runtime": {
+        "python": true
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "openhands-ai==1.11.0",
+          "openhands-agent-server==1.34.0",
+          "openhands-sdk==1.34.0",
+          "openhands-tools==1.34.0"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID"
+        ],
+        "signup_url": "https://github.com/All-Hands-AI/OpenHands",
+        "help": "pip 装 openhands-ai·agent-server 8787。"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{runtime_python}",
+            "{adapter_dir}/openhands_worker.py"
+          ],
+          "streaming_protocol": "text",
+          "output_ignore_patterns": [
+            "^\\\\{\\\\\"error"
+          ],
+          "final_nonempty_line": true
+        }
+      ],
+      "env": {
+        "OH_TASK": "{task}",
+        "OH_MODEL": "openai/{model}",
+        "OH_APPID": "{appid}",
+        "OH_RUNTIME_DIR": "{runtime_dir}",
+        "MEYO_WORKDIR": "{workdir}",
+        "OH_TIMEOUT": "600"
+      },
+      "model_compat": {
+        "gpt-5.6-sol": "deepseek-v4-pro",
+        "GLM-5.3": "deepseek-v4-pro"
+      },
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/venv/bin/agent-server",
+        "command": [
+          "{runtime_dir}/venv/bin/agent-server",
+          "--help"
+        ]
+      },
+      "execution_role": "agent",
+      "provided_tools": [
+        "bash",
+        "file_editor",
+        "browser",
+        "python_execute",
+        "task_tool"
+      ],
+      "capabilities": [
+        "coding agent",
+        "sandboxed execution",
+        "browser use",
+        "subagent delegation"
+      ],
+      "description": "OpenHands v1.16·agent-server(headless HTTP)·bash/编辑/浏览器/python执行/子agent委派·litellm 网关兼容(gpt-5*走Responses API会404·model_compat已换deepseek)",
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "source_evidence": {
+        "runtime_entry": "agent-server = openhands.agent_server.__main__:main",
+        "runtime_distribution": "openhands-agent-server==1.34.0",
+        "runtime_source": "https://github.com/OpenHands/software-agent-sdk",
+        "note": "existing monolith source retained; SDK source still must be bundled; installed local metadata inspected"
+      }
+    },
+    {
+      "key": "mobilerun",
+      "name": "mobilerun",
+      "kind": "capability",
+      "url": "https://github.com/droidrun/mobilerun",
+      "version": "main",
+      "revision": "afb9c2e2a8c156f331efa61623aebc088158de89",
+      "description": "A framework for controlling mobile devices through LLM agents",
+      "runtime": {
+        "python": ">=3.11,<3.14"
+      },
+      "install": [
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "."
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "adbutils"
+        ]
+      ],
+      "credentials": {
+        "any_of": [],
+        "signup_url": "https://github.com/droidrun/mobilerun",
+        "help": "低层设备动作无需模型凭证；自然语言 task 复用 MEYO_UNIFIED_APPID"
+      },
+      "transports": [],
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/venv/bin/mobilerun",
+        "command": [
+          "{runtime_dir}/venv/bin/mobilerun",
+          "--help"
+        ]
+      },
+      "execution_role": "capability",
+      "capabilities": [
+        "mobile device automation",
+        "android",
+        "ios",
+        "device control"
+      ],
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "main"
+      },
+      "adapter_capabilities": {
+        "streaming": "text",
+        "tools": true,
+        "artifacts": false,
+        "model": "runtime"
+      },
+      "provided_tools": [
+        "mobile_ui",
+        "screenshot",
+        "tap",
+        "swipe",
+        "type",
+        "macro_replay"
+      ],
+      "capability_actions": {
+        "devices": {
+          "description": "列出当前连接的移动设备",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "devices"
+          ],
+          "params": []
+        },
+        "doctor": {
+          "description": "诊断并修复设备、Portal、无障碍和截图链路",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "doctor"
+          ],
+          "params": [],
+          "timeout_s": 240
+        },
+        "screenshot": {
+          "description": "截取当前手机屏幕并返回 PNG 路径",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "screenshot"
+          ],
+          "params": [],
+          "output_type": "path"
+        },
+        "ui": {
+          "description": "读取当前手机无障碍 UI 树",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "ui"
+          ],
+          "params": []
+        },
+        "tap": {
+          "description": "点击手机屏幕坐标",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "tap",
+            "{x}",
+            "{y}"
+          ],
+          "params": [
+            "x",
+            "y"
+          ]
+        },
+        "swipe": {
+          "description": "在手机屏幕执行滑动",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "swipe",
+            "{x1}",
+            "{y1}",
+            "{x2}",
+            "{y2}"
+          ],
+          "params": [
+            "x1",
+            "y1",
+            "x2",
+            "y2"
+          ]
+        },
+        "press": {
+          "description": "发送 Android 系统按键",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "press",
+            "{key}"
+          ],
+          "params": [
+            "key"
+          ]
+        },
+        "type": {
+          "description": "向当前输入框输入文本",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "type",
+            "{text}"
+          ],
+          "params": [
+            "text"
+          ]
+        },
+        "start": {
+          "description": "按包名启动手机应用",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "device",
+            "start",
+            "{package}"
+          ],
+          "params": [
+            "package"
+          ]
+        },
+        "task": {
+          "description": "用移动 Agent 执行自然语言手机任务",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "run",
+            "{task}",
+            "--device",
+            "localhost:5555",
+            "--provider",
+            "OpenAI",
+            "--model",
+            "{model}",
+            "--api_base",
+            "{gateway}",
+            "--steps",
+            "15",
+            "--no-tracing",
+            "--no-stream"
+          ],
+          "params": [
+            "task"
+          ],
+          "timeout_s": 600
+        },
+        "macro_replay": {
+          "description": "状态守卫重放成功手机流程；UI 漂移自动交回 Agent 自愈",
+          "command": [
+            "{runtime_dir}/venv/bin/mobilerun",
+            "macro",
+            "replay",
+            "{macro}",
+            "--device",
+            "localhost:5555",
+            "--on-mismatch",
+            "agent",
+            "--provider",
+            "openai_compatible",
+            "--model",
+            "{model}"
+          ],
+          "params": [
+            "macro"
+          ],
+          "timeout_s": 600
+        }
+      },
+      "onboard_checks": [
+        {
+          "action": "devices",
+          "stdout_contains": "local device"
+        },
+        {
+          "action": "screenshot",
+          "output_file": true
+        }
+      ]
+    },
+    {
+      "key": "grok-bot-reconstructed",
+      "name": "Grok Bot 0.18 Reconstructed",
+      "kind": "agent-platform",
+      "url": "https://github.com/b-nnett/grok-bot-0.18-reconstructed",
+      "version": "0.18.0-reconstructed.1",
+      "revision": "a9f633e09d49a85829b8236331b9e21f7e612634",
+      "description": "macOS 桌面 Agent 宿主：协调器、MCP、本地执行、持久会话与多 Provider 路由",
+      "runtime": {
+        "node": ">=26.5.0 <27",
+        "npm": "10.9.8"
+      },
+      "install": [
+        [
+          "npm",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "node@26.5.0",
+          "npm@10.9.8"
+        ],
+        [
+          "git",
+          "-C",
+          "{source}",
+          "lfs",
+          "install",
+          "--local"
+        ],
+        [
+          "git",
+          "-C",
+          "{source}",
+          "lfs",
+          "pull"
+        ],
+        [
+          "{runtime_dir}/node_modules/node/bin/node",
+          "{runtime_dir}/node_modules/npm/bin/npm-cli.js",
+          "ci"
+        ],
+        [
+          "{runtime_dir}/node_modules/node/bin/node",
+          "{source}/scripts/bootstrap-runtime.mjs"
+        ],
+        [
+          "{runtime_dir}/node_modules/node/bin/node",
+          "{runtime_dir}/node_modules/npm/bin/npm-cli.js",
+          "run",
+          "package"
+        ],
+        [
+          "python3.12",
+          "{adapter_dir}/macos_app_verify.py",
+          "--install",
+          "{source}/dist/Grok Bot 0.18 Reconstructed.app"
+        ]
+      ],
+      "credentials": {
+        "any_of": [],
+        "signup_url": "https://github.com/b-nnett/grok-bot-0.18-reconstructed#readme",
+        "help": "启动后可复用本机 Cursor、Claude Code 或 Codex 登录，也可配置 OpenRouter。"
+      },
+      "transports": [],
+      "probe": {
+        "method": "path",
+        "target": "/Applications/Grok Bot 0.18 Reconstructed.app"
+      },
+      "execution_role": "ui-platform",
+      "platform_target": "macos-native",
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": "native",
+        "tools": true,
+        "artifacts": true,
+        "mcp": true
+      },
+      "provided_tools": [
+        "agent-coordinator",
+        "mcp",
+        "local-execution",
+        "provider-router",
+        "persistent-sessions"
+      ],
+      "capability_actions": {
+        "codesign_verify": {
+          "description": "验证 macOS 应用包签名和嵌套运行时完整性",
+          "command": [
+            "python3.12",
+            "{adapter_dir}/macos_app_verify.py",
+            "/Applications/Grok Bot 0.18 Reconstructed.app"
+          ],
+          "params": [],
+          "timeout_s": 60
+        },
+        "launch": {
+          "description": "启动 Grok Bot 原生桌面 Agent 宿主",
+          "command": [
+            "python3.12",
+            "{adapter_dir}/macos_app_verify.py",
+            "--launch",
+            "/Applications/Grok Bot 0.18 Reconstructed.app"
+          ],
+          "params": [],
+          "timeout_s": 30
+        }
+      },
+      "onboard_checks": [
+        {
+          "action": "codesign_verify"
+        }
+      ],
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "channel": "archived-main",
+        "current_ref": "a9f633e09d49a85829b8236331b9e21f7e612634"
+      },
+      "provenance": {
+        "official": false,
+        "archived": true,
+        "description": "Unofficial source-oriented reconstruction and extension of Grok Bot 0.18.0 for macOS"
+      },
+      "capabilities": [
+        "desktop",
+        "agent coordinator",
+        "mcp",
+        "persistent sessions",
+        "tool execution",
+        "router"
+      ]
+    },
+    {
+      "key": "prime-intellect",
+      "name": "Prime Agent (Prime Intellect)",
+      "kind": "agent",
+      "execution_role": "agent",
+      "url": "https://github.com/PrimeIntellect-ai/prime-agent",
+      "version": "0.9.4+1eee2938b4ee",
+      "revision": "1eee2938b4eeb7a4d72e17035adda669a89b63de",
+      "runtime": {
+        "node": ">=22.8.0",
+        "python": ">=3.11"
+      },
+      "install": [
+        [
+          "{node}",
+          "{npm_cli}",
+          "ci",
+          "--prefix",
+          "{source}"
+        ],
+        [
+          "{node}",
+          "{npm_cli}",
+          "run",
+          "build",
+          "--prefix",
+          "{source}"
+        ],
+        [
+          "{python}",
+          "-m",
+          "venv",
+          "{runtime_dir}/venv"
+        ],
+        [
+          "{runtime_python}",
+          "-m",
+          "pip",
+          "install",
+          "{source}/prime-agent-runtime",
+          "dill",
+          "requests",
+          "httpx",
+          "pyyaml",
+          "tomli",
+          "python-dotenv",
+          "pandas",
+          "numpy",
+          "scipy",
+          "beautifulsoup4",
+          "lxml",
+          "pydantic",
+          "tyro"
+        ],
+        [
+          "{runtime_python}",
+          "-c",
+          "import rlm, rlm.repl, dill, requests, httpx, yaml, tomli, dotenv, pandas, numpy, scipy, bs4, lxml, pydantic, tyro; assert rlm.repl.PROTOCOL_VERSION == 3; assert callable(rlm.spawn); assert callable(rlm.host_request)"
+        ],
+        [
+          "{node}",
+          "{source}/packages/coding-agent/dist/bundle/cli.js",
+          "--version"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "AIGC_APPID"
+        ],
+        "help": "由现有统一运行入口传入 appid、gateway、model；不需要 Prime 账号，不写入固定密钥。"
+      },
+      "env": {
+        "PRIME_AGENT_CODING_AGENT_DIR": "{session_dir}/prime-intellect/{session_id}/config",
+        "PRIME_AGENT_SESSION_DIR": "{session_dir}/prime-intellect/{session_id}/sessions",
+        "PRIME_AGENT_KERNEL_PYTHON": "{runtime_python}",
+        "PRIME_AGENT_KERNEL_VENV": "{runtime_dir}/venv",
+        "MEYO_PRIME_INTELLECT_API_KEY": "{appid}",
+        "MEYO_TOOL_CLI": "{tool_cli}",
+        "PI_SKIP_VERSION_CHECK": "1"
+      },
+      "config_template": {
+        "path": "{session_dir}/prime-intellect/{session_id}/config/registry-models.json",
+        "content": {
+          "providers": {
+            "meyo": {
+              "baseUrl": "{gateway}",
+              "api": "openai-completions",
+              "apiKey": "MEYO_PRIME_INTELLECT_API_KEY",
+              "authHeader": true,
+              "compat": {
+                "supportsStore": false,
+                "supportsDeveloperRole": false,
+                "supportsReasoningEffort": false,
+                "maxTokensField": "max_tokens"
+              },
+              "models": [
+                {
+                  "id": "{model}"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{python}",
+            "{adapter_dir}/prime_cli.py",
+            "--runtime-context",
+            "{runtime_context_json}",
+            "--source",
+            "{source}",
+            "--source-url",
+            "https://github.com/PrimeIntellect-ai/prime-agent",
+            "--revision",
+            "1eee2938b4eeb7a4d72e17035adda669a89b63de",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--runtime-python",
+            "{runtime_python}",
+            "--session-root",
+            "{session_dir}",
+            "--models-json",
+            "{session_dir}/prime-intellect/{session_id}/config/registry-models.json",
+            "--",
+            "{node}",
+            "{source}/packages/coding-agent/dist/bundle/cli.js",
+            "--mode",
+            "json",
+            "--print",
+            "--daemon-socket",
+            "prime.sock",
+            "--provider",
+            "meyo",
+            "--model",
+            "{model}",
+            "--cwd",
+            "{workdir}",
+            "--session-dir",
+            "{session_dir}/prime-intellect/{session_id}/sessions",
+            "--append-system-prompt",
+            "Meyo shared tool entry point (CLI, not a Python package): {python} {tool_cli}. Run it with --help to discover available commands. Peer source locations are supplied in MEYO_PEER_SOURCE_CONTEXT. Current project directory: {workdir}.",
+            "--",
+            "{task}"
+          ],
+          "native_session_format": "prime_jsonl_v3",
+          "snapshot_terminal": true,
+          "output_contract": {
+            "type": "json",
+            "record_match": {
+              "type": "prime_native_result"
+            },
+            "text_field": "final",
+            "status_field": "status",
+            "completed_statuses": [
+              "ok"
+            ],
+            "session_id_field": "session_id"
+          }
+        }
+      ],
+      "probe": {
+        "method": "cli",
+        "target": "{source}/packages/coding-agent/dist/bundle/cli.js",
+        "command": [
+          "{node}",
+          "{source}/packages/coding-agent/dist/bundle/cli.js",
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "research",
+        "python-repl",
+        "shell",
+        "files",
+        "recursive-subagents",
+        "skills",
+        "mcp"
+      ],
+      "provided_tools": [
+        "ipython"
+      ],
+      "adapter_capabilities": {
+        "streaming": "events",
+        "resume": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "model": "native"
+      },
+      "provenance": {
+        "official": true,
+        "description": "PrimeIntellect-ai 官方仓库；从固定源码构建，不安装 aisa，也不从 npm 安装继承的 pi 包名。"
+      },
+      "source_evidence": {
+        "checked_at": "2026-09-11",
+        "method": "已读本机 /Users/xuan/.npm-global/lib/node_modules/prime-agent 的 package.json、docs/development.md、docs/models.md、dist/core/kernel/bootstrap.js、dist/main.js、dist/modes/print-mode.js；再用公开 GitHub raw 核对目标固定 revision 的差异。",
+        "local_installation": {
+          "package": "prime-agent",
+          "version": "0.8.0",
+          "binary": "/Users/xuan/.npm-global/bin/prime-agent",
+          "resolved_entry": "/Users/xuan/.npm-global/lib/node_modules/prime-agent/dist/bundle/cli.js",
+          "observed_version_command": "node /Users/xuan/.npm-global/lib/node_modules/prime-agent/dist/bundle/cli.js --version",
+          "observed_result": "exit=0, version=0.8.0；--help 也 exit=0；没有发模型请求或启动/重启服务",
+          "runtime_difference": "本机0.8.0 bootstrap检查 rlm.run/可调用rlm；目标HEAD检查 rlm.spawn/create_session 且禁止旧rlm.run。不能用本机旧Python runtime验证目标HEAD。"
+        },
+        "raw_base": "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent/1eee2938b4eeb7a4d72e17035adda669a89b63de/",
+        "release_tag_reference": {
+          "tag": "v0.9.4",
+          "revision": "f771dfcedd684d1afff84ca2c6fa95c7a21efbc2",
+          "source": "用户提供；本 spec 使用所给 HEAD，不将两者混称同一提交"
+        },
+        "package_identity": "根 package.json 为 private monorepo；源码 workspace 名 @earendil-works/pi-coding-agent，bin.pi=dist/bundle/cli.js；官方 release packer 改名为 prime-agent，产出私有分发 tgz，不把继承 npm 名当成公开安装路径。",
+        "references": [
+          "package.json",
+          "packages/coding-agent/package.json",
+          "packages/coding-agent/docs/development.md",
+          "scripts/pack-prime-agent-release.mjs",
+          "packages/coding-agent/src/cli/args.ts:87-95,102-108,131-149,178-179",
+          "packages/coding-agent/src/modes/print-mode.ts:96-107,121-171",
+          "packages/coding-agent/src/main.ts:207-208,239-251",
+          "packages/coding-agent/docs/models.md",
+          "packages/coding-agent/src/core/model-registry.ts:109-117,195-205,1226-1232",
+          "prime-agent-runtime/pyproject.toml",
+          "packages/coding-agent/src/core/kernel/bootstrap.ts:15-35,885-919",
+          "packages/coding-agent/src/modes/daemon/daemon-socket.ts:70-75"
+        ]
+      },
+      "verification_notes": {
+        "scope": "Prime JSONL v3 接线与无网 fixture 回归；未安装、未模型实跑、未验证跨版本 kernel 快照。",
+        "resume": "Prime专属CLI读取runtime_context_json及原JSONL旁身份记录；保留路径/ID/daemon socket。通用registry及parser不改。",
+        "runtime": "沿用 b93c72c 固定官方 revision、CLI、独立 Python venv；不混用本机0.8 runtime。",
+        "pending": [
+          "A窗口同包真实CLI、模型及工具运行",
+          "原生取消/daemon回收",
+          "同版本及跨版本kernel快照恢复验证"
+        ]
+      }
+    },
+    {
+      "key": "penguin-harness",
+      "name": "Penguin Harness (Prism-Shadow)",
+      "kind": "agent",
+      "execution_role": "agent",
+      "url": "https://github.com/Prism-Shadow/penguin-harness",
+      "version": "0.2.11",
+      "revision": "e6fc41923633fef8a013c74c38f53f7b092ba0ac",
+      "runtime": {
+        "node": ">=24"
+      },
+      "install": [
+        [
+          "{node}",
+          "{npm_cli}",
+          "install",
+          "--prefix",
+          "{runtime_dir}",
+          "--registry=https://registry.npmjs.org",
+          "--fetch-retries=1",
+          "--fetch-timeout=20000",
+          "@prismshadow/penguin-cli@0.2.11"
+        ]
+      ],
+      "credentials": {
+        "any_of": [
+          "MEYO_UNIFIED_APPID",
+          "AIGC_APPID"
+        ]
+      },
+      "env": {
+        "PENGUIN_HOME": "{session_dir}/penguin-harness/{session_id}",
+        "PENGUIN_LANG": "en"
+      },
+      "config_template": {
+        "path": "{session_dir}/penguin-harness/{session_id}/default_project/.project_config.toml",
+        "content": "default_model = { provider = \"custom\", model_id = \"{model}\" }\n[[models]]\nprovider = \"custom\"\nmodel_id = \"{model}\"\nclient_type = \"openai-chat\"\napi_key = \"{appid}\"\nbase_url = \"{gateway}\"\ncontext_window = 128000\nmax_tokens = 8192\n"
+      },
+      "transports": [
+        {
+          "type": "cli",
+          "command": [
+            "{node}",
+            "{runtime_dir}/node_modules/@prismshadow/penguin-cli/dist/penguin.js",
+            "run",
+            "-m",
+            "{task}",
+            "--provider",
+            "custom",
+            "--model-id",
+            "{model}",
+            "--workspace",
+            "{workdir}",
+            "--approve",
+            "allow-all",
+            "--json"
+          ],
+          "output_contract": {
+            "type": "json",
+            "text_field": "text",
+            "status_field": "status",
+            "session_id_field": "sessionId",
+            "completed_statuses": [
+              "completed"
+            ]
+          }
+        }
+      ],
+      "probe": {
+        "method": "path",
+        "target": "{runtime_dir}/node_modules/@prismshadow/penguin-cli/dist/penguin.js"
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files",
+        "skills",
+        "multi-agent",
+        "source-review"
+      ],
+      "adapter_capabilities": {
+        "streaming": "lines",
+        "tools": true,
+        "artifacts": true,
+        "resume": false,
+        "interrupt": true
+      },
+      "provenance": {
+        "official": true,
+        "description": "用户指定Prism-Shadow官方仓库，源码固定tag，npm官方包0.2.11"
+      }
+    },
+    {
+      "key": "ohmygame",
+      "name": "OhMyGame · 游戏协作工作室",
+      "kind": "agent-platform",
+      "execution_role": "ui-platform",
+      "url": "https://github.com/WhiteTowerAI/ohmygame",
+      "version": "0.0.0-beta.4.7",
+      "revision": "29bd5d4747064cf30432c09d64510e00629bced5",
+      "platform_target": "macos-native",
+      "description": "用户指定的游戏协作伙伴。原生 Pi Agent 与设计画布、美术资产、2D/3D 工程、可视化试玩和迭代共用同一工作室。游戏需求可优先评估与它协作：保留原需求和已有工程，通过 delegate/continue 交给它，再用 result 读取真实进展与成果。它是可信本机桌面工作室，不伪装成普通 CLI 答题成员；受理不是完成，制作需要其原生语言模型连接，图像/视频/3D另需对应连接。",
+      "capabilities": [
+        "游戏设计与可交互体验",
+        "原生 Pi Agent 游戏协作",
+        "已有游戏工程接手与持续返工",
+        "2D/3D 美术、画布和资产管理",
+        "原生 game_use 可视化试玩",
+        "会话、工程与成果持久恢复"
+      ],
+      "runtime": {
+        "python": ">=3.12",
+        "node": ">=22.19.0",
+        "architecture": "arm64"
+      },
+      "credentials": {
+        "any_of": [],
+        "help": "安装、打开与读状态不需要模型密钥。制作任务只使用 OhMyGame 自己明确连接的模型；不会借用军团的公司凭据。请在 OhMyGame 原生 Settings → Providers & Models 中连接。"
+      },
+      "install": [
+        [
+          "{python}",
+          "-I",
+          "-S",
+          "{adapter_dir}/ohmygame_install.py",
+          "--runtime-dir",
+          "{runtime_dir}"
+        ]
+      ],
+      "build_probe": {
+        "method": "command",
+        "command": [
+          "{python}",
+          "-I",
+          "-S",
+          "{adapter_dir}/ohmygame_install.py",
+          "--runtime-dir",
+          "{runtime_dir}",
+          "--check"
+        ]
+      },
+      "probe": {
+        "method": "cli",
+        "target": "{runtime_dir}/app/OhMyGame.app/Contents/MacOS/OhMyGame",
+        "command": [
+          "{python}",
+          "-I",
+          "-S",
+          "{adapter_dir}/ohmygame_native.py",
+          "--runtime-dir",
+          "{runtime_dir}",
+          "installed"
+        ]
+      },
+      "transports": [],
+      "adapter_capabilities": {
+        "streaming": "native-async",
+        "tools": true,
+        "artifacts": true,
+        "model": "native-configured"
+      },
+      "capability_actions": {
+        "open": {
+          "description": "打开本实例专属的完整 OhMyGame 桌面工作室，保留原生试玩窗口。不会提交模型任务。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "open"
+          ],
+          "params": [],
+          "timeout_s": 120
+        },
+        "status": {
+          "description": "只读本实例的桌面连接和模型就绪状态；不启动第二个工作室，不把已安装当作已能制作。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "status"
+          ],
+          "params": [],
+          "timeout_s": 45
+        },
+        "delegate": {
+          "description": "把原始游戏需求和已有工程交给原生 Pi Agent。request_file 为本任务 JSON 文件，含 prompt、projectId 或 workspacePath，可指定 conversationId 继续。返回 native ID 与 accepted，不代表完成；用 result 跟进。无模型时不提交，不自动重试未知提交。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "delegate",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 90
+        },
+        "continue": {
+          "description": "沿原 OhMyGame projectId/conversationId 继续，原样传递真实反馈与返工要求；不另建会话、不更换模型。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "continue",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 90
+        },
+        "result": {
+          "description": "读取原生会话真实状态、失败与结果。JSON 含 projectId/conversationId；大结果提供 output_file（绝对的新文件路径），保存完整原生结果供验读。不得以工具调用成功代替作品验收。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "result",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 60
+        },
+        "projects": {
+          "description": "列出本工作室工程；JSON 可指定 output_file 保存完整清单。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "projects",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 60
+        },
+        "inspect": {
+          "description": "读取指定原生工程与会话目录。request_file 含 projectId，可指定 output_file；从返回的真实会话ID接续，不另猜或复制旧会话。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "inspect",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 60
+        },
+        "models": {
+          "description": "只读 OhMyGame 实际已连接且可见的模型，不读取模型密钥。request_file 可为 {}，大量模型可用 output_file 完整保存。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "models",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 60
+        },
+        "create": {
+          "description": "通过原生 API 建立工程，或用 workspacePath 接入已有工程。name/type 由当前需求决定，不限定技术栈；不提交模型任务。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "create",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 60
+        },
+        "cancel": {
+          "description": "只在明确需要取消所属任务时，按 projectId/conversationId/turnId 请求原生取消。不关闭工作室或其他任务。",
+          "command": [
+            "{python}",
+            "-I",
+            "-S",
+            "{adapter_dir}/ohmygame_native.py",
+            "--runtime-dir",
+            "{runtime_dir}",
+            "--node",
+            "{node}",
+            "cancel",
+            "--request-file",
+            "{request_file}"
+          ],
+          "params": [
+            "request_file"
+          ],
+          "timeout_s": 60
+        }
+      },
+      "onboard_checks": [
+        {
+          "action": "open",
+          "stdout_contains": "desktop_connected"
+        },
+        {
+          "action": "status",
+          "stdout_contains": "needs_model_setup"
+        }
+      ],
+      "provenance": {
+        "official": true,
+        "description": "官方 Apache-2.0 源码与同提交 Mac arm64 发布包。包不改签名、插件或原生 game_use；名称和标识按原项目保留。"
+      },
+      "update": {
+        "strategy": "github_commit",
+        "branch": "main",
+        "current_ref": "v0.0.0-beta.4.7"
+      }
+    },
+    {
+      "key": "openmontage",
+      "name": "OpenMontage 可选视频源码组件",
+      "kind": "capability",
+      "url": "https://github.com/calesthio/OpenMontage",
+      "version": "locked-cd9f3c1f",
+      "revision": "cd9f3c1f03368be87b140af494914b8ee4e3c7a4",
+      "execution_role": "capability",
+      "license": "AGPL-3.0 (upstream LICENSE; not relicensed as MIT)",
+      "capabilities": [
+        "video",
+        "media",
+        "generation"
+      ],
+      "install": [],
+      "install_scope": "source_only",
+      "credentials": {},
+      "transports": [],
+      "probe": {
+        "method": "path",
+        "target": "{source}/tools/video/video_selector.py"
+      },
+      "build_probe": {
+        "method": "command",
+        "command": [
+          "{python}",
+          "-I",
+          "-B",
+          "{repo_root}/release/legion-service/install_registry.py",
+          "--check-openmontage-source",
+          "{source}"
+        ]
+      },
+      "capability_actions": {
+        "source-check": {
+          "description": "只读检查固定源码语法，不导入 provider、不读取 .env、不生成视频；依赖、FFmpeg 与账号另行配置。",
+          "command": [
+            "{python}",
+            "-I",
+            "-B",
+            "{repo_root}/release/legion-service/install_registry.py",
+            "--check-openmontage-source",
+            "{source}"
+          ],
+          "params": [],
+          "timeout_s": 10
+        }
+      },
+      "onboard_checks": [
+        {
+          "action": "source-check",
+          "timeout_s": 10,
+          "stdout_contains": "OpenMontage source syntax OK"
+        }
+      ],
+      "description": "显式安装仅通过 external_agent_registry 获取锁定源码，不安装 requirements、不启动服务。media_tools 使用同一 source_dir；源码探针通过不代表 provider 可用，须另查 video_provider_status()。不进入答题派单池。",
+      "provenance": {
+        "official": false,
+        "description": "第三方 OpenMontage 上游源码；本包仅声明可选固定依赖，不复制或重许可为 MIT。"
+      }
+    }
+  ]
+}

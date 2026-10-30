@@ -1,0 +1,4 @@
+# 原完整 Python 依赖入口保留；独立基础安装使用 requirements-core.txt。
+# 成员各自的 CLI、源码和授权不由此清单安装。
+-r requirements-core.txt
+-r requirements-auto.txt

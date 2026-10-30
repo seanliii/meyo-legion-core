@@ -1,0 +1,559 @@
+{
+  "_meta": {
+    "说明": "军团harness画像单一事实源(用户2026-09-01定·'统一成manifest动态发现·彻底根治')。5处散落dict的画像归一到这里:adapter注册/direction/model_picks/specs10字段/profile。读取方:autonomy_matrix/_HARNESS_DIRECTION/_HARNESS_PICKS/_PROFILES(原dict退为文件缺失时兜底)。_decisions=决策记录单一落点(改画像先看这·别再考古注释)。",
+    "生成": "2026-09-01",
+    "version": 1
+  },
+  "harnesses": {
+    "auto": {
+      "adapter": "_auto_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "LongCat-2.0",
+          "便宜"
+        ],
+        [
+          "deepseek-v4-pro",
+          "思考型"
+        ]
+      ],
+      "specs": {
+        "integration": "sdk-subprocess",
+        "streaming": "lines",
+        "resume": "checkpoint",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "native",
+        "model": "self_managed",
+        "cost_class": "heavy",
+        "usage": "native_role_ledger",
+        "compaction": "native_internal"
+      },
+      "profile": {
+        "name": "Auto 工具库（引擎停用）",
+        "icon": "M",
+        "intro": "原自研答题引擎已退出军团；源码保留，现有搜索、抓取与能力工具继续通过共享工具箱复用。",
+        "strengths": [
+          "保留工具资产",
+          "共享工具入口",
+          "源码可审计"
+        ],
+        "style": "仅作为工具来源，不参与答题、接力或首脑竞选",
+        "best_for": "通过共享工具箱复用工具，不作为成员接单",
+        "speed": "不适用（不执行任务）"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "standard",
+          "deep"
+        ]
+      },
+      "runtime": {
+        "execution_role": "capability",
+        "note": "2026-09-08用户钉死:auto剔除军团答题池——Meyo自研问答引擎(qa_system本体),多次交UNKNOWN占位/浅交付实锤;作为平台能力保留,不再作为军团成员接单"
+      }
+    },
+    "cc": {
+      "adapter": "_cc_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "GLM-5.3",
+          "深核/中文"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ]
+      ],
+      "specs": {
+        "integration": "cli-subprocess",
+        "streaming": "events",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "allow-all",
+        "model": "self_managed",
+        "cost_class": "light",
+        "usage": "native",
+        "compaction": "native_internal"
+      },
+      "profile": {
+        "name": "Claude Code",
+        "icon": "C",
+        "intro": "Anthropic 官方 agent harness,擅长从题面锁定约束、深度检索+交叉核对真名/细节。",
+        "strengths": [
+          "最准",
+          "深度检索",
+          "严格约束核对"
+        ],
+        "style": "先解析约束再多源核对·质量优先",
+        "best_for": "要求准确、需要交叉核对的事实题·代码任务",
+        "speed": "快"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "quick",
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "codex": {
+      "adapter": "_codex_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ],
+        [
+          "kimi-k2.7-code-highspeed",
+          "最快代码"
+        ]
+      ],
+      "specs": {
+        "integration": "cli-subprocess",
+        "streaming": "events",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "workspace",
+        "model": "native",
+        "cost_class": "standard",
+        "usage": "native",
+        "compaction": "native_internal"
+      },
+      "profile": {
+        "name": "Codex",
+        "icon": "X",
+        "intro": "OpenAI 官方 CLI,靠 final schema 保证结构化交付,速度极快,先验直答+单次检索确认。",
+        "strengths": [
+          "最快",
+          "100%交付不崩",
+          "结构化"
+        ],
+        "style": "快速直答·单次确认·不过度搜索",
+        "best_for": "要速度的直答题·结构化输出·快速草稿",
+        "speed": "快"
+      },
+      "_decisions": {
+        "cost_class": "light→standard(2026-09-01 loop真跑纠偏):light是inproc假设下定的·codex因responses bridge inproc全rc1已移出inproc走子进程→真实简单题14-24s(cc/hermes/penguin快家仅8s)·planner误判codex快→简单题总选它solo 20-24s(用户'简单题不该慢'真痛点)。standard让简单题优先真快家。"
+      },
+      "execution": {
+        "depths": [
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "deepagents": {
+      "adapter": "_deepagents_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ],
+        [
+          "deepseek-v4-pro",
+          "思考"
+        ]
+      ],
+      "specs": {
+        "integration": "sdk-subprocess",
+        "streaming": "complete",
+        "resume": "cold_replay",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "workdir",
+        "model": "native",
+        "cost_class": "standard",
+        "usage": "native_if_reported",
+        "compaction": "none"
+      },
+      "profile": {
+        "name": "DeepAgents",
+        "icon": "D",
+        "intro": "ReAct 范式 agent,搜索+多轮推理收敛。",
+        "strengths": [
+          "ReAct",
+          "快且能用"
+        ],
+        "style": "搜索→ReAct 推理→收敛",
+        "best_for": "标准检索推理题",
+        "speed": "中"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "deepseek": {
+      "adapter": "_deepseek_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "deepseek-v4-pro",
+          "最强思考"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ],
+        [
+          "GLM-5.3",
+          "中文"
+        ]
+      ],
+      "model_compatibility": {
+        "endpoint_types": [
+          "chat"
+        ],
+        "wire_api": "chat_completions",
+        "reasoning_tools": "omit_reasoning_effort"
+      },
+      "specs": {
+        "integration": "sdk-subprocess",
+        "streaming": "events",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "profile",
+        "model": "self_managed",
+        "cost_class": "heavy",
+        "usage": "native",
+        "compaction": "native_events"
+      },
+      "profile": {
+        "name": "DeepSeek Harness",
+        "icon": "S",
+        "intro": "DeepSeek AI 的开源 harness(dsh),插件架构+比例压缩上下文+subagent-fork。",
+        "strengths": [
+          "上下文压缩",
+          "插件生态",
+          "subagent 并行"
+        ],
+        "style": "分段上下文+增量压缩·稳扎稳打",
+        "best_for": "长上下文任务·需要压缩管理的大检索",
+        "speed": "慢"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "hermes": {
+      "adapter": "_hermes_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "GLM-5.3",
+          "中文/工具"
+        ],
+        [
+          "GLM-5.3-flash",
+          "便宜/中文"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ]
+      ],
+      "specs": {
+        "integration": "sdk-subprocess",
+        "streaming": "events",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "yolo",
+        "model": "native",
+        "cost_class": "light",
+        "usage": "native",
+        "compaction": "native_internal"
+      },
+      "profile": {
+        "name": "Hermes",
+        "icon": "H",
+        "intro": "Nous Research 的工具流 agent,工具链检索+读取角色档案,给出答案与别名。",
+        "strengths": [
+          "工具链丰富",
+          "多媒体能力(生图/视频/音频)",
+          "别名/档案检索"
+        ],
+        "style": "工具流·一步步调工具收集证据",
+        "best_for": "需要多种工具协作·多媒体产出的任务",
+        "speed": "快"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "quick",
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "jcode": {
+      "adapter": "_jcode_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "GLM-5.3",
+          "已验证的云端SDK/CCR默认"
+        ],
+        [
+          "deepseek-v4-pro",
+          "已有CCR授权通路，JCode本家待验"
+        ],
+        [
+          "gpt-5.6-sol",
+          "本地原生候选；当前云端CCR未配置，不标云可用"
+        ]
+      ],
+      "specs": {
+        "integration": "cli-subprocess+sdk-subprocess",
+        "streaming": "events",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "profile",
+        "model": "native",
+        "cost_class": "standard",
+        "usage": "native_if_reported",
+        "compaction": "unknown"
+      },
+      "profile": {
+        "name": "JCode",
+        "icon": "J",
+        "intro": "轻量代码 agent,快速代码生成与执行。",
+        "strengths": [
+          "轻量",
+          "代码生成"
+        ],
+        "style": "快速代码优先",
+        "best_for": "轻量代码任务",
+        "speed": "快"
+      },
+      "_decisions": {
+        "model_picks": "2026-09-21:真实Linux原生SDK经现有CCR在同一native SID完成文件生成与续读且actual model为GLM-5.3；GPT5.6没有已部署CCR绑定，不能继续沿旧本地最强标签当默认。保留模型选择及其未验边界。",
+        "previous_model_picks_before_cloud_sdk": [
+          [
+            "gpt-5.6-sol",
+            "最强稳定"
+          ],
+          [
+            "deepseek-v4-flash",
+            "便宜/多appid"
+          ],
+          [
+            "kimi-k2.7-code-highspeed",
+            "最快代码"
+          ]
+        ]
+      },
+      "execution": {
+        "depths": [
+          "quick",
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "omnigent": {
+      "adapter": "_omnigent_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ],
+        [
+          "GLM-5.3",
+          "中文"
+        ]
+      ],
+      "specs": {
+        "integration": "meta-harness",
+        "streaming": "complete",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "nested",
+        "model": "native",
+        "cost_class": "standard",
+        "usage": "unavailable",
+        "compaction": "nested"
+      },
+      "profile": {
+        "intro": "编排放大器(meta-harness)·一行调 cursor/kimi/goose/qwen 等18子家。",
+        "strengths": [
+          "纳入18子家",
+          "多层嵌套",
+          "军团没有的家经它开"
+        ],
+        "style": "军团派它→它再调子家(openai-agents经网关bridge已验证真出)",
+        "best_for": "需要军团现有家之外的能力·或想用cursor/goose/qwen等特定家",
+        "speed": "中"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "penguin": {
+      "adapter": "_penguin_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "kimi-k3",
+          "思考"
+        ],
+        [
+          "LongCat-2.0",
+          "便宜"
+        ]
+      ],
+      "specs": {
+        "integration": "cli-subprocess",
+        "streaming": "lines",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "allow-all",
+        "model": "native",
+        "cost_class": "light",
+        "usage": "native",
+        "compaction": "native_events"
+      },
+      "profile": {
+        "name": "Penguin",
+        "icon": "P",
+        "intro": "自进化 harness,'agents build agents'——拆解子目标、迭代检索、自我优化。",
+        "strengths": [
+          "自进化",
+          "子目标拆解",
+          "工具成本极低"
+        ],
+        "style": "拆子目标→迭代→验证·越用越强",
+        "best_for": "大任务分解·需要自主长出结构的复杂目标",
+        "speed": "快"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "quick",
+          "standard",
+          "deep"
+        ]
+      }
+    },
+    "prime": {
+      "adapter": "_prime_adapter",
+      "direction": "programming",
+      "model_picks": [
+        [
+          "deepseek-v4-pro",
+          "代码验证"
+        ],
+        [
+          "gpt-5.6-sol",
+          "最强"
+        ],
+        [
+          "deepseek-v4-flash",
+          "便宜"
+        ]
+      ],
+      "specs": {
+        "integration": "cli-subprocess",
+        "streaming": "events",
+        "resume": "native",
+        "checkpoint": true,
+        "tools": true,
+        "artifacts": true,
+        "interrupt": true,
+        "policy": "profile",
+        "model": "native",
+        "cost_class": "light",
+        "usage": "native_if_reported",
+        "compaction": "native_internal"
+      },
+      "profile": {
+        "name": "Prime",
+        "icon": "R",
+        "intro": "自进化 harness,IPython kernel 内核,规划-执行-复核链,可跑代码验证。",
+        "strengths": [
+          "代码执行验证",
+          "规划-执行链",
+          "自进化"
+        ],
+        "style": "规划→执行(可跑代码)→复核",
+        "best_for": "需要跑代码验证的计算/数据任务",
+        "speed": "快"
+      },
+      "_decisions": {},
+      "execution": {
+        "depths": [
+          "quick",
+          "standard",
+          "deep"
+        ]
+      }
+    }
+  }
+}

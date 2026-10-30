@@ -1,0 +1,82 @@
+{
+  "key": "jcode-runtime",
+  "name": "JCode builtin Linux native runtime",
+  "kind": "tool",
+  "execution_role": "capability",
+  "url": "https://github.com/1jehuang/jcode",
+  "version": "0.84.0",
+  "revision": "57d58789970f4fe2405ca861c49275519df08147",
+  "platform_target": "linux-native",
+  "runtime": {
+    "node": true,
+    "npm": true,
+    "native_transport": "sdk"
+  },
+  "install_env": {
+    "JCODE_NO_TELEMETRY": "1"
+  },
+  "install": [
+    [
+      "{python}", "{adapter_dir}/jcode_install.py", "install",
+      "{runtime_dir}", "{source}", "{repo_root}/runtime/jcode-cli"
+    ],
+    [
+      "{python}", "{adapter_dir}/jcode_install.py", "sdk",
+      "{runtime_dir}", "{source}", "{repo_root}/runtime/jcode-cli"
+    ]
+  ],
+  "probe": {
+    "method": "cli",
+    "target": "{runtime_dir}/bin/jcode",
+    "command": ["{runtime_dir}/bin/jcode", "--no-update", "--no-selfdev", "version"]
+  },
+  "build_probe": {
+    "method": "command",
+    "command": [
+      "{python}", "{adapter_dir}/jcode_install.py", "verify",
+      "{runtime_dir}", "{source}", "{repo_root}/runtime/jcode-cli"
+    ]
+  },
+  "capability_actions": {
+    "verify": {
+      "command": [
+        "{python}", "{adapter_dir}/jcode_install.py", "verify",
+        "{runtime_dir}", "{source}", "{repo_root}/runtime/jcode-cli"
+      ],
+      "timeout_s": 60
+    }
+  },
+  "onboard_checks": [
+    {"action": "verify", "stdout_contains": "\"status\": \"verified\"", "timeout_s": 60}
+  ],
+  "adapter_capabilities": {
+    "tools": false,
+    "resume": false,
+    "artifacts": false
+  },
+  "provenance": {
+    "official": true,
+    "description": "已注册 builtin jcode 的原生依赖，不是第二答题家；无任务 transport，无 provided_by 别名。源码与官方 Linux x86_64 release 均固定版本。"
+  },
+  "source_evidence": {
+    "release_id": 383811261,
+    "tag_object": "b61883fb814430ec9ce0e24c997367dc9ecf5082",
+    "tag_peeled_commit": "57d58789970f4fe2405ca861c49275519df08147",
+    "archive": "jcode-linux-x86_64.tar.gz",
+    "archive_sha256": "e00eaede1a4f26812e77382bda9d82e2d301affd983d18ada38fddd43dce9571",
+    "archive_bytes": 48783970,
+    "archive_url": "https://github.com/1jehuang/jcode/releases/download/v0.84.0/jcode-linux-x86_64.tar.gz",
+    "source_license_sha256": "720443eee2efeda8f9f93a7a6a6f62763c17171106f60df58a35b8ea638fdf60",
+    "references": [
+      "Cargo.toml",
+      "scripts/build_linux_compat.sh:151-198",
+      ".github/workflows/release.yml:770-778"
+    ]
+  },
+  "verification_notes": {
+    "scope": "配方准备与短离线 fixture 回归；未登记共享 catalog、未安装官方运行件、未运行 Linux 原生验收。",
+    "bundle": "A 将已核官方归档和 manifest.json 映射至 {repo_root}/runtime/jcode-cli，并将固定源码映射为本依赖的 source；配方无下载或源码构建后备分支。",
+    "builtin": "builtin jcode 的入口接线由 A 后续处理；本 spec 不注册答题 transport，不修改 harness_registry/core。",
+    "runtime": "仅 Linux x86_64；保留归档 wrapper、ELF、全部附带 SSL 库和许可证，不改写官方 wrapper。"
+  }
+}
