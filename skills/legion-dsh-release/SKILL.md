@@ -1,9 +1,9 @@
 ---
 name: legion-dsh-release
-description: "用于 DSH Legion 连接器与独立军团核心的源码发行、Discover／社区投稿、个人服务部署和真实交付验收。纯静态站部署与公司 Plus/Hulk 发布分别转用已有对应技能，不混作一次上线。"
+description: "用于 DSH Legion 连接器与独立军团核心的协作联调、源码发行、Discover／社区投稿、个人服务部署和真实交付验收。纯静态站部署与公司 Plus/Hulk 发布分别转用已有对应技能，不混作一次上线。"
 ---
 
-# DSH 军团：发布、部署与验收
+# DSH 军团：协作、发布与验收
 
 把审查过的同一份程序交到用户手里，再验证用户原本要完成的事。此技能服务的是**顶尖 Harness 协同进化战队**，不是把产品缩成插件目录、选一家助手或完成核心连接。保存的是可复用方法，不是一次运行日志、账号或审核状态；不新增 runner、installer、exporter 或产品质量裁判。
 
@@ -46,6 +46,7 @@ description: "用于 DSH Legion 连接器与独立军团核心的源码发行、
 | 固定代码、清理公开快照、打包、Git／Discover／社区投稿、GitHub 编辑读回 | [发布指南](references/publication.md) |
 | 区分本地服务、公网动态后端、静态展示；沿既有服务升级或回滚 | [部署指南](references/deployment.md) |
 | 隔离测试、DSH 原生操作、模型实跑、正式下载、截图录屏与完成判断 | [验收指南](references/acceptance.md) |
+| 反馈送达但没采用、续作离开原工程、工具状态失真、同包交接或旧回执串到新现场 | [协作弯路与排查方法](references/collaboration-lessons.md) |
 
 实际发行或部署也要读取验收指南中对应的旅程；这不是要求每次重复所有历史测试。
 

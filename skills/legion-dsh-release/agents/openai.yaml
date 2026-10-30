@@ -1,4 +1,4 @@
 interface:
-  display_name: "DSH 军团发布与验收"
-  short_description: "围绕顶尖 Harness 协同进化战队完成军团发布、部署与真实验收"
-  default_prompt: "请用 $legion-dsh-release 围绕顶尖 Harness 协同进化战队处理本次发布、部署或验收，保留开放工具互用与改进传播的目标，不把安装接通当成产品完成。"
+  display_name: "DSH 军团协作与交付"
+  short_description: "围绕顶尖 Harness 协同进化战队处理协作联调、发布、部署与真实验收"
+  default_prompt: "请用 $legion-dsh-release 围绕顶尖 Harness 协同进化战队处理本次协作、发布、部署或验收，保留开放工具互用与改进传播的目标，不把安装接通当成产品完成。"
