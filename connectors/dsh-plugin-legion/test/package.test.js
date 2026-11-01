@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url'
 test('direct official runtime imports are declared for strict package managers', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
+  assert.equal(lock.version, manifest.version)
+  assert.equal(lock.packages[''].version, manifest.version)
   for (const name of ['@deepseek-ai/dsh-tools', '@deepseek-ai/dsh-llm']) {
     assert.equal(manifest.peerDependencies[name], manifest.engines.dsh, `${name} must be a direct peer`)
     assert.equal(manifest.devDependencies[name], manifest.engines.dsh, `${name} must be directly testable`)
