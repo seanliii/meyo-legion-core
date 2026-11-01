@@ -426,6 +426,61 @@ _TASK_GRAPH_INPUT_CONTEXT = (
 )
 
 
+def _selection_resource_context(plan: dict | None, user_id: str) -> dict:
+    """One observational index for native planning, captain bids and execution."""
+    try:
+        import harness_view
+        return harness_view.selection_context(user_id=user_id, plan=plan)
+    except Exception as exc:
+        return {"candidate_keys_complete": False, "details_complete": False,
+                "observations": ["selection_resource_index_unavailable:" + type(exc).__name__],
+                "meaning": "目录暂不可读不代表未安装；沿既有运行目录检查，调用仍需原授权。"}
+
+
+def _request_budget_pause(provider_results, result: dict | None = None) -> dict | None:
+    """Observe a private caller-owned budget; never infer the cause of a native failure.
+
+    The callback is trusted runtime input, not a plan/answer or a cancellation.
+    Already successful/in-flight work remains successful. Keep the original
+    failure and the independent observation in existing durable native_facts.
+    """
+    from copy import deepcopy
+    from error_envelope import requires_request_budget_pause, request_budget_hold
+    if provider_results is None:
+        return None
+    message_absent = bool(result is not None and _native_terminal_message_absent(result))
+    if result is not None:
+        if (result.get("cancelled") or result.get("status") == "cancelled"
+                or (not result.get("status") and result.get("ok") is True)
+                or (result.get("status") in ("ok", "done", "completed", "success")
+                    and result.get("ok") is not False and not message_absent)
+                or requires_request_budget_pause(result)):
+            return None
+    observed = next((row for row in provider_results()
+                     if requires_request_budget_pause(row)), None)
+    if observed is None:
+        return None
+    envelope = request_budget_hold([observed])
+    paused = dict(result or {})
+    facts = dict(paused.get("native_facts") or {})
+    if result is not None and not result.get("blocked_before_native"):
+        facts.setdefault("execution_observation" if message_absent else "execution_failure", deepcopy({
+            name: result[name] for name in ("status", "error", "fail_kind", "error_envelope")
+            if name in result}))
+    facts["runtime_budget_observation"] = {
+        name: deepcopy(observed[name])
+        for name in ("status", "source", "error_envelope") if name in observed}
+    error = str(paused.get("error") or "")
+    paused.update(
+        status="error", ok=False, fail_kind="runtime_budget", error_envelope=envelope,
+        error=(error + "\n原请求预算另已耗尽，暂停后续调用；原执行记录保留，未作因果归因。"
+               if result is not None else envelope["message"]),
+        native_facts=facts)
+    if result is None:
+        paused.update(final="", blocked_before_native=True, execution_calls=0)
+    return paused
+
+
 def elect_captain(question: str, plan: dict | None = None,
                   cb: Optional[Callable[[dict], None]] = None,
                   qhash: str = "adhoc", user_id: str = "default",
@@ -438,6 +493,15 @@ def elect_captain(question: str, plan: dict | None = None,
     当选；后续可用 handoff_captain 换届。候选调用走 run_one，因此模型、权限、记忆、失败
     回流与普通成员完全一致。
     """
+    from copy import deepcopy
+    # 与 dispatch 同一请求隔离语义；plan 是任务内容，不是调用者身份。
+    if not qhash or qhash == "adhoc":
+        qhash = f"adhoc_{uuid.uuid4().hex[:12]}"
+    user_id = str(user_id or "").strip()
+    if not user_id or user_id == "default":
+        user_id = f"anon:{qhash}"
+    # 初始化、绑定和原生调用必须使用同一个有效会话，不从旧项目借身份。
+    conversation_id = str(conversation_id or qhash)
     plan = dict(plan or {})
     _election_results = []
     bids = []
@@ -460,6 +524,9 @@ def elect_captain(question: str, plan: dict | None = None,
     if is_cancelled(qhash):
         return _cancelled_election()
 
+    budget_pause = _request_budget_pause(_provider_facts)
+    if budget_pause:
+        return {**budget_pause, "bids": bids, "provider_results": _provider_facts()}
     valid = _harness_keys()
     explicit = str(plan.get("captain") or "").strip()
     try:
@@ -524,7 +591,8 @@ def elect_captain(question: str, plan: dict | None = None,
     roster = [{"key": k, "best_for": (profiles.get(k, {}).get("best_for", "") or "")[:60],
                "readiness": _readiness_of(k)}
               for k in candidates]
-    shared = {"goal": question, "members": roster}
+    shared = {"goal": question, "members": roster,
+              "selection_resources": _selection_resource_context(plan, user_id)}
     shared["conversation_context"] = str(plan.get("conversation_context") or "")
     shared["project_context"] = plan.get("project_context") or {}
     _experience = plan.get("experience_intent") if isinstance(plan.get("experience_intent"), dict) else {}
@@ -583,6 +651,9 @@ def elect_captain(question: str, plan: dict | None = None,
     for key in candidates:
         if is_cancelled(qhash):
             return _cancelled_election()
+        budget_pause = _request_budget_pause(_provider_facts)
+        if budget_pause:
+            return {**budget_pause, "bids": bids, "provider_results": _provider_facts()}
         remaining = _election_budget - (time.monotonic() - _election_started)
         if remaining <= 0:
             if cb:
@@ -613,6 +684,8 @@ def elect_captain(question: str, plan: dict | None = None,
         candidate_project = dict(plan.get("project_context") or {})
         candidate_conversation = conversation_id
         selection_error = None
+        candidate_scope = {}
+        candidate_attempt = None
         if candidate_project:
             # 竞选可沿用已核实的工程/原生会话，但它不是团队中已登记的业务任务。
             # 用外层请求身份查旧槽；不要把旧 packet.team_id 当成本轮活动请求。
@@ -651,6 +724,43 @@ def elect_captain(question: str, plan: dict | None = None,
             # maker/commander 的 live mailbox 绑定，也不让 run_one 再次猜选旧槽。
             candidate_project = {k: v for k, v in candidate_project.items()
                                  if k not in {"team_id", "task_id", "conversation_id"}}
+        if selection_error is None:
+            try:
+                import project_context as _candidate_projects
+                import task_memory as _candidate_memory
+                import team_state as _candidate_teams
+                candidate_request = f"{qhash}_captain_{key}"
+                packet = _candidate_projects.load(qhash)
+                if not packet:
+                    packet = _candidate_projects.initialize(
+                        qhash, question, {**plan, "tasks": {}}, mode="orchestrate",
+                        user_id=user_id, conversation_id=conversation_id)
+                _candidate_projects.require_owner(packet, user_id, conversation_id)
+                nodes = {row["task_id"]: row for row in packet.get("tasks", [])
+                         if isinstance(row, dict) and row.get("task_id")}
+                remembered = (_candidate_memory.load(candidate_request, key).get("candidate_scope") or {})
+                task_id = str(remembered.get("task_id") or "")
+                if (remembered.get("team_id") != qhash or remembered.get("request_id") != candidate_request
+                        or remembered.get("harness") != key
+                        or (nodes.get(task_id) or {}).get("assigned_harness") != key):
+                    task_id = f"candidate_{key}_{uuid.uuid4().hex[:12]}"
+                    while task_id in nodes:
+                        task_id = f"candidate_{key}_{uuid.uuid4().hex[:12]}"
+                candidate_scope = {"team_id": qhash, "task_id": task_id, "harness": key,
+                                   "request_id": candidate_request,
+                                   "native_conversation_id": candidate_conversation}
+                node = {"task": question, "assigned_harness": key, "depends_on": []}
+                packet = _candidate_projects.record_task_bindings(
+                    qhash, {task_id: node}, user_id=user_id, conversation_id=conversation_id)
+                candidate_project = _candidate_projects.snapshot(qhash, task_id, packet=packet)
+                _candidate_memory.update(candidate_request, key, candidate_scope=candidate_scope)
+                _candidate_teams.ensure(
+                    qhash, question, {task_id: node}, {task_id: []},
+                    user_id=user_id, conversation_id=conversation_id, registered=valid)
+                candidate_attempt = _candidate_teams.begin_attempt(
+                    qhash, task_id, owner=f"captain-candidate:{os.getpid()}")
+            except Exception as exc:
+                selection_error = "candidate project binding unavailable: " + str(exc)
         if selection_error is not None:
             result = {"key": key, "status": "error", "final": "", "elapsed": 0.0,
                       "error": selection_error, "attempts": 0,
@@ -660,21 +770,43 @@ def elect_captain(question: str, plan: dict | None = None,
                                          "phase": "native_resume_selection",
                                          "message": selection_error}}
         else:
-            result = run_one(key, prompt, qhash=f"{qhash}_captain_{key}", user_id=user_id,
-                             conversation_id=candidate_conversation,
-                             task_facts={**_native_scope_facts(plan, request_id=qhash),
-                                         "project_context": candidate_project},
-                             runtime_brief=_build_runtime_brief(question, plan, user_id=user_id),
-                             # 默认预算只限制是否再开下一候选，不另加角色短墙钟。
-                             # 显式竞选预算保持旧限制；其余沿用 run_one 的通用预算。
-                             attempt_timeout=(min(remaining, 12.0)
-                                              if _explicit_election_timeout else None),
-                             execution_depth="quick",
-                             cancel_check=lambda _key=key: _candidate_cancelled(_key),
-                             cb=_captain_cb, _provider_results=_provider_facts)
+            try:
+                result = run_one(key, prompt, qhash=candidate_scope["request_id"], user_id=user_id,
+                                 conversation_id=candidate_conversation,
+                                 task_facts={**_native_scope_facts(plan, request_id=qhash),
+                                             "team_id": qhash, "task_id": candidate_scope["task_id"],
+                                             "attempt_id": candidate_attempt,
+                                             "project_context": candidate_project},
+                                 runtime_brief=_build_runtime_brief(question, plan, user_id=user_id),
+                                 # Keep the existing native context and caller budget.
+                                 attempt_timeout=(min(remaining, 12.0)
+                                                  if _explicit_election_timeout else None),
+                                 execution_depth="quick",
+                                 cancel_check=lambda _key=key, _task=candidate_scope["task_id"]: (
+                                     _candidate_cancelled(_key) or _request_cancelled(qhash, _task, _key)),
+                                 cb=_captain_cb, _provider_results=_provider_facts)
+            except BaseException as exc:
+                interrupted = {"status": "cancelled" if _candidate_cancelled(key) else "error",
+                               "final": "", "error": f"candidate_call:{type(exc).__name__}"}
+                _candidate_teams.finish_attempt(
+                    qhash, candidate_scope["task_id"], candidate_attempt, interrupted)
+                _candidate_projects.record_result(
+                    qhash, candidate_scope["task_id"], interrupted, assigned_harness=key,
+                    continuation={"action": "captain_candidate_interrupted", **candidate_scope})
+                raise
+            result = {**result, "task_id": candidate_scope["task_id"], "assigned_harness": key}
+            result["native_facts"] = {
+                **dict(result.get("native_facts") or {}), "candidate_scope": dict(candidate_scope)}
+            _candidate_teams.finish_attempt(qhash, candidate_scope["task_id"], candidate_attempt, result)
+            _candidate_projects.record_result(
+                qhash, candidate_scope["task_id"], result, assigned_harness=key,
+                continuation={"action": "captain_candidate_execution", **candidate_scope})
         _election_results.append(result)
         if is_cancelled(qhash):
             return _cancelled_election()
+        from error_envelope import requires_request_budget_pause
+        if requires_request_budget_pause(result):
+            return {**result, "ok": False, "bids": bids, "provider_results": _provider_facts()}
         clean, bid = _parse_captain_bid(result.get("final") or "")
         if bid is None:
             req = result.get("orchestration_request") or {}
@@ -691,8 +823,12 @@ def elect_captain(question: str, plan: dict | None = None,
             if _candidate_cancelled(key):
                 continue
             return {"ok": True, "captain": key, "solo": True,
-                    "plan": {**plan, "captain": key, "tasks": {key: question},
+                    "plan": {**plan, "captain": key, "tasks": {
+                                candidate_scope["task_id"]: {"task": question, "assigned_harness": key,
+                                                              "depends_on": []}},
+                             "task_assignments": {candidate_scope["task_id"]: key},
                              "_solo_answer": clean},
+                    "original_result": deepcopy(result), "candidate_scope": dict(candidate_scope),
                     "reason": str((bid or {}).get("reason") or "简单题直接答"),
                     "bids": bids + [{"key": key, "solo": True}], "via": "captain_solo_fastpath"}
         _bid_plan = (bid or {}).get("plan") if isinstance((bid or {}).get("plan"), dict) else {}
@@ -903,8 +1039,17 @@ def _plan_with_native_codex(prompt: str, *, user_id: str, conversation_id: str,
         return {**facts, "ok": False, "status": "cancelled",
                 "error": "planner_cancelled", "cancelled": True}
 
+    def failed(value):
+        if cancel_check() or value.get("cancelled"):
+            return cancelled()
+        paused = _request_budget_pause(provider_results, value)
+        return diagnostic(paused) if paused else value
+
     if cancel_check():
         return cancelled()
+    budget_pause = _request_budget_pause(provider_results)
+    if budget_pause:
+        return {**facts, **diagnostic(budget_pause)}
     started = time.monotonic()
     try:
         result = _run_one_with_gateway(
@@ -917,10 +1062,10 @@ def _plan_with_native_codex(prompt: str, *, user_id: str, conversation_id: str,
         if cancel_check():
             return cancelled()
         # Exception text may contain argv, a private prompt or credentials.
-        return {**facts, "ok": False, "status": "error",
-                "error": "planner_call:" + type(exc).__name__}
+        return failed({**facts, "ok": False, "status": "error", "execution_calls": None,
+                       "error": "planner_call:" + type(exc).__name__})
     if not isinstance(result, dict):
-        return {**facts, "ok": False, "status": "error", "error": "planner_native_no_result"}
+        return failed({**facts, "ok": False, "status": "error", "error": "planner_native_no_result"})
     for name in ("status", "error_envelope", "native_facts", "blocked_before_native"):
         if name in result:
             facts[name] = diagnostic(result[name])
@@ -931,7 +1076,7 @@ def _plan_with_native_codex(prompt: str, *, user_id: str, conversation_id: str,
         "model": diagnostic(str(result.get("model_used") or result.get("model") or "")),
         "elapsed_s": round(time.monotonic() - started, 4),
         "native_attempts": result.get("attempts", 0),
-    }]
+    }] if facts["execution_calls"] else []
     if isinstance(result.get("usage"), dict):
         facts["planner_usage"] = diagnostic(result["usage"])
     if cancel_check() or result.get("cancelled") or result.get("status") == "cancelled":
@@ -940,22 +1085,22 @@ def _plan_with_native_codex(prompt: str, *, user_id: str, conversation_id: str,
     native = result.get("native_facts") or {}
     if (result.get("status") not in ("ok", "done", "success") or result.get("error")
             or requires_execution_pause(result) or native.get("failed") or native.get("interrupted")):
-        return {**facts, "ok": False,
-                "error": diagnostic(str(result.get("error") or "planner_native_failed"))}
+        return failed({**facts, "ok": False,
+                       "error": diagnostic(str(result.get("error") or "planner_native_failed"))})
     match = re.search(r"\{[\s\S]*\}", str(result.get("final") or ""))
     if not match:
-        return {**facts, "ok": False, "status": "error", "error": "planner_no_json"}
+        return failed({**facts, "ok": False, "status": "error", "error": "planner_no_json"})
     try:
         parsed = _parse_planner_json(match.group(0))
     except Exception as exc:
-        return {**facts, "ok": False, "status": "error", "error": "parse:" + type(exc).__name__}
+        return failed({**facts, "ok": False, "status": "error", "error": "parse:" + type(exc).__name__})
     if cancel_check():
         return cancelled()
     # Reuse the same parser, including its real structural errors; no second
     # quality judge, helper fallback or outer three-model retry loop.
     if not parsed.get("ok"):
         facts["status"] = "error"  # Native completion remains in planner_attempts.
-    return {**diagnostic(parsed, content=True), **facts}
+    return failed({**diagnostic(parsed, content=True), **facts})
 
 
 def plan_request_with_model(question: str, attachments: list | None = None,
@@ -986,6 +1131,20 @@ def plan_request_with_model(question: str, attachments: list | None = None,
                     "error_envelope": {"category": "authorization_required", "scope": "request",
                                        "retryable": False, "code": "planner_identity_required",
                                        "message": "辅助规划缺少已鉴权的用户和会话身份；未调用模型"}}
+    if _cancelled():
+        return {"ok": False, "status": "cancelled", "error": "planner_cancelled",
+                "cancelled": True, "planner_attempts": []}
+    budget_pause = _request_budget_pause(_provider_results)
+    if budget_pause:
+        return {**budget_pause, "planner_attempts": [],
+                "planner_transport": "native_codex" if _personal_native else "cli"}
+    resource_plan = dict(request_context or {})
+    if candidate_harnesses is not None:
+        resource_plan["team_policy"] = {
+            **dict(resource_plan.get("team_policy") or {}),
+            "candidate_harnesses": list(candidate_harnesses)}
+    resources = _selection_resource_context(resource_plan, user_id)
+    resource_members = {row["key"]: row for row in resources.get("members", [])}
     try:
         import harness_profiles
         # cost_class(light/standard/heavy)作为【响应速度画像】给总指挥(context not control):
@@ -1045,15 +1204,10 @@ def plan_request_with_model(question: str, attachments: list | None = None,
                 row["readiness"] = "declared"
             # 最近运行事实单列给总指挥：声明/历史成功不代表此刻 runtime 可启动。只提供事实，
             # 不由父层硬过滤；总指挥可在探索任务仍试 unavailable 家，重要交付应自行权衡。
-            try:
-                _ready_now = _aigc_ready()
-                row["runtime_available"] = k in set(_ready_now.get("runnable_clis") or [])
-                if not row["runtime_available"]:
-                    _why = ((_ready_now.get("clis") or {}).get(k))
-                    if isinstance(_why, dict):
-                        row["runtime_reason"] = str(_why.get("reason") or _why.get("error") or "")[:160]
-            except Exception:
-                row["runtime_available"] = None
+            facts = resource_members.get(k) or {}
+            row["runtime_available"] = facts.get("runtime_available")
+            row.update({field: facts[field] for field in ("runtime_reason", "model", "native")
+                        if field in facts})
             profiles.append(row)
     except Exception:
         profiles = [{"key": k} for k in sorted(_harness_keys())]
@@ -1071,7 +1225,10 @@ def plan_request_with_model(question: str, attachments: list | None = None,
         os.path.expanduser("~/.claude/skills/aigc-model-router/scripts/planner_call_model.py"),
     ) if os.path.isfile(p)), "")
     if not _personal_native and not cm:
-        return {"ok": False, "error": "planner_tool_unavailable"}
+        failed = {"ok": False, "error": "planner_tool_unavailable"}
+        return _request_budget_pause(_provider_results, {
+            **failed, "status": "error", "blocked_before_native": True,
+            "execution_calls": 0, "planner_attempts": []}) or failed
     supplied_context = request_context if isinstance(request_context, dict) else {}
     source_ref = supplied_context.get("source_ref") if isinstance(supplied_context.get("source_ref"), dict) else {}
     quality_context = (supplied_context.get("quality_context")
@@ -1104,13 +1261,20 @@ def plan_request_with_model(question: str, attachments: list | None = None,
                    "experience_intent": supplied_context.get("experience_intent") or {},
                    "golden_task": supplied_context.get("golden_task") or {},
                },
-               # 修复(2026-09-02 24query验收):旧清单只有 OpenCLI→总指挥把云真机任务写成"通过
-               # OpenCLI 在云真机..."(开不存在的药方)·成员忠实执行→找不到入口答偏(列了宿主机目录)。
-               # 修=如实补全真实现场工具清单(云真机 MCP 六件套)·总指挥自己判断用哪个(context not control)。
-               "shared_tools": "search/gen_image/gen_video(image-to-video)/see_image/read_pdf/video_frame/trim_media/OpenCLI"
-                               "/云真机MCP(desktop_exec真机shell·desktop_app开关软件·computer_command键鼠操作"
-                               "·desktop_open_file桌面打开交付物·desktop_fs_list/read/write/mkdir文件读写"
-                               "·desktop_screenshot截屏)"}
+               "selection_resources": {key: value for key, value in resources.items()
+                                       if key != "members"},
+               "planning_invocation": {
+                   "role": "plan_proposal",
+                   "permissions_apply_to": "current_planner_invocation_only",
+                   "user_request": question,
+                   "delegated_permissions": "resolved_by_original_execution_path",
+                   "meaning": (
+                       "当前辅助调用只生成计划，不执行计划；本次规划进程的只读限制不是用户对后续工作的限制。"
+                       "后续执行任务不继承规划进程的只读限制，也不因收到计划就获得额外权限；"
+                       "保留用户原始目标及明确授权，各执行者的实际操作范围仍由原运行环境与权限检查决定。"
+                       "规划器只读不撤销用户已授权的交付；宿主记录规划响应与checkpoint，"
+                       "不代表宿主会代替执行者制作用户要求的成果。"),
+               }}
     prompt = ("你是Agent军团总指挥。读完整现场后自主编排,不要按关键词机械路由。"
               "先把用户真正要获得的最终交付物和验收标准编译成机器可读契约；没要求的无关类型不要猜。"
               "如果你判断目标是实现或修改软件，required_artifacts 必须包含可运行或可审查的代码/网页成品，"
@@ -1118,8 +1282,9 @@ def plan_request_with_model(question: str, attachments: list | None = None,
               "required_artifacts 只表示用户要求落盘/下载/打开的真实文件或媒体；普通聊天文本答案、"
               "一句话解释、翻译和短答只能 require_final=true，required_artifacts 必须为空，不能把聊天答复伪造成 text 文件。"
               "再为用户目标选择最合适成员(简单题只选1个；复杂度或新发现确有净收益时可动态扩军),给每家具体任务;"
-              "PK 多家并行时按【任务能力画像匹配度+当前runtime_available可用性+近期较少上场的家】综合选 2-4 家——"
-              "不同类型任务应派出不同组合,禁止每次固定同几家(用户2026-09-07实锤:军团感觉永远不变);"
+              "从当单允许的完整候选中，结合原生能力、当前可用性、授权与实际工作经验自主选队；"
+              "协作有助于目标时选择能力互补的成员，不固定某一家，也不为凑人数让全员重复答题。"
+              "selection_resources 是当前资源索引，缓存过期或预热中的可用性是未知，不代表能执行。"
               "有图片/PDF/表格时选能调工具的成员；工具目录只是能力声明，"
               "不代表已安装、已配置或获授权，本次可用性以实际工具结果为准。"
               # 速度画像(members[].speed):慢家(heavy)冷启动+深推理适合复杂交付;简单/交互任务
@@ -1206,9 +1371,20 @@ def plan_request_with_model(question: str, attachments: list | None = None,
 
     _tried_models = set()
     _last_err = "planner no JSON"
+
+    def planner_budget_pause():
+        failed = ({"ok": False, "status": "error", "error": _last_err,
+                   "planner_attempts": _attempts, "execution_calls": len(_attempts)}
+                  if _attempts else None)
+        paused = _request_budget_pause(_provider_results, failed)
+        return {**paused, "planner_attempts": _attempts, "planner_transport": "cli"} if paused else None
+
     for _mi in range(3):
         if _cancelled():
             return {"ok": False, "error": "planner_cancelled", "cancelled": True, "planner_attempts": _attempts}
+        budget_pause = planner_budget_pause()
+        if budget_pause:
+            return budget_pause
         _attempt = None
         try:
             _pick = select_usable_model("programming", exclude_models=_tried_models)
@@ -1220,6 +1396,9 @@ def plan_request_with_model(question: str, attachments: list | None = None,
             _tried_models.add(_pm)
             _env = _gateway_env()
             _env.update(LEGION_PLANNER_MODEL=_pm, LEGION_PLANNER_APPID=_pa)
+            budget_pause = planner_budget_pause()
+            if budget_pause:
+                return budget_pause
             if _provider_results is not None:
                 from error_envelope import request_provider_authorization_hold
                 # 与实际 CLI 的出口一致；显式空值仍是未知绑定，不能改用另一网关猜。
@@ -1290,7 +1469,7 @@ def plan_request_with_model(question: str, attachments: list | None = None,
                     ("missing_task_kinds", "reversed_dependencies") if key in _parsed}
         if _details:
             _attempt.update(_details)
-    return {"ok": False, "error": _last_err, "planner_attempts": _attempts}
+    return planner_budget_pause() or {"ok": False, "error": _last_err, "planner_attempts": _attempts}
 
 
 def _parse_planner_json(raw: str) -> dict:
@@ -3818,6 +3997,27 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
     _spin_fps: list[str] = []        # 完整指纹(final+status+err·不含 model·hermes R3)·非基础设施失败用
     _spin_infra_fps: list[str] = []  # infra 指纹(只 status+error)·gateway/process 基础设施失败用(hermes R3)
     last = {"status": "error", "final": "", "error": "未执行"}
+    result: dict = {}
+
+    def pause_for_budget(current=None, *, provider_results=_provider_results):
+        nonlocal last, result
+        paused = _request_budget_pause(provider_results, current)
+        if paused is None:
+            return False
+        result = paused
+        last = {name: paused.get(name, "") for name in
+                ("status", "final", "error", "fail_kind", "error_envelope")}
+        _last_native.update(error_envelope=paused["error_envelope"],
+                            native_facts=paused["native_facts"])
+        try:
+            import task_memory as _tm
+            _tm.update(_memory_request_id, key, phase="请求预算已用尽",
+                       error_envelope=paused["error_envelope"], native_facts=paused["native_facts"])
+        except Exception as exc:
+            paused["native_facts"]["runtime_budget_persistence_error"] = type(exc).__name__
+        return True
+
+    preserve_native_state = False
     # 学 codex history 回流(mcp_tool_call.rs:875 失败也进 history)+ deepseek timeout-policy
     # (失败结果原样喂回模型):重试不再拿原 task 重跑(那样每轮失忆·永远重复同样失败),
     # 而是把"上一轮我怎么干、失败成什么样"作为 context 拼进新 task,让新进程的模型看到自己
@@ -3885,6 +4085,10 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         # 取消不是"该自愈的故障"·绝不算失败换招(那会变成"用户喊停我却偷偷换家又跑")。
         if cancel_check():
             return _cancel_before_execution()
+        if pause_for_budget(
+                {**result, **last, **_last_native, "execution_calls": executed_attempts}
+                if executed_attempts else None):
+            break
         if native_recovery_active and executed_attempts >= native_attempt_limit:
             break
         model_override = appid_override = None
@@ -4100,8 +4304,13 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 return _cancel_before_execution()
             if _provider_results is not None:
                 from error_envelope import request_provider_authorization_hold
+                request_results = _provider_results()
+                if pause_for_budget(
+                        {**result, **last, **_last_native, "execution_calls": executed_attempts}
+                        if executed_attempts else None, provider_results=lambda: request_results):
+                    break
                 held = _selection_hold or request_provider_authorization_hold(
-                    _provider_results(), appid_override or "",
+                    request_results, appid_override or "",
                     provider_binding["base_url"] if provider_binding else
                     os.environ.get("MEYO_UNIFIED_GATEWAY") or "https://aigc.sankuai.com/v1/openai/native")
                 if held:
@@ -4113,7 +4322,9 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                     _last_native["error_envelope"] = held
                     try:
                         import task_memory as _tm
-                        _tm.update(_memory_request_id, key, phase="等待管理员确认授权", error_envelope=held)
+                        _tm.update(_memory_request_id, key,
+                                   phase="等待管理员确认授权",
+                                   error_envelope=held)
                     except Exception:
                         pass
                     break
@@ -4185,7 +4396,24 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 result = _run_harness_isolated(key, task_this, qhash,
                                                float(_ATTEMPT_TIMEOUT if attempt_timeout is None else attempt_timeout),
                                                model_override, appid_override, **_iso_kw)
+        # The external transport redacts its launch environment. Cover legacy
+        # adapters too, using this invocation's actual binding before recording
+        # native attempts or exposing a diagnostic through a result/event.
+        from external_agent_transports import redact_native_diagnostic
+        _diagnostic_env = dict(os.environ)
+        if appid_override:
+            _diagnostic_env["LEGION_REQUEST_APPID"] = appid_override
+        if provider_binding:
+            _diagnostic_env["LEGION_REQUEST_API_KEY"] = provider_binding["api_key"]
+        for _field in ("stderr", "error", "error_envelope"):
+            if result.get(_field):
+                result[_field] = redact_native_diagnostic(result[_field], _diagnostic_env)
         native_facts = dict(result["native_facts"]) if isinstance(result.get("native_facts"), dict) else {}
+        for _field in ("stderr", "error", "failure_reason"):
+            if native_facts.get(_field):
+                native_facts[_field] = redact_native_diagnostic(native_facts[_field], _diagnostic_env)
+        if isinstance(result.get("native_facts"), dict):
+            result["native_facts"] = native_facts
         if native_facts:
             native_attempts.append({"attempt": executed_attempts, "facts": native_facts.copy()})
         result = _attach_task_usage(result)
@@ -4194,9 +4422,12 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             reported_binding = checkpoint.get("provider_binding")
             if reported_binding and reported_binding != provider_binding_id:
                 _selection_context["result_binding_matches"] = False
-                return unavailable_native_context(ValueError("native result provider binding differs"),
-                                                  executed=executed_attempts, phase="native_result_binding",
-                                                  execution_result=result, depth_upgrade=depth_upgraded)
+                blocked = unavailable_native_context(ValueError("native result provider binding differs"),
+                                                     executed=executed_attempts, phase="native_result_binding",
+                                                     execution_result=result, depth_upgrade=depth_upgraded)
+                # Observe the caller budget without restoring any rejected
+                # checkpoint, content or artifact from the foreign binding.
+                return result if pause_for_budget(blocked) else blocked
             result["native_checkpoint"] = {
                 **checkpoint, "provider_binding": provider_binding_id,
                 "provider_descriptor": {"model": provider_binding["model"],
@@ -4262,21 +4493,44 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             except Exception:
                 pass
         status = str(result.get("status", "ok") or "ok")
+        # This status belongs to the trusted adapter receipt, not JSON fields
+        # inside its answer. It identifies a content channel; it proves neither
+        # a process exit code nor native completion nor the quality of the work.
+        _success_statuses = {"ok", "done", "completed", "success"}
+        _noncompletion_statuses = {"partial", "incomplete", "blocked", "unavailable", "unknown"}
+        _adapter_reported_success = str(result.get("status") or "") in _success_statuses
+        _native_rc = native_facts.get("process_returncode")
+        _native_failed = bool(
+            native_facts.get("failed") or native_facts.get("error") or native_facts.get("failure_reason")
+            or native_facts.get("turn_status") == "failed"
+            or (type(_native_rc) is int and _native_rc != 0))
+        if status in _success_statuses or status == "incomplete":
+            if _native_failed:
+                status = f"rc{_native_rc}" if type(_native_rc) is int and _native_rc != 0 else "error"
+            elif (_native_budget_exit(result) or native_facts.get("completed") is False
+                  or native_facts.get("turn_status") == "incomplete"):
+                status = "incomplete"
         # 原始 native_facts 不展开覆盖公共字段；标准错误同时保留 worker 和原生终态原因。
+        # Worker 的工作目录说明不是错误源，不能抢先遮住 stderr-only adapter 的真原因。
+        # 已明确正常结束的原生轮次仍保留 stderr 观察，不把非致命诊断升级成任务失败。
+        _stderr = str(result.get("stderr") or "")
+        if _stderr:
+            native_facts.setdefault("stderr", _stderr)
+        _stderr_error = (_stderr if native_facts.get("stderr_is_error") is True
+                         or (native_facts.get("stderr_is_error") is not False
+                             and not (_adapter_reported_success and status in _success_statuses)
+                             and not _native_completed_cleanly({**result, "status": status})) else "")
         _errors = []
-        for _error in (result.get("error"), native_facts.get("error"),
+        for _error in (_stderr_error, result.get("error"), native_facts.get("error"),
                        native_facts.get("failure_reason")):
             if _error and str(_error) not in _errors:
                 _errors.append(str(_error))
         if _errors:
             result["error"] = "\n".join(_errors)
-        _native_failed = bool(native_facts.get("failed") or native_facts.get("error")
-                              or native_facts.get("failure_reason"))
-        if status in ("ok", "done", "incomplete"):
-            if _native_failed:
-                status = "error"
-            elif _native_budget_exit(result) or native_facts.get("completed") is False:
-                status = "incomplete"  # 明确预算原因优先于冲突 completed；原始事实仍保留。
+        if status in _success_statuses and (
+                result.get("error") or
+                (isinstance(result.get("error_envelope"), dict) and result["error_envelope"])):
+            status = "error"  # Current runtime diagnostics outrank the success receipt.
         elapsed = round(time.time() - t0, 2)
         _orch_request = (result.get("orchestration_request")
                          if isinstance(result.get("orchestration_request"), dict) else {})
@@ -4286,13 +4540,16 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         import error_envelope as _native_ee
         boundary_envelope = _native_ee.normalize(status, str(result.get("error") or ""),
             fail_kind=str(result.get("fail_kind") or ""),
-            supplied=result.get("error_envelope")).to_dict()
+            supplied=result.get("error_envelope"), native_facts=native_facts).to_dict()
         boundary_category = boundary_envelope.get("category")
         if (status == "cancelled" or cancel_check()
                 or (status != "timeout" and
                     (native_facts.get("interrupted") or boundary_category == "user_cancel"))):
             status = "cancelled"
             _last_native["error_envelope"] = boundary_envelope
+        elif pause_for_budget({**result, "status": status, "error_envelope": boundary_envelope,
+                               "execution_calls": executed_attempts}):
+            break
         elif boundary_category == "output_limit":
             # A complete native checkpoint is required. Never replay a partial
             # tool invocation, silently switch providers, or claim an empty final
@@ -4464,23 +4721,35 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         # 把这类"托词 final"也判为未完成,触发重试并回流提醒——不是加门丢答案,是让它看到
         # "上次你只说没做"再给一次机会自己做出来。
         stalled = _looks_like_stall(final)
-        # 某些 CLI 把基础设施报错文本塞进 final 且 status 仍写 ok(真实 E2E:hermes 返回
-        # "API call failed…HTTP 429"却被当成 done 交付给用户)。HTTP 429/5xx/timeout 明确不是
-        # 用户答案,必须先识别为网关故障→换模型/appid自愈,不能让非空 final 这条抢先判成功。
+        # Adapter status/error/envelope are runtime channels. Words such as
+        # "Error:" or "HTTP 429" in a reported successful answer are not errors.
         _raw_error = str(result.get("error") or "")
         _raw_envelope = result.get("error_envelope")
         _supplied_envelope: dict = _raw_envelope if isinstance(_raw_envelope, dict) else {}
+        if not _raw_error and _supplied_envelope:
+            _raw_error = str(_supplied_envelope.get("message") or _supplied_envelope.get("code")
+                             or _supplied_envelope.get("category") or "native runtime error envelope")
         protocol_output_ok = (bool(_orch_request)
                               and status in {"ok", "done", "completed", "success"}
                               and not _native_ee.is_provider_authorization_denial(boundary_envelope))
         # A confirmed native completion can discuss failures or return a file
         # named "connection". That content is not a transport diagnostic.
         # This only selects the diagnostic channel; it does not declare delivery.
-        native_final_is_content = _native_completed_cleanly({**result, "status": status})
+        native_final_is_content = (_adapter_reported_success or status in _noncompletion_statuses
+                                   or _native_completed_cleanly({**result, "status": status}))
+        # The transport owns this provenance. A text CLI has no native turn
+        # terminal, but its stdout is still content rather than a diagnostic.
+        # Exit/terminal/error checks below remain independent of that content.
+        native_final_is_content = native_final_is_content or (
+            type(native_facts.get("process_returncode")) is int
+            and native_facts.get("final_source") in
+            {"cli_stdout_text", "cli_assistant_stream", "cli_native_output"})
+        if native_final_is_content:
+            stalled = False  # A phrase in a reported answer is not a runtime event.
         terminal_message_absent = _native_terminal_message_absent(
             {**result, **_last_native, "status": status, "final": final})
-        # Keep the existing coordination exception and conservative legacy
-        # fallback. Explicit errors/envelopes do not gain the new exception.
+        # Explicit errors/envelopes still decide failure below. Only an
+        # unrecognized/non-success legacy receipt falls back to its final text.
         failure_text = (_raw_error if native_final_is_content or
                         (protocol_output_ok and isinstance(_orch_request.get("coordinate"), dict))
                         else f"{final}\n{_raw_error}")
@@ -4496,10 +4765,10 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         # Preserve that response for its existing consumer; it is not an empty
         # model answer, and _is_delivered still requires actual user-facing text.
         has_native_output = bool(final.strip()) or protocol_output_ok
-        ok = (not status.startswith("err") and status not in ("unknown_harness",)
-              and status not in ("timeout", "truncated_reasoning")
+        ok = (status in _success_statuses
               and (not _orch_request or protocol_output_ok)
-              and has_native_output and not stalled and not gateway_issue)
+              and has_native_output and not _raw_error and not _supplied_envelope
+              and not stalled and not gateway_issue)
         if ok or terminal_message_absent:
             # 记这家跑这模型【成功】(治忽好忽坏:下次首轮优先选这家真跑通过的模型)。
             if ok:
@@ -4666,11 +4935,13 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             # (成员对编排的发言权·context not control)。没有则不带·零回归。
             if isinstance(result.get("orchestration_request"), dict):
                 _ret["orchestration_request"] = result["orchestration_request"]
-            return _ret
+            # This outlet also carries a completed native turn with no final
+            # message (partial). Observe a newly arrived budget after export;
+            # the shared helper leaves genuinely successful results unchanged.
+            return result if pause_for_budget(_ret) else _ret
 
-        # Evaluate backpressure only after the existing native success path.
-        # In particular, status=ok with a completed native turn must not become
-        # an error merely because an earlier 429 envelope was retained.
+        # Current error envelopes were honored above. Recovered historical
+        # failures belong in native_facts, not the current error channel.
         if _native_ee.requires_provider_pause(
                 {"status": status, "error_envelope": boundary_envelope}):
             _authorization_denied = _native_ee.is_provider_authorization_denial(boundary_envelope)
@@ -4697,9 +4968,30 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                   "error_envelope": boundary_envelope})
             break
 
+        if (status in _noncompletion_statuses and not _raw_error and not _supplied_envelope
+                and not runtime_stop and not context_overflow):
+            # A native non-completion is a runtime fact, not a failed model or
+            # permission to promote a nonempty draft to done. Return it to the
+            # existing coordinator with the same files/checkpoint and content.
+            preserve_native_state = True
+            last = {"status": status, "final": final, "error": "", "fail_kind": "",
+                    "error_envelope": None}
+            _last_native["reported_status"] = status
+            prior_attempts.append({
+                "attempt": attempt, "model": model_override or "", **last,
+                "native_facts": native_facts, "actions": _actions,
+                "usage": result.get("usage"), "workdir": str(result.get("workdir") or "")})
+            try:
+                import task_memory as _tm
+                _tm.update(_memory_request_id, key, phase="成员尚未报告完成",
+                           reported_status=status, completed_steps=_actions)
+            except Exception:
+                pass
+            break
+
         # error 落一句人能看懂的原因(别把底层 status="ok" 原样当 error·100场景 cx023 就显示成
         # 误导性的 error='ok')。stall/截断这类"status ok 但没真交付"要说清到底哪没通。
-        _err = result.get("error")
+        _err = result.get("error") or (_raw_error if _supplied_envelope else "")
         if not _err and result.get("stderr"):
             # adapter(如 hermes dist fallback)失败时只带 stderr 不带 error——不透传的话
             # 上层只会显示"空交付",真实 CLI 错误(缺登录/参数不支持/网络)全部丢失,无法归因。
@@ -4743,6 +5035,10 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             _fk = _classify_failure(status, str(_err or ""), str(result.get("fail_kind") or ""))
             _envelope = {"category": _fk, "retryable": _looks_like_gateway_issue(status, final),
                          "scope": "task", "tool": "", "code": status, "message": str(_err or "")}
+        if pause_for_budget({**result, "status": "error", "final": final,
+                             "error": str(_err or ""), "error_envelope": _envelope,
+                             "execution_calls": executed_attempts}):
+            break
         # context_overflow 反映请求投影，不代表该模型质量差；record_model_health 会按类别忽略它。
         record_model_health(key, model_override or "", ok=False, failure_category=_fk)
         last = {"status": status, "final": final, "error": _err, "fail_kind": _fk,
@@ -4853,15 +5149,18 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
 
     elapsed = round(time.time() - t0, 2)
     tried = "、".join(tried_models) or "默认模型"
-    emit({"t": "result", "x": (last["error"] if result.get("blocked_before_native")
-                              else f"已试 {tried} 仍未通,最后:{last['status'][:80]}")})
+    emit({"t": "result", "x": (
+        f"成员报告 {last['status']}；现有内容与现场已保留，尚未报告完成"
+        if preserve_native_state else last["error"] if result.get("blocked_before_native")
+        else f"已试 {tried} 仍未通,最后:{last['status'][:80]}")})
     failed_result = {"key": key, "harness": key,
-                     "status": "timeout" if last["status"] == "timeout" else "error",
+                     "status": last["status"] if preserve_native_state else
+                               "timeout" if last["status"] == "timeout" else "error",
                      "final": last["final"], "elapsed": elapsed,
-                     "error": (last["error"] if not executed_attempts
+                     "error": ("" if preserve_native_state else last["error"] if not executed_attempts
                                else f"{last['error']}(已试模型:{tried})"),
                      # 军团⑥失败分类 + ③动作清单:让前端区分卡死/跑太久/信号杀·让接力家看到历次工具动作。
-                     "fail_kind": last.get("fail_kind") or "task_error",
+                     "fail_kind": "" if preserve_native_state else last.get("fail_kind") or "task_error",
                      "error_envelope": last.get("error_envelope"),
                      "prior_attempts": prior_attempts,
                      "context_budget": dict(result.get("context_budget") or {}),
@@ -4876,14 +5175,80 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                      **_last_native}
     if result.get("blocked_before_native"):
         failed_result["blocked_before_native"] = True
+    if preserve_native_state:
+        if _orch_request:
+            failed_result["orchestration_request"] = dict(_orch_request)
+        for field in ("model_used", "requested_model"):
+            if field in result:
+                failed_result[field] = result[field]
     _attach_task_usage(failed_result, collect=False)
+    checked_reported_artifacts = []
+    references = [item for item in
+                  [*(result.get("artifacts") or []), *(result.get("discovered_artifacts") or [])]
+                  if isinstance(item, dict)]
+    if (preserve_native_state or
+            (references and (failed_result.get("native_facts") or {}).get("runtime_budget_observation"))):
+        # A runtime pause must not drop explicitly reported files just because
+        # they predate this attempt. Reuse the existing authorized exporter,
+        # never promote an unchecked native path/URL directly.
+        if references or project_context.get("workspace_root") or project_context.get("repo_root"):
+            # Reported identities are observations, never a new download root.
+            # Do not forward preview/content or unvalidated active URLs here.
+            failed_result["reported_artifacts"] = [
+                {field: item[field] for field in
+                 ("id", "name", "path", "kind", "bytes", "sha256", "export_snapshot_id")
+                 if field in item and isinstance(item[field], (str, int, float, bool))}
+                for item in references]
+            import artifact_delivery as _partial_delivery
+            paths = [item["path"] for item in references if isinstance(item.get("path"), str)]
+            workdir = str(project_context.get("workspace_root") or project_context.get("repo_root")
+                          or result.get("workdir") or "")
+            if project_context.get("workspace_root") or project_context.get("repo_root"):
+                # Reuse the exact authenticated exporter. It rereads ownership,
+                # selection and revocation before touching reported file bytes.
+                team = str(task_facts.get("team_id") or qhash)
+                node = str(task_facts.get("task_id") or key)
+                try:
+                    export_conversation = _partial_delivery.project_export_conversation(
+                        project_context, team_id=team, task_id=node, user_id=user_id,
+                        harness_key=key, native_conversation_id=conversation_id, workdir=workdir)
+                    exported = _partial_delivery.export_project_artifacts(
+                        paths, team_id=team, task_id=node, user_id=user_id,
+                        conversation_id=export_conversation)
+                except _partial_delivery._content_safety.ArtifactUnsafe as exc:
+                    exported = {"artifacts": [], "artifact_safety_observations": [
+                        _partial_delivery._not_exported(str(exc))]}
+                except Exception as exc:
+                    observation = _partial_delivery._not_exported("artifact_export_unavailable")
+                    observation.update(
+                        stage="project_export", exception_type=type(exc).__name__,
+                        diagnostic=redact_native_diagnostic(str(exc), _diagnostic_env)[:400])
+                    exported = {"artifacts": [], "artifact_safety_observations": [observation]}
+                notes = list(exported.get("artifact_safety_observations") or [])
+                arts = list(exported.get("artifacts") or [])
+                failed_result.update(
+                    artifacts=arts, artifact_safety_observations=notes,
+                    artifact_export={"exported_files": len(arts), "observations": notes,
+                                     "workdir": workdir})
+                for note in notes:
+                    emit({"t": "artifact_not_exported", **note})
+                for item in arts:
+                    emit({"t": "artifact_ready", "phase": "未完成现场保留",
+                          **{field: item.get(field) for field in
+                             ("name", "url", "bytes", "sha256", "export_snapshot_id")}})
+                # An accepted/refused project selection must not be widened
+                # afterwards by legacy memory, scan or native reference paths.
+                return result if pause_for_budget(failed_result) else failed_result
+            if workdir:
+                checked_reported_artifacts = _partial_delivery.extract(
+                    "\n".join("`" + path + "`" for path in paths), roots=[workdir])
     # 失败时仍保留这次真实生成的产物，供接力家和最终恢复层验证/续做。状态仍是 error，
     # 绝不因“有任意文件”改成成功；只有下游按任务 delivery contract 真验过才可完成。
-    saved_artifacts = []
+    saved_artifacts = list(checked_reported_artifacts)
     try:
         import task_memory as _tm
         saved = _tm.context(_memory_request_id, key)
-        saved_artifacts = list((saved or {}).get("artifacts") or [])
+        saved_artifacts.extend((saved or {}).get("artifacts") or [])
     except Exception:
         pass
     # 与成功出口对称：成员可能先写成品、再在最终回复或 provider 收尾时 rc1。失败不应抹掉
@@ -4905,12 +5270,15 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         failed_result["artifacts"] = saved_artifacts
         failed_result["partial"] = True
         for artifact in saved_artifacts:
-            emit({"t": "artifact_recovered", "stage": "artifact_ready", "phase": "失败现场恢复",
+            emit({"t": "artifact_recovered", "stage": "artifact_ready",
+                  "phase": "未完成现场保留" if preserve_native_state else "失败现场恢复",
                   "status": "recovered", "name": artifact.get("name"), "url": artifact.get("url"),
                   "path": artifact.get("path"), "ext": artifact.get("kind"),
                   "bytes": artifact.get("bytes"), "provenance": artifact.get("provenance"),
                   "lineage": artifact.get("lineage"),
                   "x": f"{key} 遇阻，但已保留产物 {artifact.get('name') or artifact.get('path')} 供接力复验"})
+    if pause_for_budget(failed_result):
+        return result
     return failed_result
 
 
@@ -5256,7 +5624,10 @@ def _build_runtime_brief(question: str, plan: dict, user_id: str = "") -> str:
             who.append(f"{k}（挂在 {parent} 下）" if parent else k)
         lines.append(f"- 本单军团分工：{', '.join(who)}。你是其中一员，别重复别家已明确负责的部分。")
     import platform as _plat
-    lines.append(f"- 运行机器：{_plat.system()} {_plat.machine()}；军团共享 AIGC 网关已配置（key 已就绪，别说需要配 key）。")
+    lines.append(f"- 运行机器：{_plat.system()} {_plat.machine()}；模型配置、提供方验证和工具授权是不同事实，"
+                 "以本请求的实际绑定与调用结果为准。")
+    lines.append("- 当前成员与共享能力索引（目录不是授权；能力互补由成员自主判断）："
+                 + json.dumps(_selection_resource_context(plan, user_id), ensure_ascii=False))
     import legion_paths as _brief_paths
     browser_profile = (os.environ.get("MEYO_PLAYWRIGHT_RUNTIME_PROFILE")
                        or _brief_paths.under("config", "playwright-runtime.json"))
@@ -7168,7 +7539,8 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
              qhash: str = "adhoc", mode: str = "pk", user_id: str = "default",
              conversation_id: str = "", *, _retained_results: dict | None = None,
              _execution_plan: dict | None = None,
-             _continuation_results: dict | None = None) -> dict:
+             _continuation_results: dict | None = None,
+             _provider_results: Optional[Callable[[], list[dict]]] = None) -> dict:
     """派军团。所有模式先编译成同一 typed DAG，再由统一 scheduler/executor 执行。
 
     user_id:真实用户身份(军团自审 codex/deepseek P0 指出:旧版 dispatch 无此参数→run_one
@@ -7402,6 +7774,19 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
 
     # Durable TeamState(参考 dsh-agent-teams):任务/attempt/mailbox 落盘·重启可回放。
     team_id = str(plan.get("team_id") or qhash)
+    if _project_context:
+        # Discovery/default tasks and owner binding happen after initialization.
+        # Export, native recovery and the next worker must see the same actual
+        # graph, not its earlier empty/unbound proposal. Merge only task facts.
+        _project_packet = _project_context.record_task_bindings(
+            team_id,
+            {task_id: {**dict(raw_tasks.get(task_id) or {}),
+                       "assigned_harness": task_assignments.get(task_id, ""),
+                       "depends_on": list(dependencies.get(task_id) or []),
+                       "dependency_policy": dependency_policies.get(task_id, _DEFAULT_DEP_POLICY)}
+             for task_id in keys},
+            user_id=user_id, conversation_id=str(conversation_id or qhash))
+        plan["project_context"] = _project_packet
 
     def _current_project_packet():
         # Read canonical facts without merging the cached plan back into them.
@@ -7620,12 +8005,21 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
     except Exception:
         _assignments = {}
 
+    _inherited_provider_results = _provider_results
+
     def _provider_results():
         # Existing request-local facts only. No history/global credential store,
         # and no attempt to revoke calls already admitted or in flight.
-        return [*list(results.values()), *(
+        current = [*(_inherited_provider_results() if _inherited_provider_results else []),
+                   *list(results.values()), *(
             row["result"] for row in list(_coordination_history)
             if isinstance(row.get("result"), dict))]
+        # A failed relay is an actual execution too. Keep its typed facts
+        # visible even after another result became the node's latest.
+        return current + [
+            attempt for row in current for attempt in (row.get("prior_attempts") or [])
+            if isinstance(attempt, dict) and attempt.get("error_envelope")
+        ]
 
     def _worker(k):
         if k in (_retained_results or {}) and k in results:
@@ -8310,8 +8704,10 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
             r = results.get(k)
             if (r or {}).get("status") == "cancelled":
                 return
-            from error_envelope import requires_execution_pause
+            from error_envelope import requires_execution_pause, requires_request_budget_pause
             if requires_execution_pause(r) or _native_terminal_message_absent(r):
+                return
+            if any(requires_request_budget_pause(row) for row in _provider_results()):
                 return
             _failover_node = raw_tasks.get(k) if isinstance(raw_tasks.get(k), dict) else {}
             # 锁定的独立验证角色失败时不能由被审作者/调查者接力，否则“独立核验”会静默变成自证。
@@ -8332,7 +8728,8 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
             while (relay_rounds < _MAX_FAILOVER
                    and not is_cancelled(qhash)
                    and not is_cancelled(qhash, k, scope="task")
-                   and not requires_execution_pause(r)):
+                   and not requires_execution_pause(r)
+                   and not any(requires_request_budget_pause(row) for row in _provider_results())):
                 relay = _pick_relay_harness(failed_harness, tried, valid, _rescue_kind)
                 if not relay:
                     break
@@ -8424,9 +8821,16 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                     runtime_brief=_rt_brief, task_facts=_relay_facts)
                 if is_cancelled(qhash) or is_cancelled(qhash, k, scope="task"):
                     break
+                previous = dict(r or {})
+                previous_harness = str(previous.get("harness") or failed_harness)
+                previous_attempts = list(previous.pop("prior_attempts", None) or [])
+                relay_res = dict(relay_res)
+                relay_res["prior_attempts"] = [
+                    *previous_attempts, previous, *(relay_res.get("prior_attempts") or []),
+                ]
+                _continuation = {**_continuation, "handoff_from": previous_harness}
                 _relay_message_absent = _native_terminal_message_absent(relay_res)
                 if _is_delivered(relay_res) or _relay_message_absent:
-                    relay_res = dict(relay_res)
                     try:
                         import artifact_provenance as _artifact_provenance
                         _relay_artifacts = _artifact_provenance.merge_artifacts(
@@ -8436,12 +8840,12 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                             _relay_artifacts, objective=question,
                             task=str(tasks.get(k) or "回答用户问题"), task_id=k,
                             agent=relay, actions=relay_res.get("tool_trace") or [],
-                            inherited_from=failed_harness)
+                            inherited_from=previous_harness)
                         if _relay_artifacts:
                             relay_res["artifacts"] = _relay_artifacts
                             relay_res["inherited_artifacts"] = [
                                 item for item in _relay_artifacts
-                                if any(handoff.get("from") == failed_harness
+                                if any(handoff.get("from") == previous_harness
                                        for handoff in (item.get("lineage") or {}).get("handoffs", []))]
                     except Exception:
                         pass
@@ -8477,7 +8881,7 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                         if _team_state:
                             _team_state.update_assignment(team_id, k, relay, reason="failover")
                             _team_state.replace_result(team_id, k, relay_res,
-                                                       previous_harness=failed_harness,
+                                                       previous_harness=previous_harness,
                                                        reason="failover")
                     except Exception:
                         pass
@@ -8498,10 +8902,56 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                                 "artifacts": _partial_artifacts,
                                 "x": f"已接收 {failed_harness} 留下的 {len(_partial_artifacts)} 个产物，进入复验"})
                     break
+                # Updating only local r stops this loop but leaves the outer
+                # request and durable node looking at the original failure.
+                try:
+                    import artifact_provenance as _artifact_provenance
+                    relay_res["artifacts"] = _artifact_provenance.merge_artifacts(
+                        _partial_artifacts, relay_res.get("artifacts"),
+                        relay_res.get("discovered_artifacts"))
+                except Exception:
+                    relay_res["artifacts"] = [
+                        *_partial_artifacts, *(relay_res.get("artifacts") or []),
+                        *(relay_res.get("discovered_artifacts") or []),
+                    ]
+                relay_res.update({
+                    "key": k, "task_id": k, "harness": relay, "assigned_harness": relay,
+                    "relayed_from": failed_harness, "relay_by": relay, "via_relay": False,
+                    "continuation": _continuation,
+                })
+                results[k] = relay_res
+                task_assignments[k] = relay
+                if isinstance(raw_tasks.get(k), dict):
+                    raw_tasks[k]["assigned_harness"] = relay
+                    for field in ("assign_to", "harness", "agent"):
+                        if field in raw_tasks[k]:
+                            raw_tasks[k][field] = relay
+                if _project_context:
+                    try:
+                        packet = _project_context.record_result(
+                            team_id, k, relay_res, assigned_harness=relay,
+                            continuation=relay_res["continuation"])
+                        _project_packet.clear()
+                        _project_packet.update(packet)
+                    except Exception as exc:
+                        relay_res.setdefault("continuation_persistence_errors", []).append({
+                            "store": "project_context", "error": type(exc).__name__})
+                if _team_state:
+                    try:
+                        _team_state.update_assignment(team_id, k, relay, reason="failed_relay")
+                        if not _team_state.replace_result(
+                                team_id, k, relay_res, previous_harness=previous_harness,
+                                reason="failed_relay"):
+                            raise RuntimeError("failed_relay_task_missing")
+                    except Exception as exc:
+                        relay_res.setdefault("continuation_persistence_errors", []).append({
+                            "store": "team_state", "error": type(exc).__name__})
                 r = relay_res
                 if cb:
                     cb({"agent": "commander", "t": "reason",
-                        "x": f"{relay} 接力仍未通·继续找下一个能接的家" if relay_rounds < _MAX_FAILOVER
+                        "x": f"{relay} 接力要求暂停·原生原因和已有成果已交回原请求"
+                             if requires_execution_pause(relay_res) else
+                             f"{relay} 接力仍未通·继续找下一个能接的家" if relay_rounds < _MAX_FAILOVER
                              else f"接力用尽·{k} 这一单确实没能交付"})
 
         workers = []
@@ -10232,7 +10682,8 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                         cb: Optional[Callable[[dict], None]] = None,
                         qhash: str = "adhoc", mode: str = "pk",
                         user_id: str = "default", conversation_id: str = "",
-                        max_rounds: int = 6, *, _retained_results: dict | None = None) -> dict:
+                        max_rounds: int = 6, *, _retained_results: dict | None = None,
+                        _provider_results: Optional[Callable[[], list[dict]]] = None) -> dict:
     """跨轮自主循环(用户 2026-08-28 goal·军团亲口最想要的"跨轮自主循环"):
     军团有 pilot 判断力(pilot_check/classify 能说"没完成要继续")·但过去没接进执行循环——
     dispatch 跑完一轮就停·军团"跨轮会失忆·答完就停"。这里把已有的 pilot 判断真接进循环:
@@ -10249,7 +10700,7 @@ def dispatch_persistent(question: str, plan: dict | None = None,
     import legion_pilot as _lp
     from error_envelope import (
         requires_execution_pause, requires_native_settlement, is_provider_authorization_denial,
-        normalize as normalize_execution_error, paused_execution_tasks,
+        requires_request_budget_pause, normalize as normalize_execution_error, paused_execution_tasks,
     )
 
     invocation_usage: dict[tuple, dict] = {}
@@ -10326,7 +10777,9 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         denied = is_provider_authorization_denial(proposal["result"].get("error_envelope"))
         unsettled = requires_native_settlement(proposal["result"])
         out["pilot"] = {"round": rounds, "action": "stop",
-                        "kind": ("provider_authorization_required" if denied else
+                        "kind": ("request_budget_exhausted"
+                                 if requires_request_budget_pause(proposal["result"]) else
+                                 "provider_authorization_required" if denied else
                                  "native_execution_unconfirmed" if unsettled else "provider_backoff")}
         if denied:
             out["pilot"]["reason"] = "提供方已拒绝本次授权；需管理员处理，本请求不自动重试。"
@@ -10379,6 +10832,16 @@ def dispatch_persistent(question: str, plan: dict | None = None,
     _request_results: dict[str, dict] = {}
     _request_tasks: dict[str, dict] = {}
     _request_dependencies: dict[str, list] = {}
+
+    def request_provider_facts():
+        current = [*(_provider_results() if _provider_results is not None else []),
+                   *list(_request_results.values()),
+                   *(item["result"] for item in coordination_history
+                     if isinstance(item.get("result"), dict))]
+        return current + [
+            attempt for row in current for attempt in (row.get("prior_attempts") or [])
+            if isinstance(attempt, dict) and attempt.get("error_envelope")]
+
     # 与 dispatch 相同的私有运行事实入口；不读取 public plan/payload 中的结果。
     _retained_results = deepcopy(_retained_results or {})
     # Keep model provenance separate from scheduler retention. A reopened node
@@ -10466,6 +10929,8 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         _continuation_kwargs = {"_retained_results": _retained_results} if _retained_results else {}
         if _continuation_results:
             _continuation_kwargs["_continuation_results"] = _continuation_results
+        if _provider_results is not None:
+            _continuation_kwargs["_provider_results"] = request_provider_facts
         _execution_plan: dict = {}
         out = dispatch(round_question, plan=round_plan, cb=cb, qhash=qhash, mode=mode, user_id=user_id,
                        conversation_id=conversation_id, _execution_plan=_execution_plan,
@@ -10610,12 +11075,17 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                 from error_envelope import requires_output_recovery_pause
                 _output_limited = any(
                     requires_output_recovery_pause(_request_results.get(key)) for key in _paused)
+                _request_budget = any(
+                    requires_request_budget_pause(_request_results.get(key)) for key in _paused)
                 out["pilot"] = {
                     "round": rounds, "action": "stop",
-                    "kind": ("provider_authorization_required" if _authorization_denied else
+                    "kind": ("request_budget_exhausted" if _request_budget else
+                             "provider_authorization_required" if _authorization_denied else
                              "native_execution_unconfirmed" if _native_unsettled else
                              "output_recovery_required" if _output_limited else "provider_backoff")}
-                if _authorization_denied:
+                if _request_budget:
+                    out["pilot"]["reason"] = "原请求总预算已用尽；保留原任务与已有成果，不以换家续作取得新额度。"
+                elif _authorization_denied:
                     out["pilot"]["reason"] = "提供方已拒绝本次授权；需管理员处理，本请求不自动重试。"
                 elif _native_unsettled:
                     out["pilot"]["reason"] = "原生任务是否结束尚未确认；保留会话和现场，确认后再续作。"
@@ -10659,10 +11129,7 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                                "contract_incomplete": bool(out.get("contract_incomplete")),
                                "cycle_broken": out.get("cycle_broken") or []},
                     cb=cb, user_id=user_id, conversation_id=conversation_id,
-                    _provider_results=lambda: [
-                        *list(_request_results.values()),
-                        *(item["result"] for item in coordination_history
-                          if isinstance(item.get("result"), dict))])
+                    _provider_results=request_provider_facts)
             if (requires_execution_pause(coordination.get("result"))
                     or coordination.get("cancelled") or is_cancelled(qhash)):
                 return pause_coordination(out, coordination, rounds)
@@ -11140,10 +11607,7 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                     original_question, plan, round_plan, str(plan.get("team_id") or qhash), next_guidance,
                     user_id=user_id, conversation_id=conversation_id,
                     cancel_check=lambda: is_cancelled(qhash),
-                    _provider_results=lambda: [
-                        *list(_request_results.values()),
-                        *(item["result"] for item in coordination_history
-                          if isinstance(item.get("result"), dict))],
+                    _provider_results=request_provider_facts,
                     _result_observer=lambda proposed: out.update(continuation_planning=proposed))
             except Exception as exc:
                 continuation_error = "continuation_plan:" + type(exc).__name__
@@ -11172,7 +11636,8 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                            "blocked" if out["status"] == "blocked" else "failed",
                     failure_stage="planning", planner_error=continuation_error)
                 out["pilot"] = {**verdict, "action": "stop",
-                    "kind": ("provider_authorization_required" if
+                    "kind": ("request_budget_exhausted" if requires_request_budget_pause(_planning) else
+                             "provider_authorization_required" if
                              is_provider_authorization_denial(_planning.get("error_envelope")) else
                              "native_execution_unconfirmed" if requires_native_settlement(_planning) else
                              "continuation_planning_failed")}

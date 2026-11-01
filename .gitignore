@@ -13,3 +13,4 @@ secrets/
 .legion/
 .codex/auth.json
 .external_agents.lock
+/.qa/

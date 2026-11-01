@@ -134,7 +134,10 @@ def test_real_failure_channels_keep_precedence(explicit_run_one, raw):
 ])
 def test_unknown_native_outcome_retains_legacy_error_text_fallback(explicit_run_one, facts):
     result, _ = execute_result(explicit_run_one, {
-        "status": "ok", "final": "API call failed: HTTP 429", "error": "",
+        # Truly unknown receipts retain the legacy fallback. An adapter's
+        # explicit success is a content-source fact, covered separately by
+        # test_adapter_final_channel; it is not an unknown receipt.
+        "status": "unknown", "final": "API call failed: HTTP 429", "error": "",
         "native_facts": facts,
     })
     assert result["status"] != "done", result

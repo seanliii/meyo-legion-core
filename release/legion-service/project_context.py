@@ -136,6 +136,37 @@ def initialize(team_id: str, objective: str, plan: dict, *, mode: str,
                                   user_id=user_id, conversation_id=conversation_id)
 
 
+def record_task_bindings(team_id: str, tasks: dict, *, user_id: str,
+                         conversation_id: str) -> dict:
+    """Persist the scheduler's actual assignments without replaying a stale plan.
+
+    This updates task facts only. It cannot create a project, change its owner
+    or workspace, or supply an export grant. Other facts may have arrived while
+    discovery/binding was running, so re-read them under the existing lock.
+    """
+    with _packet_lock(team_id):
+        packet = load(team_id)
+        if not packet:
+            raise LookupError("project_context_missing")
+        require_owner(packet, user_id, conversation_id)
+        if packet.get("conversation_id") != conversation_id:
+            raise PermissionError("persisted context belongs to another conversation")
+        previous = [row for row in packet.get("tasks") or []
+                    if isinstance(row, dict) and row.get("task_id")]
+        order = [str(row["task_id"]) for row in previous]
+        rows = {str(row["task_id"]): row for row in previous}
+        for task_id, value in tasks.items():
+            task_id = str(task_id)
+            node = _task_node(task_id, value, {})
+            if task_id not in rows:
+                order.append(task_id)
+            rows[task_id] = {**rows.get(task_id, {}), **node}
+        packet["tasks"] = [rows[task_id] for task_id in order][-_MAX_ITEMS:]
+        packet["updated_at"] = time.time()
+        _atomic_write(_path(team_id), packet)
+        return packet
+
+
 def _initialize_locked(team_id: str, objective: str, plan: dict, *, mode: str,
                        user_id: str = "", conversation_id: str = "") -> dict:
     """调用者已持有 _packet_lock；合并原有项目事实，不另建执行现场。"""

@@ -47,6 +47,20 @@ def test_goals_are_not_implicitly_adopted_from_shell_or_old_checkout(bootstrap, 
     assert not (root / "pilot-goals.md").exists()
 
 
+def test_public_model_cache_reference_survives_without_inheriting_memory_or_credentials(bootstrap, tmp_path):
+    root = tmp_path / "instance"
+    bootstrap.initialize(root, "owner-test", 18080)
+    cache = tmp_path / "public-model-assets"
+    env, _ = bootstrap.environment(root, inherited={
+        "LEGION_JCODE_PUBLIC_MODEL_CACHE": str(cache),
+        "JCODE_HOME": str(tmp_path / "another-users-memory"),
+        "OPENAI_API_KEY": "unrelated-private-fixture",
+    })
+    assert env.get("LEGION_JCODE_PUBLIC_MODEL_CACHE") == str(cache)
+    assert env["HOME"] == str(root / "home")
+    assert "JCODE_HOME" not in env and "OPENAI_API_KEY" not in env
+
+
 def test_goals_explicit_adoption_persists_only_manual_content(bootstrap, tmp_path):
     root = tmp_path / "instance"
     bootstrap.initialize(root, "owner-test", 18080)

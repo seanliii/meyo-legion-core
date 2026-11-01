@@ -69,7 +69,7 @@ def catalog_lock(timeout_s: float = 30.0):
             _LOCK_TLS.depth = 0
 
 import agent_manifest
-from external_agent_transports import TransportError, run_transport, _managed_cli_app
+from external_agent_transports import TransportError, run_transport, _managed_cli_app, is_readonly_loopback_http
 
 HERE = pathlib.Path(__file__).resolve().parent
 CATALOG = HERE / "external_agents.json"
@@ -1085,7 +1085,11 @@ def capability_actions(key: str = "", *, catalog: list[dict] | None = None) -> d
         if key and item["key"] != key:
             continue
         for name, action in (item.get("capability_actions") or {}).items():
-            if not isinstance(action, dict) or not action.get("command"):
+            if not isinstance(action, dict):
+                continue
+            if ("transport" in action
+                    and (action.get("command") or not is_readonly_loopback_http(action["transport"]))
+                    or "transport" not in action and not action.get("command")):
                 continue
             rows.append({
                 "id": f"external_capability:{item['key']}:{name}",
@@ -1097,6 +1101,81 @@ def capability_actions(key: str = "", *, catalog: list[dict] | None = None) -> d
     return {"ok": True, "actions": rows, "count": len(rows)}
 
 
+def _readonly_capability_instance(key: str, env: dict | None,
+                                  isolated_environment: bool) -> tuple[str, dict | None]:
+    """Read only this caller's explicit private namespace, never another profile."""
+    import stat
+
+    missing = {"ok": False, "status": "unconfigured", "configured": False,
+               "code": "instance_unconfigured", "error": "No private instance URL is configured."}
+    invalid = {"ok": False, "status": "invalid_config", "configured": False,
+               "code": "instance_config_invalid", "error": "Invalid private instance configuration."}
+    scope = dict(env or {}) if env is not None or isolated_environment else os.environ
+    root = scope.get("MEYO_LEGION_DIR")
+    if not root:
+        return "", missing
+    if (not isinstance(root, str) or root != root.strip()
+            or any(ord(char) < 32 for char in root) or not pathlib.Path(root).is_absolute()):
+        return "", invalid
+    path = pathlib.Path(root) / "external_agents" / "instances.json"
+    try:
+        if path.parent.is_symlink() or path.is_symlink():
+            return "", invalid
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077
+                    or hasattr(os, "getuid") and info.st_uid != os.getuid()):
+                return "", invalid
+            raw = stream.read(65_537)
+        if len(raw) > 65_536:
+            return "", invalid
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            return "", invalid
+        row = document.get(key)
+        if row is None:
+            return "", missing
+        if not isinstance(row, dict) or set(row) - {"url"}:
+            return "", invalid
+        url = row.get("url")
+        if url in (None, ""):
+            return "", missing
+        if not isinstance(url, str):
+            return "", invalid
+        return url, None
+    except FileNotFoundError:
+        return "", missing
+    except (OSError, ValueError, UnicodeError):
+        return "", invalid
+
+
+def _run_readonly_http_capability(key: str, action: str, contract: dict, params: dict,
+                                  timeout_s: float | None, env: dict | None,
+                                  isolated_environment: bool) -> dict:
+    identity = {"key": key, "action": action}
+    if contract.get("command") or not is_readonly_loopback_http(contract.get("transport")):
+        return {**identity, "ok": False, "status": "invalid_config",
+                "code": "invalid_readonly_http_contract", "error": "Invalid read-only HTTP declaration."}
+    if params:
+        return {**identity, "ok": False, "status": "invalid_request",
+                "code": "readonly_parameters_not_allowed",
+                "error": "Read-only instance actions do not accept endpoint, credential or method overrides."}
+    try:
+        configured_limit = float(contract.get("timeout_s", 5))
+        limit = min(configured_limit, float(timeout_s)) if timeout_s is not None else configured_limit
+        if not 0 < limit <= 30:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return {**identity, "ok": False, "status": "invalid_request",
+                "code": "invalid_timeout", "error": "Invalid read-only HTTP timeout."}
+    url, problem = _readonly_capability_instance(key, env, isolated_environment)
+    if problem:
+        return {**identity, **problem}
+    result = run_transport(contract["transport"], {"instance_url": url}, {}, limit)
+    return {**identity, **result, "ok": result.get("status") == "ok"}
+
+
 def run_capability(key: str, action: str, params: dict | None = None,
                    timeout_s: int | None = None, env: dict[str, str] | None = None,
                    workdir: str = "", isolated_environment: bool = False) -> dict:
@@ -1106,9 +1185,15 @@ def run_capability(key: str, action: str, params: dict | None = None,
         return {"ok": False, "error": f"unknown external capability:{key}"}
     actions = item.get("capability_actions") or {}
     contract = actions.get(action)
-    if not isinstance(contract, dict) or not contract.get("command"):
+    if not isinstance(contract, dict):
         return {"ok": False, "error": f"unknown capability action:{key}:{action}"}
     params = dict(params or {})
+    if "transport" in contract:
+        # An already-running local API needs neither an install probe nor model credentials.
+        return _run_readonly_http_capability(
+            key, action, contract, params, timeout_s, env, isolated_environment)
+    if not contract.get("command"):
+        return {"ok": False, "error": f"unknown capability action:{key}:{action}"}
     required = [str(name) for name in contract.get("params") or []]
     missing = [name for name in required if params.get(name) is None]
     if missing:

@@ -4580,10 +4580,27 @@ class Handler(BaseHTTPRequestHandler):
                             def _run_solo_attempt(_owner, _assignment):
                                 _node = (_plan.get("tasks") or {}).get(_solo_task_id)
                                 _node = dict(_node) if isinstance(_node, dict) else {}
+                                _bound_node = {**_node, "task": _solo_task,
+                                               "assigned_harness": _owner}
+                                _attempt_facts = dict(_solo_facts)
+                                _orchestration = dict(_attempt_facts.get("orchestration") or {})
+                                _orchestration["assignment"] = {
+                                    **dict(_orchestration.get("assignment") or {}),
+                                    "task_id": _solo_task_id, "harness": _owner}
+                                _attempt_facts["orchestration"] = _orchestration
+                                if _solo_context:
+                                    # Remapping/relay changes the real executor, not the
+                                    # logical task. Sync only that binding under the
+                                    # project lock; don't replay stale plan/grant facts.
+                                    _bound_packet = _solo_context.record_task_bindings(
+                                        _team_id, {_solo_task_id: _bound_node},
+                                        user_id=_uid_s, conversation_id=str(sid))
+                                    _attempt_facts["project_context"] = _solo_context.snapshot(
+                                        _team_id, _solo_task_id, packet=_bound_packet,
+                                        execution_depth=_solo_depth)
                                 TEAMS.ensure(
                                     _team_id, question,
-                                    {_solo_task_id: {**_node, "task": _solo_task,
-                                                    "assigned_harness": _owner}},
+                                    {_solo_task_id: _bound_node},
                                     {_solo_task_id: list(_node.get("depends_on") or
                                                         _node.get("dependencies") or [])},
                                     delivery_contract=dict(_plan.get("delivery_contract") or {}),
@@ -4597,7 +4614,7 @@ class Handler(BaseHTTPRequestHandler):
                                         preferred_model=_assignment.get("model"),
                                         preferred_appid=_assignment.get("appid"),
                                         runtime_brief=_solo_brief,
-                                        task_facts={**_solo_facts, "attempt_id": _attempt},
+                                        task_facts={**_attempt_facts, "attempt_id": _attempt},
                                         capability_policy=_solo_capability,
                                         cancel_check=lambda: LEGION._request_cancelled(
                                             _team_id, _solo_task_id, _owner),
@@ -4654,14 +4671,14 @@ class Handler(BaseHTTPRequestHandler):
                                 except Exception:
                                     pass
                             _r = dict(_r)
+                            _solo_owner = str(_r.get("harness") or _r.get("key") or _solo_tried[-1])
                             _r.update({"key": _solo_task_id, "task_id": _solo_task_id,
-                                       "harness": str(_r.get("harness") or _r.get("key") or _solo_key),
-                                       "assigned_harness": _solo_key})
+                                       "harness": _solo_owner, "assigned_harness": _solo_owner})
                             if _solo_context:
                                 try:
                                     _solo_packet = _solo_context.record_result(
                                         _team_id, _solo_task_id, _r,
-                                        assigned_harness=str(_r.get("harness") or _solo_key))
+                                        assigned_harness=_solo_owner)
                                     if _solo_milestone:
                                         _solo_milestone.observe_context(
                                             _solo_packet, include_gaps=False,
@@ -4669,9 +4686,9 @@ class Handler(BaseHTTPRequestHandler):
                                         _solo_milestone.update([_r])
                                 except Exception:
                                     pass
-                            _solo_out = {"results": [_r], "solo": True, "captain": _solo_key,
+                            _solo_out = {"results": [_r], "solo": True, "captain": _solo_owner,
                                          "team_id": _team_id,
-                                         "task_assignments": {_solo_task_id: _solo_key},
+                                         "task_assignments": {_solo_task_id: _solo_owner},
                                          "assignment_decisions": list(_solo_bound.get("decisions") or []),
                                          "execution_depth": _solo_depth, "solo_tried": _solo_tried,
                                          "delivery_contract": dict(_plan.get("delivery_contract") or {})}
@@ -4761,26 +4778,52 @@ class Handler(BaseHTTPRequestHandler):
                     if elected.get("ok") and elected.get("solo"):
                         _cap = elected["captain"]
                         _ans = str(elected.get("plan", {}).get("_solo_answer") or "")
+                        _original = elected.get("original_result")
+                        _candidate_scope = elected.get("candidate_scope") or {}
+                        if (not isinstance(_original, dict) or not _candidate_scope.get("task_id")
+                                or _candidate_scope.get("team_id") != _team_id
+                                or _candidate_scope.get("harness") != _cap):
+                            _finish_planning_failure({
+                                "ok": False, "status": "error",
+                                "error": "captain_solo_result_unavailable"}, _plan, mode)
+                            return
+                        # Adopt the actual candidate execution, without replay
+                        # or replacing its native cursor/usage/checked exports.
+                        _solo_task_id = str(_candidate_scope["task_id"])
+                        _r = deepcopy(_original)
+                        _r.update(key=_solo_task_id, task_id=_solo_task_id,
+                                  harness=_cap, assigned_harness=_cap)
+                        if _r.get("status") == "done":
+                            _r["final"] = _ans  # Strip election protocol only.
+                        _plan = deepcopy(elected["plan"])
+                        import project_context as _selected_project
+                        _selected_project.record_result(
+                            _team_id, _solo_task_id, _r, assigned_harness=_cap,
+                            continuation={"action": "captain_solo_selected", **_candidate_scope})
+                        TEAMS.replace_result(
+                            _team_id, _solo_task_id, _r, reason="captain_solo_selected")
                         # solo 短路补发 tasklist（2026-09-18，与 solo 快答路同因）：
                         # 前端成员注册缺 tasklist 则过程事件全被丢。
                         cb({"agent": _cap, "t": "tasklist", "captain": _cap, "mode": "solo",
-                            "tasks": [{"key": _cap, "task_id": _cap, "harness": _cap,
+                            "tasks": [{"key": _solo_task_id, "task_id": _solo_task_id, "harness": _cap,
                                        "task": question[:500], "parent": None,
-                                       "dependencies": [], "status": "pending"}]})
-                        _solo_out = {"results": [{"key": _cap, "harness": _cap, "status": "done",
-                                                  "final": _ans, "model": "", "elapsed": 0,
-                                                  "attempts": 1}],
-                                     "mode_reason": {"mode": "simple", "triggers": [], "delivered": 1,
-                                                     "total": 1}, "solo": True, "captain": _cap,
+                                       "dependencies": [], "status": _r.get("status", "error")}]})
+                        _solo_out = {"results": [_r],
+                                     "mode_reason": {"mode": "simple", "triggers": []},
+                                     "solo": True, "captain": _cap,
                                      "team_id": _team_id,
+                                     "task_assignments": {_solo_task_id: _cap},
+                                     "dependencies": {_solo_task_id: []},
+                                     "candidate_scope": dict(_candidate_scope),
+                                     "usage": deepcopy(_r.get("usage") or {}),
                                      "execution_mode": mode,
                                      "delivery_contract": dict(_plan.get("delivery_contract") or {})}
                         try:
                             import task_outcome as _task_outcome
                             _task_outcome.attach(_solo_out, _solo_out["delivery_contract"])
                         except Exception:
-                            _solo_out.update({"delivered_count": 1, "total": 1,
-                                              "all_failed": False, "partial": False})
+                            _solo_out.update({"delivered_count": int(_r.get("status") == "done"), "total": 1,
+                                              "all_failed": _r.get("status") != "done", "partial": False})
                         try:
                             _si = _save_query_turn(_solo_out, mode, _plan)
                             _solo_out["session"] = _si

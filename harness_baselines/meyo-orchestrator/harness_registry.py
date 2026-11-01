@@ -108,8 +108,9 @@ references produced placeholder stand-ins until the references were attached as 
 mandatory baseline.
 
 """
-_LEGION_TOOL_ACCESS = """Shared legion tools are ready with the user's keys (never say you "can't" or ask the user for an
-OPENAI_API_KEY). Tools are LAYERED — this prompt lists only the entrypoints; pull full details ON
+_LEGION_TOOL_ACCESS = """Shared tool entrypoints are listed below; installation, model configuration, runtime availability and
+request authorization are separate facts. Use the current resource index and native errors, never assume all keys exist.
+Tools are LAYERED — this prompt lists only the entrypoints; pull full details ON
 DEMAND so a simple task isn't slowed by a huge tool manual:
 - Full tool/capability catalog (research stages, web search, SkillFinder, search-source inventory,
   MCP servers, internal tools — everything with exact args): fetch it only when you need a capability:
@@ -881,6 +882,10 @@ class RuntimeLease:
 
 def _pgroup_cpu_seconds(pgid: int) -> float:
     """进程组累计CPU时间(秒)。用 ps 读同组所有进程的 TIME 求和。读不到返回 -1(视为未知·不据此判卡)。"""
+    if _sys.platform == "darwin":
+        registry = _load_proc_registry()
+        query = getattr(registry, "process_group_cpu_seconds", None)
+        return query(pgid) if callable(query) else -1.0
     try:
         import subprocess as _sp
         r = _sp.run(["ps", "-A", "-o", "pgid=,time="], capture_output=True, text=True, timeout=5)
@@ -1666,12 +1671,13 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
                      env=env, cwd=cwd, stdin=_stdin, **_popen_kw)
     # 崩溃安全孤儿回收(2026-09-02 根修):本 CLI 与 worker 同组,worker 被单独 SIGKILL(rc-9)
     # 时同组残留无人收 → 登记注册表(owner=本进程),父层 kill_owned_by/sweep 兜底。
+    _process_scope = None
     try:
         _reg = _load_proc_registry()
         if _reg is not None:
-            _reg.register(proc.pid, pgid=os.getpgid(proc.pid), owner=os.getpid(),
-                          comm=os.path.basename(str(cmd[0])),
-                          meta={"kind": "native-cli", "tag": str(tag)})
+            _process_scope = _reg.NativeProcessScope(
+                proc.pid, owner=os.getpid(),
+                meta={"kind": "native-cli", "tag": str(tag)})
     except Exception:
         pass
     out_buf, err_buf = [], []
@@ -1853,9 +1859,17 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
     cancelled = False
     cpu_interval = min(20.0, max(0.1, lease.idle_s / 3))
     cpu_at = _t.monotonic()
-    cpu_last = _pgroup_cpu_seconds(proc.pid) if task_run and os.name != "nt" else -1
+    def _owned_cpu_seconds():
+        query = getattr(_process_scope, "cpu_seconds", None)
+        if _sys.platform == "darwin" and callable(query):
+            return query()  # Unknown scope samples must not switch to a root-only counter.
+        return _pgroup_cpu_seconds(proc.pid)
+
+    cpu_last = _owned_cpu_seconds() if task_run and os.name != "nt" else -1
     try:
         while proc.poll() is None:
+            if _process_scope is not None:
+                _process_scope.observe()
             check = getattr(_INPROC_CANCEL_CHECK, "check", None)
             if callable(check):
                 try:
@@ -1867,7 +1881,7 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             _pump_native_stdin()
             _pump_transport_activity()
             if task_run and os.name != "nt" and _t.monotonic() - cpu_at >= cpu_interval:
-                cpu_now = _pgroup_cpu_seconds(proc.pid)
+                cpu_now = _owned_cpu_seconds()
                 if cpu_now >= 0 and cpu_last >= 0 and cpu_now - cpu_last >= 0.02:
                     activity()
                 cpu_last, cpu_at = cpu_now, _t.monotonic()
@@ -1881,6 +1895,8 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             _t.sleep(0.1)
         if cancelled:
             _INPROC_CANCEL_CHECK.cancelled = True
+            if _process_scope is not None:
+                _process_scope.observe(force=True)
             try:
                 if os.name != "nt":
                     os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
@@ -1901,11 +1917,15 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
                     os.killpg(proc.pid, _signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+            if _process_scope is not None:
+                _process_scope.cleanup()
             to.join(timeout=2); te.join(timeout=2)
             return _NS(returncode=130, stdout="".join(out_buf), stderr="".join(err_buf),
                        cancelled=True,
                        **({"native_stdin_error": stdin_error} if native_stdin is not None else {}))
     except _sp.TimeoutExpired as _te:
+        if _process_scope is not None:
+            _process_scope.observe(force=True)
         try:
             if os.name != "nt":
                 os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
@@ -1914,6 +1934,8 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
         except Exception:
             pass
         proc.wait()
+        if _process_scope is not None:
+            _process_scope.cleanup()
         to.join(timeout=2); te.join(timeout=2)
         # P0-2(codex dogfood 梳理揪出·CC 亲核):timeout 时进程被 kill 前 out_buf 常已含
         # `thread.started`(原生会话 id)。旧版直接 raise 丢弃 → 有原生 resume 能力的家
@@ -1930,6 +1952,8 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
         _close_native_stdin()
     to.join(timeout=2); te.join(timeout=2)
     _pump_transport_activity()
+    if proc.returncode not in (0, None) and _process_scope is not None:
+        _process_scope.cleanup()
     return _NS(returncode=proc.returncode, stdout="".join(out_buf), stderr="".join(err_buf),
                cancelled=False,
                **({"native_stdin_error": stdin_error} if native_stdin is not None else {}))
@@ -2112,81 +2136,290 @@ def _legion_prompt(question: str, ctx=None, *, adapter_capabilities=None) -> str
     return prompt
 
 
-def _penguin_trace_offsets(resume_id: str = "") -> tuple[_P, dict[str, int]]:
-    """记录 Penguin Trace 当前长度；任务结束后只读本轮追加段，避免 resume 重复累计历史 Token。"""
-    root = _P(os.environ.get("PENGUIN_HOME") or (_P.home() / ".penguin" / "data"))
+def _penguin_trace_files(traces: _P, resume_id: str = "") -> list[_P]:
+    """Native segment names, not caller-supplied glob syntax or mtime ranking."""
+    files = []
+    for path in traces.glob("*/*.jsonl"):
+        sid, separator, segment = path.stem.rpartition("_")
+        if (not separator or not segment.isdigit() or (resume_id and sid != resume_id)
+                or path.is_symlink() or not path.is_file()
+                or not path.resolve().is_relative_to(traces.resolve())):
+            continue
+        files.append(path)
+    return sorted(files, key=lambda p: (
+        p.stem.rpartition("_")[0], int(p.stem.rpartition("_")[2]), str(p.parent)))
+
+
+def _penguin_trace_offsets(resume_id: str = "") -> tuple[_P, dict[str, int] | None]:
+    """Snapshot byte offsets in the same per-call home the native CLI will use."""
+    env = {**os.environ, **(getattr(_INPROC_RUNTIME_ENV, "values", {}) or {})}
+    root = _P(env.get("PENGUIN_HOME") or
+              (_P(env.get("HOME") or str(_P.home())) / ".penguin" / "data"))
     traces = root / "default_project" / "agents" / "default_agent" / "traces"
     try:
-        files = list(traces.glob(f"*/{resume_id}_*.jsonl")) if resume_id else list(
-            (traces / _t.strftime("%Y-%m-%d")).glob("*.jsonl"))
-        return traces, {str(path): path.stat().st_size for path in files if path.is_file()}
+        # Include older dates: a resumed/rotated trace or midnight crossing must
+        # not make an old completed message look like a newly created record.
+        return traces, {str(path): path.stat().st_size
+                        for path in _penguin_trace_files(traces, resume_id)}
     except OSError:
-        return traces, {}
+        # Unknown is not an empty, successfully inspected directory. Otherwise
+        # a failed stat can promote an earlier answer to this invocation.
+        return traces, None
 
 
-def _penguin_usage_after(traces: _P, offsets: dict[str, int], *, workdir: str = "",
-                         resume_id: str = "") -> tuple[dict | None, str, list[str]]:
-    """从 Penguin 原生 JSONL 的 token_usage 事件读取精确 Token，不解析四舍五入的 [stats]。"""
+def _penguin_error_observation(message, *, source: str, native_status=None):
+    """Project a real diagnostic through the existing error taxonomy.
+
+    Native request_end exposes status/error_message/attempt/retry_in_ms, not a
+    request-budget scope or retry permission. Its message may include private
+    model context: retain a fingerprint and its trace location, not the body.
+    Classification here is a runtime interpretation, never a native grant.
+    """
+    import hashlib
+
+    raw = message if isinstance(message, str) else ""
+    cause = {
+        "source": source, "native_retryable": None, "native_scope": None,
+        "message_chars": len(raw),
+        "message_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "message_body": "not_projected",
+        "native_trace_retained": source.startswith("penguin_trace."),
+    }
+    forced = {"auth": "authorization_required", "aborted": "user_cancel"}.get(native_status, "")
     try:
-        files = list(traces.glob(f"*/{resume_id}_*.jsonl")) if resume_id else list(
-            (traces / _t.strftime("%Y-%m-%d")).glob("*.jsonl"))
+        from error_envelope import normalize
+        envelope = normalize(
+            "timeout" if native_status == "timeout" else "error", raw, fail_kind=forced).to_dict()
+    except ImportError:
+        # Old standalone distributions may not carry the service error module.
+        envelope = {"category": forced or "unknown", "retryable": False, "scope": "harness"}
+    if envelope["category"] == "task_error":
+        envelope["category"] = "unknown"
+    category = envelope["category"]
+    explanations = {
+        "model_config": "Penguin 的模型配置或请求参数被拒绝；请查看本次原生诊断。",
+        "gateway": "Penguin 报告模型提供方服务错误；本次原生诊断已定位。",
+        "rate_limit": "Penguin 报告提供方限流或额度错误；未报告整单预算是否耗尽。",
+        "authorization_required": "Penguin 原生请求报告鉴权失败；请检查本次模型授权。",
+        "credential_required": "Penguin 报告本次调用缺少所需凭据。",
+        "context_overflow": "Penguin 报告本次输入超过模型上下文限制。",
+        "timeout": "Penguin 原生请求报告超时；未取得完整结果。",
+        "user_cancel": "Penguin 原生请求报告已中断。",
+        "harness_runtime": "Penguin 启动或运行环境出错；请查看本次诊断。",
+        "process": "Penguin 进程报告执行错误；不代表模型已完成。",
+    }
+    envelope["message"] = explanations.get(
+        category, "Penguin 的失败原因尚未识别；未将未知原因改成预算耗尽或授权成功。")
+    envelope["code"] = "penguin_" + str(native_status or "process_error")
+    envelope["details"] = {**(envelope.get("details") or {}),
+                           "native_source": source, "classification_source": "runtime_error_taxonomy",
+                           "diagnostic_body_projected": False}
+    cause["category"] = category
+    return cause, envelope
+
+
+def _penguin_trace_after(traces: _P, offsets: dict[str, int] | None, *, workdir: str = "",
+                         resume_id: str = "", request_text: str | None = None) -> dict:
+    """Read this invocation's native text/usage without exposing thinking.
+
+    Resume binds the native session plus offsets. A fresh CLI has no session
+    argument/output envelope: bind its native userText(input) and workspace,
+    then require one session. Never choose the newest unrelated trace.
+    """
+    result = {"usage": None, "session_id": resume_id, "native_events": [], "final": None,
+              "completed": False, "request_status": None, "matched_session": False,
+              "trace_state": "no_current_trace", "trace_refs": [], "request_end": None,
+              "aborted": False, "terminal_error": None, "error_envelope": None}
+    if offsets is None:
+        return {**result, "trace_state": "offset_snapshot_unavailable"}
+    try:
+        files = _penguin_trace_files(traces, resume_id)
     except OSError:
-        return None, resume_id, []
-    grouped: dict[str, tuple[float, list[dict]]] = {}
+        return {**result, "trace_state": "trace_unavailable"}
+    grouped: dict[str, list[_P]] = {}
     for path in files:
+        grouped.setdefault(path.stem.rpartition("_")[0], []).append(path)
+    candidates = []
+    for sid, paths in grouped.items():
         try:
-            offset = int(offsets.get(str(path), 0))
-            if path.stat().st_size <= offset:
+            changed = [(path, int(offsets.get(str(path), 0))) for path in paths
+                       if path.stat().st_size != int(offsets.get(str(path), 0))]
+            if not changed:
                 continue
-            with path.open("rb") as handle:
-                handle.seek(offset)
-                lines = handle.read().decode("utf-8", errors="ignore").splitlines()
-            records = []
-            for line in lines:
-                try:
-                    row = _json.loads(line)
-                    if isinstance(row, dict):
-                        records.append(row)
-                except (TypeError, ValueError):
+            # Only the header is read before an offset, for native identity.
+            # Old assistant messages are never eligible as the current answer.
+            with paths[0].open("rb") as handle:
+                header = _json.loads(handle.readline().decode("utf-8"))
+            meta = header.get("payload") if isinstance(header, dict) else None
+            if (not isinstance(header, dict) or header.get("type") != "session_meta" or not isinstance(meta, dict)
+                    or meta.get("session_id") != sid):
+                continue
+            workspace = meta.get("workspace")
+            if workdir and (not isinstance(workspace, str) or not workspace
+                            or os.path.realpath(workspace) != os.path.realpath(workdir)):
+                continue
+            records, refs, malformed = [], [], False
+            for path, offset in changed:
+                size = path.stat().st_size
+                if offset < 0 or offset > size:
+                    malformed = True
                     continue
-            meta = next((row.get("payload") or {} for row in records
-                         if row.get("type") == "session_meta"), {})
-            session_id = str(meta.get("session_id") or resume_id or path.name.rsplit("_", 1)[0])
-            if workdir and meta and os.path.realpath(str(meta.get("workspace") or "")) != os.path.realpath(workdir):
+                with path.open("rb") as handle:
+                    handle.seek(offset)
+                    lines = handle.read().decode("utf-8").splitlines()
+                refs.append({"path": str(path), "offset": offset, "bytes": size - offset})
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = _json.loads(line)
+                        if not isinstance(row, dict):
+                            raise ValueError("non-object trace record")
+                        payload = row.get("payload")
+                        if not isinstance(payload, dict):
+                            raise ValueError("trace payload unavailable")
+                        if row.get("type") == "session_meta" and (
+                                payload.get("session_id") != sid or payload.get("workspace") != workspace):
+                            raise ValueError("trace identity changed")
+                        records.append((row, str(path)))
+                    except (TypeError, ValueError):
+                        malformed = True
+            if not resume_id and request_text is not None and not any(
+                    row.get("type") == "model_msg" and row["payload"].get("role") == "user"
+                    and row["payload"].get("type") == "text"
+                    and row["payload"].get("text") == request_text for row, _ in records):
                 continue
-            previous = grouped.get(session_id, (0.0, []))
-            grouped[session_id] = (max(previous[0], path.stat().st_mtime), [*previous[1], *records])
-        except OSError:
+            candidates.append((sid, records, refs, malformed))
+        except (OSError, ValueError, TypeError, UnicodeError):
             continue
-    if not grouped:
-        return None, resume_id, []
-    session_id, (_, records) = max(grouped.items(), key=lambda item: item[1][0])
+    if len(candidates) != 1:
+        if candidates:
+            result["trace_state"] = "ambiguous_current_sessions"
+        return result
+    session_id, records, refs, malformed = candidates[0]
+    result.update(session_id=session_id, matched_session=True, trace_refs=refs)
     totals = {"cache_read_tokens": 0, "cache_write_tokens": 0,
               "output_tokens": 0, "total_tokens": 0}
     usage_events = 0
-    native_events = []
-    for row in records:
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    active, compaction, request_status, final = False, 0, None, None
+    bound = request_text is None
+    foreign_input = False
+    pending_rotation, summary_allowed = False, False
+    # A resumed suffix starts after its old session_meta. The candidate's
+    # header/identity was already checked above; retain that starting segment
+    # so a later, genuine compaction rotation can be recognized.
+    segment = records[0][1] if records else None
+    for row, path in records:
+        payload = row["payload"]
         event_type = str(payload.get("type") or "")
-        if event_type in {"compaction_begin", "compaction_end", "abort"}:
-            native_events.append(event_type)
-        if row.get("type") != "event_msg" or event_type != "token_usage":
+        if row.get("type") == "session_meta":
+            # Successful compaction rotates the native trace before injecting
+            # [context_summary]. Only that structural continuation, not any
+            # different user input, can remain part of the same invocation.
+            summary_allowed = bool(pending_rotation and segment is not None and path != segment)
+            pending_rotation, segment = False, path
             continue
-        request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-        for name, source_name in (("cache_read_tokens", "cache_read"),
-                                  ("cache_write_tokens", "cache_write"),
-                                  ("output_tokens", "output"), ("total_tokens", "total")):
-            try:
-                totals[name] += max(0, int(request.get(source_name) or 0))
-            except (TypeError, ValueError):
-                pass
-        usage_events += 1
-    if not usage_events:
-        return None, session_id, native_events
-    totals["input_tokens"] = totals["cache_read_tokens"] + totals["cache_write_tokens"]
-    totals.update({"source": "penguin_trace", "granularity": "task",
-                   "input_semantics": "cache_buckets", "num_turns": usage_events})
-    return totals, session_id, native_events
+        if (row.get("type") == "model_msg" and payload.get("role") == "user"
+                and event_type == "text" and not compaction):
+            text = payload.get("text")
+            native_summary = (summary_allowed and isinstance(text, str) and (
+                text.startswith("[context_summary]") and text.endswith("[/context_summary]")
+                or text.startswith("<context_summary>") and text.endswith("</context_summary>")))
+            if request_text is not None and text == request_text and not (
+                    bound and isinstance(final, str) and request_status == "completed"):
+                bound = True
+            elif bound and not native_summary and payload.get("sender") != "harness":
+                if request_text is not None:
+                    foreign_input = True
+                    active, final, request_status = False, None, None
+                    result.update(request_end=None, terminal_error=None, error_envelope=None)
+                    break
+            summary_allowed = False
+        if not bound:
+            continue
+        if row.get("type") == "event_msg" and event_type == "token_usage":
+            request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+            for name, source_name in (("cache_read_tokens", "cache_read"),
+                                      ("cache_write_tokens", "cache_write"),
+                                      ("output_tokens", "output"), ("total_tokens", "total")):
+                try:
+                    totals[name] += max(0, int(request.get(source_name) or 0))
+                except (TypeError, ValueError):
+                    pass
+            usage_events += 1
+        if row.get("type") == "event_msg" and event_type in {"compaction_begin", "compaction_end", "abort"}:
+            result["native_events"].append(event_type)
+        if row.get("type") == "event_msg" and event_type == "compaction_begin":
+            compaction += 1
+            continue
+        if row.get("type") == "event_msg" and event_type == "compaction_end":
+            compaction = max(0, compaction - 1)
+            pending_rotation = payload.get("status") == "completed"
+            continue
+        if compaction:
+            continue
+        if row.get("type") == "event_msg":
+            if event_type == "request_begin":
+                active, request_status, final = True, None, None
+                result.update(request_end=None, terminal_error=None, error_envelope=None)
+            elif event_type == "request_end" and active:
+                active = False
+                request_status = payload.get("status")
+                if not isinstance(request_status, str):
+                    request_status, malformed = None, True
+                result["request_end"] = {
+                    "type": "request_end", "status": request_status,
+                    **{name: payload[name] for name in ("attempt", "retry_in_ms")
+                       if type(payload.get(name)) is int and payload[name] >= 0},
+                }
+                if request_status != "completed":
+                    final = None
+                    result["terminal_error"], result["error_envelope"] = _penguin_error_observation(
+                        payload.get("error_message"), source="penguin_trace.request_end",
+                        native_status=request_status)
+            elif event_type == "abort":
+                result["aborted"] = True
+                active, final = False, None
+                # Native abort follows a failed request too. Preserve the
+                # request's cause instead of relabelling every failure a cancel.
+                if request_status in (None, "completed"):
+                    request_status = "aborted"
+                if result["terminal_error"] is None:
+                    result["terminal_error"], result["error_envelope"] = _penguin_error_observation(
+                        payload.get("reason"), source="penguin_trace.abort", native_status=request_status)
+        elif row.get("type") == "model_msg":
+            if active and payload.get("role") == "assistant":
+                if event_type == "text":
+                    text = payload.get("text")
+                    final = text if isinstance(text, str) and payload.get("stop_reason") == "completed" else None
+                elif event_type != "thinking":
+                    final = None  # Tool calls are not a final assistant text.
+            elif payload.get("role") in {"user", "tool"}:
+                final = None
+                if payload.get("role") == "user" and not active:
+                    request_status = None
+    if usage_events:
+        totals["input_tokens"] = totals["cache_read_tokens"] + totals["cache_write_tokens"]
+        totals.update({"source": "penguin_trace", "granularity": "task",
+                       "input_semantics": "cache_buckets", "num_turns": usage_events,
+                       "invocation_scope_complete": not foreign_input})
+        result["usage"] = totals
+    result["request_status"] = request_status
+    result["completed"] = (request_status == "completed" and not active and not malformed
+                           and not foreign_input and not result["aborted"])
+    result["final"] = final if result["completed"] else None
+    result["trace_state"] = ("foreign_input_after_request" if foreign_input else
+                             "invalid_current_trace" if malformed else
+                             "completed_text" if result["final"] is not None else
+                             "missing_completed_text" if result["completed"] else "incomplete_request")
+    return result
+
+
+def _penguin_usage_after(traces: _P, offsets: dict[str, int] | None, *, workdir: str = "",
+                         resume_id: str = "") -> tuple[dict | None, str, list[str]]:
+    """Keep the existing three-value usage API; share the scoped native reader."""
+    result = _penguin_trace_after(traces, offsets, workdir=workdir, resume_id=resume_id)
+    return result["usage"], result["session_id"], result["native_events"]
 
 
 def _cc_native_terminal(stdout, returncode, cancelled=False):
@@ -3629,15 +3862,58 @@ def _penguin_adapter(qhash, question, gold="", ctx=None):
     # `chat --resume` 续同一 Trace。Penguin 会沿用原 session 的 model/provider，这是原生恢复的正确
     # 不变量；只有该原生会话本身无法恢复时，父层才换模型/换家，并携带结构化失败现场。
     prompt = _legion_prompt(_prior_attempts_prelude(ctx.prior_attempts) + question, ctx)
+    _checkpoint = (ctx.task_memory or {}).get("native_checkpoint") or {}
+    _resume_id = str(_checkpoint.get("session_id") or "") if isinstance(_checkpoint, dict) else ""
+    _trace_root, _trace_offsets = _penguin_trace_offsets(_resume_id)
+
+    def native_result(returncode=None, stderr=""):
+        trace = _penguin_trace_after(
+            _trace_root, _trace_offsets, workdir=ctx.workdir, resume_id=_resume_id,
+            request_text=prompt)
+        sid = str(trace["session_id"] or _resume_id)
+        has_text = isinstance(trace["final"], str)
+        native_status = trace["request_status"]
+        failed = (returncode not in (None, 0) or
+                  native_status in {"failed", "auth", "timeout", "malformed", "aborted"})
+        status = "ok" if has_text else "incomplete"
+        if failed:
+            status = f"rc{returncode}" if returncode not in (None, 0) else "error"
+        cause, envelope = trace["terminal_error"], trace["error_envelope"]
+        if failed and cause is None:
+            cause, envelope = _penguin_error_observation(
+                stderr, source="penguin_stderr", native_status=native_status)
+        facts = {
+            "completed": trace["completed"], "failed": failed,
+            "turn_status": ("failed" if failed else
+                            "completed" if trace["completed"] else "incomplete"),
+            "final_source": "penguin_trace_assistant_text" if has_text else "absent",
+            "trace_state": trace["trace_state"], "trace_refs": trace["trace_refs"],
+            "request_status": native_status, "matched_session": trace["matched_session"],
+            "request_end": trace["request_end"], "aborted": trace["aborted"],
+            "terminal_error": cause,
+        }
+        if returncode is not None:
+            facts["process_returncode"] = returncode
+        return {
+            "final": trace["final"] if has_text else "", "status": status,
+            # Raw stdout mixes thinking/text and raw failure logs may echo
+            # private model context. Keep only machine cause + private trace refs.
+            "error": envelope["message"] if envelope else "",
+            **({"error_envelope": envelope} if envelope else {}),
+            "elapsed": round(_t.time() - t0, 1), "model_used": ctx.model,
+            "usage": trace["usage"], "native_events": trace["native_events"],
+            "native_facts": facts,
+            "native_checkpoint": ({"kind": "penguin_session", "session_id": sid,
+                                   "resume_command": f"penguin chat --resume {sid}"} if sid else None),
+            "resumed_native": bool(_resume_id and trace["matched_session"]),
+        }
+
     try:
         # ★ 首轮用 `penguin run`(单发 Task 专用),不用 `chat`(交互 REPL)。根因(2026-09-01 真跑
         # 揪出·penguin --help 三证):chat 是 REPL·prompt+/exit 一起灌 stdin 有时序竞态——penguin
         # 打印 "Ready" 待命语后就读到 /exit 退出·prompt 没被 agent 真处理→只返回待命提示空转(17.8s
         # error)。penguin 自带 `run -m <msg>` 命令(Run a single Task)·prompt 走命令行 arg·无 stdin
         # 时序问题·真跑实测 2.9s 直接真交付(快 6 倍)。续跑(resume)才用 chat(原生 session 恢复入口)。
-        _checkpoint = (ctx.task_memory or {}).get("native_checkpoint") or {}
-        _resume_id = str(_checkpoint.get("session_id") or "") if isinstance(_checkpoint, dict) else ""
-        _trace_root, _trace_offsets = _penguin_trace_offsets(_resume_id)
         if _resume_id:
             # 续跑:走 chat --resume(penguin 原生 session 恢复的唯一入口)·灌 prompt+/exit
             cmd = [binp, "chat", "--resume", _resume_id, "--approve", "allow-all"]
@@ -3649,58 +3925,17 @@ def _penguin_adapter(qhash, question, gold="", ctx=None):
             if ctx.workdir:
                 cmd += ["--workspace", ctx.workdir]
             r = _run_task(cmd, _WALL_S, tag="penguin")   # 不灌 stdin(run 不需要)
-        _sid_match = _re.search(r"penguin chat --resume\s+(session-[A-Za-z0-9-]+)", r.stdout or "")
-        _sid = _sid_match.group(1) if _sid_match else _resume_id
-        _penguin_usage, _trace_sid, _native_events = _penguin_usage_after(
-            _trace_root, _trace_offsets, workdir=ctx.workdir, resume_id=_sid)
-        _sid = _sid or _trace_sid
-        body = [s.strip() for s in r.stdout.splitlines()
-                if s.strip() and not s.strip().startswith(("[tool-", "✓", "✗", "[approved", "[stats]",
-                                                            "[统计信息]", "PenguinHarness", "Agent:", "Workspace:", "Model:",
-                                                            "Type a message", "[resumed]", "> ",
-                                                            "To continue this conversation:"))]
-        # 过滤掉待命提示(军团 dogfood 揪出:penguin 交互式 chat·prompt+/exit 一起灌 stdin 时·
-        # 有时打印 "Ready. Please send..." 待命语后就读到 /exit 退出·没真处理任务→"Ready" 被当交付
-        # 返回 status=ok=空转交付)。待命语不是交付内容;过滤后为空/过短→判未交付触发父层换模型自愈。
-        _READY_RE = _re.compile(r"^>?\s*Ready[.\s]|please send|assigned subtask|请发送|待命", _re.I)
-        body = [s for s in body if not _READY_RE.search(s)]
-        final = "\n".join(body).strip()
-        # 未交付判定=【过滤待命语后为空】·不看长度(用户 2026-09-01 底线体检揪出:旧 len<40 一刀切
-        # 会把简单快答题的正确短答案误杀——"回一个字:好"penguin 真交付"好"(1字·正确)却被判"待命
-        # 提示未交付"→无谓触发接力→40s。banner/待命语已被过滤·剩下的哪怕1字也是真交付内容。
-        # 只有【过滤后完全为空】才是真没交付(待命残渣被 _READY_RE 清光)。铁律:短≠空·别拿长度当交付判据)。
-        if not final:
-            # 真实错误优先(2026-09-02 真跑揪出:CLI 拒掉不认识的模型时 stderr 有
-            # "Model is not in the Project config"·rc≠0·但 final 过滤后为空·旧版编"待命提示"
-            # 话术当 error→真实错误没回流→error_envelope 分类不出 model_config→不换模型白烧
-            # 一整轮。失败原样回流铁律:error 先取真实 stderr(截尾·去噪行),没有才是待命语义)。
-            _err = ""
-            if r.returncode != 0:
-                _err_lines = [ln.strip() for ln in (r.stderr or "").splitlines()
-                              if ln.strip() and "Traceback" not in ln]
-                _err = "\n".join(_err_lines[-3:])[:400]
-            return {"final": final, "status": "incomplete",
-                    "error": _err or "penguin 只返回待命提示未真交付(prompt/exit 时序或进入交互等待)",
-                    "elapsed": round(_t.time() - t0, 1), "model_used": ctx.model,
-                    "usage": _penguin_usage, "native_events": _native_events,
-                    "native_checkpoint": ({"kind": "penguin_session", "session_id": _sid,
-                                           "resume_command": f"penguin chat --resume {_sid}"}
-                                          if _sid else None),
-                    "resumed_native": bool(_resume_id)}
-        final = final[:_FINAL_CAP]
-        return {"final": final, "status": "ok" if r.returncode == 0 else f"rc{r.returncode}",
-                "elapsed": round(_t.time() - t0, 1), "model_used": ctx.model,
-                "usage": _penguin_usage, "native_events": _native_events,
-                "native_checkpoint": ({"kind": "penguin_session", "session_id": _sid,
-                                       "resume_command": f"penguin chat --resume {_sid}"}
-                                      if _sid else None),
-                "resumed_native": bool(_resume_id)}
+        result = native_result(r.returncode, r.stderr)
+        if getattr(r, "cancelled", False):
+            result.update(status="cancelled", error="用户停止")
+            result["native_facts"]["interrupted"] = True
+        return result
     except _sp.TimeoutExpired as _te:
-        # P0-2:penguin 有原生 session·timeout 尽力保 session_id 让下轮 resume(成功路径已保·timeout 旧版漏)。
-        _pg_sid = locals().get("_sid") or ""
-        return {**_runtime_timeout(_te), "final": "", "status": "timeout", "elapsed": round(_t.time() - t0, 1),
-                "model_used": ctx.model,
-                "native_checkpoint": ({"kind": "penguin_session", "session_id": _pg_sid} if _pg_sid else None)}
+        # Current trace identity/checkpoint can survive an interrupted CLI.
+        # Timeout is not evidence of a particular process returncode.
+        result = native_result()
+        result.update(_runtime_timeout(_te), status="timeout")
+        return result
     except FileNotFoundError:
         return {"final": "", "status": "unavailable", "elapsed": 0.0,
                 "error": "penguin CLI 未安装", "model_used": ctx.model}

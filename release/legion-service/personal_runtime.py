@@ -24,6 +24,9 @@ _PASSTHROUGH = {
     "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
     "https_proxy", "http_proxy", "all_proxy", "no_proxy",
     "VIRTUAL_ENV", "SYSTEMROOT", "WINDIR",
+    # Non-secret, optional public dependency reference. The native adapter pins
+    # its bytes and still allocates each user's own home, memory and session.
+    "LEGION_JCODE_PUBLIC_MODEL_CACHE",
 }
 
 
@@ -321,9 +324,9 @@ def environment(state_dir: Path | str, inherited: dict | None = None) -> tuple[d
         "LEGION_EXTERNAL_RUNTIME_ROOT": str(root / "runtimes"),
         "MEYO_ORCH_DIR": str(PROJECT / "harness_baselines/meyo-orchestrator"),
         "LEGION_CODEX_TRANSPORT": "responses",
-        # This launcher configures the native Codex path; default requests must
-        # reach it too. A missing model remains its explicit configuration error.
-        "MEYO_PERSONAL_DEFAULT_HARNESS": "codex",
+        # A configured provider is not a user choice of worker. Auto requests
+        # reach the existing native planner; explicit candidate choices still bind.
+        "MEYO_PERSONAL_DEFAULT_HARNESS": "",
         "LEGION_ALLOW_UNAUTHENTICATED_LOCAL_CLI": "0", "LEGION_ALLOW_REMOTE_BIND": "0",
         "LEGION_EXT_AUTO_UPDATE": "0", "PYTHONDONTWRITEBYTECODE": "1",
     })

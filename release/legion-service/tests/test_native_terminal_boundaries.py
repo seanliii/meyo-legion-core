@@ -331,7 +331,8 @@ def test_unrecognized_incomplete_is_not_budget_resume(native_stack):
     result = invoke(native_stack, [{
         "final_response": "partial", "completed": False, "failed": False,
         "turn_exit_reason": "unrecognized_stop"}])
-    assert result["status"] == "error" and result["execution_calls"] == 1
+    assert result["status"] == "incomplete" and result["execution_calls"] == 1
+    assert result["native_facts"]["turn_exit_reason"] == "unrecognized_stop"
     assert not any(event.get("t") == "native_resume" for event in native_stack.events)
 
 

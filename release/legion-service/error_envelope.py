@@ -234,12 +234,39 @@ def requires_native_settlement(result) -> bool:
     )
 
 
+def requires_request_budget_pause(result) -> bool:
+    """An explicit request-wide runtime budget cannot be renewed by changing authors.
+
+    Consume a typed execution fact, not HTTP 429, answer text, a model's
+    iteration limit, or a caller's cancellation. Missing retryability is unknown.
+    """
+    if not isinstance(result, dict) or result.get("status") in ("ok", "done", "success", "cancelled"):
+        return False
+    supplied = result.get("error_envelope")
+    retryable = (supplied.retryable if isinstance(supplied, ErrorEnvelope)
+                 else supplied.get("retryable") if isinstance(supplied, dict) else None)
+    envelope = ErrorEnvelope.from_value(supplied)
+    return bool(
+        envelope and envelope.category == "runtime_budget"
+        and envelope.scope == "request" and retryable is False
+    )
+
+
 def requires_execution_pause(result) -> bool:
     """Reuse request-local pauses without treating runtime state as a provider ban."""
     if not isinstance(result, dict) or result.get("status") == "cancelled":
         return False
-    return (requires_provider_pause(result) or requires_native_settlement(result)
+    return (requires_request_budget_pause(result)
+            or requires_provider_pause(result) or requires_native_settlement(result)
             or requires_output_recovery_pause(result))
+
+
+def request_budget_hold(results) -> dict | None:
+    """Return the original request-budget fact; no new classification or global state."""
+    for result in results or []:
+        if requires_request_budget_pause(result):
+            return ErrorEnvelope.from_value(result["error_envelope"]).to_dict()
+    return None
 
 
 def request_provider_authorization_hold(results, appid: str, gateway: str) -> dict | None:
@@ -270,8 +297,33 @@ def request_provider_authorization_hold(results, appid: str, gateway: str) -> di
 
 
 def normalize(status: str, error: str = "", fail_kind: str = "", supplied=None,
-              tool: str = "") -> ErrorEnvelope:
+              tool: str = "", *, native_facts=None) -> ErrorEnvelope:
     existing = ErrorEnvelope.from_value(supplied)
+    # A native terminal cause outranks a generic nonzero process exit. Do not
+    # inspect final/tool text or override an already supplied stop/permission.
+    if (existing is None and not fail_kind and not tool
+            and str(status or "").lower() not in {"ok", "done", "completed", "success", "cancelled"}
+            and isinstance(native_facts, dict) and not native_facts.get("interrupted")):
+        terminal = native_facts.get("turn_result")
+        limit = output_limit_from_native(terminal)
+        if limit is not None:
+            return limit
+        last = native_facts.get("last_assistant")
+        if (isinstance(terminal, dict) and terminal.get("type") == "result"
+                and terminal.get("is_error") is True
+                and native_facts.get("turn_status") == "failed"
+                and native_facts.get("completed") is not True
+                and isinstance(last, dict) and last.get("error") == "max_output_tokens"):
+            return ErrorEnvelope(
+                category="output_limit", scope="request", retryable=True,
+                code="max_output_tokens",
+                message="原生终态报告本次输出达到上限；已保留原始错误和执行现场。",
+                details={"native_source": "claude_code_assistant_error",
+                         "reported_output_limit": None, "reported_usage": None,
+                         "input_context_overflow": False,
+                         "tool_execution_status": "inspect_native_results",
+                         "replay_unconfirmed_operations": False},
+            )
     provider_length = is_provider_context_overflow(status, error, supplied=existing, tool=tool)
     if existing:
         if provider_length or existing.category == "context_overflow":

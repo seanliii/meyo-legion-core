@@ -590,6 +590,9 @@ class CapabilitySession:
         for key in ("MEYO_LOCAL_MODEL_CONFIG", "MEYO_TASK_DEADLINE", "LEGION_PROC_REGISTRY_DIR"):
             if key in self.environment:
                 self.bound[key] = self.environment[key]
+        # Only a caller-supplied namespace; an in-process host must not borrow the operator's instance.
+        if environment is not None and "MEYO_LEGION_DIR" in self.environment:
+            self.bound["MEYO_LEGION_DIR"] = self.environment["MEYO_LEGION_DIR"]
         if shared_models:
             for key in ("MEYO_PERSONAL_STATE_DIR", "LEGION_PERSONAL_OWNER"):
                 self.bound[key] = self.environment[key]

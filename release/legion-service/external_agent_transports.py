@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import http.client
 import json
 import hashlib
 import os
@@ -15,6 +16,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
@@ -337,6 +339,9 @@ def _declared_json_output(stdout: str, records: list[Any], spec: dict) -> dict |
         final = ""  # Running/aborted output remains in events, not a final answer.
     result = {"record": record, "final": final,
               "output_state": "error" if failed else "completed" if ready and final else "incomplete"}
+    if status_field or success_field or error_field:
+        # Native lifecycle and visible-answer presence are different facts.
+        result["native_completed"] = bool(ready and not failed)
     diagnostic = _output_field(record, error_message_field)
     if isinstance(diagnostic, str) and diagnostic.strip():
         result["native_error_message"] = diagnostic[-4000:]
@@ -386,7 +391,51 @@ def _final_from_text(stdout: str, spec: dict) -> str:
     return "\n".join(lines).strip()
 
 
-def _stream_records_result(records: list[Any]) -> tuple[str, str]:
+def redact_native_diagnostic(value: Any, environment: dict | None = None) -> Any:
+    """The native-error redaction seam, shared by stderr and legacy adapters.
+
+    Use the invocation's environment rather than only the server's globals.
+    This operates on diagnostics/explicit observation views, never on model answers.
+    Redact before clipping so a window cannot expose a suffix of a credential.
+    """
+    environment = os.environ if environment is None else environment
+    secret_name = re.compile(
+        r"(?:^|_)(?:API_?KEY|KEY|APPID|(?:ACCESS|REFRESH|SESSION|AUTH)_TOKEN|TOKEN|"
+        r"SECRET(?:_ACCESS_KEY|_KEY)?|CLIENT_SECRET|PASSWORD|CREDENTIALS?)$", re.I)
+    secrets = sorted({str(item) for name, item in environment.items()
+                      if item and secret_name.search(str(name))}, key=len, reverse=True)
+    fields = {"api_key", "apikey", "appid", "authorization", "proxy_authorization",
+              "access_token", "refresh_token", "session_token", "token", "password",
+              "secret", "client_secret", "credentials", "cookie", "set_cookie", "headers"}
+    assignment = re.compile(
+        r"""(?ix)(\b(?:api[_-]?key|appid|access[_-]?token|refresh[_-]?token|session[_-]?token|
+             password|secret|client[_-]?secret|authorization)\b["']?\s*[:=]\s*)
+             ("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&"'}]+)""")
+
+    def walk(item):
+        if isinstance(item, str):
+            for secret in secrets:
+                item = item.replace(secret, "[REDACTED]")
+            item = re.sub(r"""(?i)\b(Bearer|Basic)\s+[^\s,;"']+""",
+                          r"\1 [REDACTED]", item)
+
+            def mask(match):
+                token = match[2]
+                quote = token[0] if token[0] in "\"'" else ""
+                return match[1] + quote + "[REDACTED]" + quote
+
+            return assignment.sub(mask, item)
+        if isinstance(item, dict):
+            return {name: ("[REDACTED]" if str(name).lower().replace("-", "_") in fields
+                           else walk(content)) for name, content in item.items()}
+        if isinstance(item, (tuple, list)):
+            return [walk(content) for content in item]
+        return item
+
+    return walk(value)
+
+
+def _stream_records_result(records: list[Any], environment: dict | None = None) -> tuple[str, str]:
     """提取 Goose 等 stream-json 的 assistant 文本增量与结构化错误。
 
     Goose 每个 token 都是一条 type=message 记录，倒序取第一条只会得到最后一个标点。
@@ -405,11 +454,7 @@ def _stream_records_result(records: list[Any]) -> tuple[str, str]:
                     message = message.encode("latin1").decode("utf8")
                 except (UnicodeEncodeError, UnicodeDecodeError):
                     pass
-                # Do not propagate headers, request URLs, or raw response bodies.
-                for name, value in os.environ.items():
-                    if value and len(value) >= 8 and any(k in name.upper() for k in ("KEY", "TOKEN", "SECRET", "APPID")):
-                        message = message.replace(value, "[REDACTED]")
-                errors.append(message[:1000])
+                errors.append(redact_native_diagnostic(message, environment)[:1000])
                 saw_stream_message = True
                 continue
         # OpenCode stream-json: assistant 每段文本是一条 type=text 记录(part.text)·聚合而非倒序取一。
@@ -447,7 +492,39 @@ def _stream_records_result(records: list[Any]) -> tuple[str, str]:
         return "", ""
     if not text_parts and not errors:
         errors.append("native stream ended without assistant text")
-    return "".join(text_parts).strip(), "\n".join(errors).strip()
+    return "".join(text_parts).strip(), redact_native_diagnostic("\n".join(errors).strip(), environment)
+
+
+def _stream_terminal_facts(records: list[Any]) -> dict:
+    """Normalize reported step lifecycle, never words in an assistant answer.
+
+    OpenCode's JSON emitter mirrors native step-start/step-finish parts. A
+    tool-calls/length finish is not a completed turn, and a later step-start
+    invalidates an earlier stop. Preserve the reported reason for its owner.
+    """
+    facts = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        part = record.get("part")
+        if not isinstance(part, dict):
+            continue
+        if record.get("type") == "step_start" and part.get("type") == "step-start":
+            facts = {"completed": False, "turn_status": "incomplete",
+                     "terminal_event": {"type": "step_start"}}
+        elif record.get("type") == "text" and part.get("type") == "text":
+            facts = {"completed": False, "turn_status": "incomplete",
+                     "terminal_event": {"type": "text"}}
+        elif record.get("type") == "step_finish" and part.get("type") == "step-finish":
+            reason = part.get("reason")
+            if not isinstance(reason, str):
+                facts = {"completed": False, "turn_status": "incomplete",
+                         "terminal_event": {"type": "step_finish"}}
+                continue
+            facts = {"completed": reason == "stop",
+                     "turn_status": "completed" if reason == "stop" else "incomplete",
+                     "terminal_event": {"type": "step_finish", "reason": reason}}
+    return facts
 
 
 def _event_from_json(value: Any, protocol: str) -> dict | None:
@@ -659,6 +736,7 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
     t0 = time.time()
     file_output = (isinstance(spec.get("output_contract"), dict)
                    and "source_glob" in spec["output_contract"])
+    plain_output = spec.get("streaming_protocol") == "text" and not spec.get("output_contract")
     before_output = _native_output_snapshot(spec, context["workdir"]) if file_output else {}
     # stdin=DEVNULL:非交互 -p/--print 模式的 CLI(pi 等)若继承父进程 stdin(非 TTY 管道),
     # 会一直等 stdin 读不到→整进程卡死到超时(速度底线·pi 血泪:message 在参数里但它先等 stdin)。
@@ -666,17 +744,20 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
     # start_new_session=True:给 worker 建独立进程组(子进程泄漏系统性根治·用户 2026-09-01 定)。
     # external worker 常自己 fork 孙进程(ironclaw onboard/set-provider/run 三进程·pi bridge 等)——
     # 超时/卡死只 kill 直接子进程会让孙进程变孤儿(争 CPU/占端口/内存泄漏·越用越慢越不稳)。
-    # 建进程组后超时用 os.killpg 整组杀·一个不留。
+    # 本组由 killpg 回收；另起进程组的后代仅按已观测到的真实祖先关系登记回收。
     _popen_kw = {}
     if os.name != "nt":
         _popen_kw["start_new_session"] = True
     proc = None
     _preg = None
+    _process_scope = None
 
     def _kill_group():
-        """整进程组回收(SIGTERM 宽限→SIGKILL)·不留孤儿孙进程。"""
+        """回收本进程组和本次 scope 已观测的后代，不猜测未观测的 double-fork。"""
         if proc is None:
             return
+        if _process_scope is not None:
+            _process_scope.observe(force=True)
         try:
             if os.name != "nt":
                 pgid = os.getpgid(proc.pid)
@@ -702,9 +783,13 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
             pass
         # Let the wrapper unwind/release native scope locks first. Its root may
         # already be gone, but a separately registered child can still be alive.
-        # Complete the existing owner-scoped/native cleanup before a retry.
+        # These records belong to this wrapper PID, not the server owner. Their
+        # native daemon/SDK protocol and refusal protection must run separately.
         if _preg is not None:
             _preg.kill_owned_by(proc.pid)
+        # Only this execution's observed ancestry, never all tasks of a server.
+        if _process_scope is not None:
+            _process_scope.cleanup()
 
     try:
         try:
@@ -718,8 +803,8 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
         # signal. Keep it inside this same owning finally, not before it.
         try:
             import legion_proc_registry as _preg
-            _preg.register(proc.pid, pgid=proc.pid, owner=os.getpid(),
-                           comm=os.path.basename(str(launch_command[0])), meta={"kind": "cli-run"})
+            _process_scope = _preg.NativeProcessScope(
+                proc.pid, owner=os.getpid(), meta={"kind": "cli-run"})
         except Exception:
             pass
         # 读线程 + 主线程看总墙钟:防 `for line in proc.stdout` 在 worker 卡住不输出也不退时永久阻塞
@@ -742,8 +827,9 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     output.append(line)
-                    if file_output:
-                        # TUI/调试流只作私有证据；真实有输出时报告活动，不公开其内容。
+                    if file_output or plain_output:
+                        # Explicit text/TUI output stays private until final;
+                        # real output must still refresh the activity channel.
                         now = time.monotonic()
                         if event_cb and now - last_activity >= 1:
                             last_activity = now
@@ -755,6 +841,8 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
                         continue
                     try:
                         record = json.loads(line)
+                        if isinstance(record, dict) and record.get("type") == "error":
+                            record = redact_native_diagnostic(record, launch_env)
                         records.append(record)
                         event = _event_from_json(record, "cli")
                         if event_cb and event:
@@ -773,7 +861,15 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
         _et.start()
         _rt.start()
         _deadline = timeout_s or 0
-        if not _read_done.wait(timeout=_deadline if _deadline > 0 else None):
+        _expires = time.monotonic() + _deadline if _deadline > 0 else None
+        while not _read_done.is_set():
+            if _process_scope is not None:
+                _process_scope.observe()  # internally throttled; not all double-forks are observable
+            remaining = _expires - time.monotonic() if _expires is not None else None
+            if remaining is not None and remaining <= 0:
+                break
+            _read_done.wait(timeout=min(.25, remaining) if remaining is not None else .25)
+        if not _read_done.is_set():
             # 到墙钟仍没读完(worker 卡死/不退)→整组杀·抛超时(上层 run() 记为该 transport 失败·换模型/补位)
             _kill_group()
             _rt.join(timeout=2)
@@ -793,29 +889,40 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
                 error.native_facts = {"terminal_log": _snapshot_terminal(
                     "".join(output), context["workdir"], "".join(error_output))}
             raise error
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+        _exit_deadline = time.monotonic() + 5
+        while proc.poll() is None and time.monotonic() < _exit_deadline:
+            if _process_scope is not None:
+                _process_scope.observe()
+            try:
+                proc.wait(timeout=.25)
+            except subprocess.TimeoutExpired:
+                pass
+        if proc.poll() is None:
             _kill_group()
         _et.join(timeout=2)
-        stderr = "".join(error_output)
+        raw_stderr = "".join(error_output)
+        stderr = redact_native_diagnostic(raw_stderr, launch_env)
         raw_stdout = "".join(output)
         stdout = raw_stdout.strip()
         extra = {}
         if file_output or spec.get("snapshot_terminal"):
-            snapshot = _snapshot_terminal(raw_stdout, context["workdir"], stderr)
+            snapshot = _snapshot_terminal(raw_stdout, context["workdir"], raw_stderr)
             if snapshot:
                 extra["terminal_snapshot"] = snapshot
         native_output = (_fresh_file_output(spec, context["workdir"], before_output) if file_output
                          else _declared_json_output(stdout, records, spec))
+        stream_facts = _stream_terminal_facts(records) if native_output is None else {}
         final = native_output["final"] if native_output is not None else _final_from_text(stdout, spec)
         stream_error = ""
         _answer_rec = None
         # Goose stream-json 每个 assistant token 是一条 type=message 记录，必须按协议聚合；
         # 倒序取第一条只会拿到最后一个字/标点。结构化 error 单独回传为失败，不冒充交付。
-        _stream_final, stream_error = ("", "") if native_output is not None else _stream_records_result(records)
+        _stream_final, stream_error = (("", "") if native_output is not None
+                                       else _stream_records_result(records, launch_env))
         if native_output is not None:
             _answer_rec = native_output["record"]
+        elif plain_output:
+            pass  # The declared stdout channel, including JSON, is the answer.
         elif _stream_final:
             final = _stream_final
             # 合同元数据可能在较早的 JSON 记录里；不要把最后一条日志/banner 当权威记录。
@@ -823,7 +930,7 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
                 if isinstance(_record, dict) and (_extract_contract(_record) or _final_from_json(_record)):
                     _answer_rec = _record
                     break
-        elif stream_error:
+        elif stream_error or stream_facts:
             final = ""
         else:
             # stdout 整体是【单块 JSON】(OpenClaw pretty JSON)时始终优先整体解析。pretty JSON 的某些
@@ -838,7 +945,7 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
                         _answer_rec = _whole
                 except Exception:
                     pass
-        if records and _answer_rec is None and not stream_error:
+        if records and _answer_rec is None and not stream_error and not stream_facts:
             # 通用取答案(底线:external家final别取错行):很多 CLI(kimi-code等)最后一条是
             # meta/session.resume_hint(带 content="To resume..."),无脑取 records[-1] 会把
             # 提示行当答案交付。从后往前找第一条【真答案记录】——跳过 meta/system/resume/hint 类。
@@ -874,12 +981,58 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
             # A legacy plain answer can itself be a JSON document. Its business
             # fields are not declarations about the native process/runtime.
             contract.pop("error_envelope", None)
+        elif contract.get("error_envelope"):
+            contract["error_envelope"] = redact_native_diagnostic(contract["error_envelope"], launch_env)
+        inherited_facts = dict(contract.get("native_facts") or {})
+        native_facts = {**inherited_facts, **stream_facts,
+                        "process_returncode": proc.returncode}
+        if native_output is not None:
+            native_facts["final_source"] = "cli_native_output"
+            if isinstance(native_output.get("native_completed"), bool):
+                native_facts.update(completed=native_output["native_completed"],
+                                    turn_status="completed" if native_output["native_completed"] else "incomplete")
+            if native_output["output_state"] == "error":
+                native_facts["failed"] = True
+        elif plain_output:
+            native_facts["final_source"] = "cli_stdout_text"
+        elif _stream_final or stream_facts or stream_error:
+            native_facts["final_source"] = "cli_assistant_stream"
+        if stderr:
+            native_facts["stderr"] = stderr[-4000:]
+        if stream_error or proc.returncode != 0 or native_facts.get("failed"):
+            native_facts.update(failed=True, completed=False, turn_status="failed")
+        elif inherited_facts.get("completed") is False:
+            native_facts.update(completed=False, turn_status="incomplete")
+        # stderr is not a failure signal by itself, including a plain text CLI
+        # with no turn.completed event. This is process/protocol provenance,
+        # not a judgment that the visible answer or produced work is correct.
+        native_facts["stderr_is_error"] = bool(native_facts.get("failed"))
+        if not native_facts["stderr_is_error"]:
+            error = ""
+        if stream_error:
+            native_facts["error_source"] = "native_error_event"
+        elif error:
+            native_facts["error_source"] = "cli_stderr"
+        contract["native_facts"] = native_facts
+        if (not stream_error and
+                (stream_facts.get("terminal_event") or {}).get("reason") == "length"
+                and not contract.get("error_envelope")):
+            contract["error_envelope"] = {
+                "category": "output_limit", "scope": "request", "retryable": True,
+                "code": "max_output_tokens", "tool": "",
+                "message": "原生步骤报告输出达到上限；保留部分输出和现场，不当作进程崩溃或成功交付。",
+                "details": {"native_source": "cli_step_finish", "native_reason": "length",
+                            "reported_output_limit": None, "reported_usage": None,
+                            "input_context_overflow": False,
+                            "tool_execution_status": "inspect_native_results",
+                            "replay_unconfirmed_operations": False},
+            }
         if file_output:
             # 子 CLI 的 session_id 仅作引用，不能据此替外层 Harness 宣布原生 resume。
             contract = {key: value for key, value in contract.items()
                         if key in ("usage", "artifacts", "orchestration_request")}
             extra["native_facts"] = {
-                "process_returncode": proc.returncode,
+                **native_facts,
                 **{key: native_output[key] for key in
                    ("native_status", "native_success", "native_is_error", "output_ref")
                    if key in native_output},
@@ -891,7 +1044,7 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
         if (native_output is not None
                 and (proc.returncode != 0 or native_output["output_state"] != "completed")
                 and native_output.get("native_error_message")):
-            diagnostic = native_output["native_error_message"]
+            diagnostic = redact_native_diagnostic(native_output["native_error_message"], launch_env)
             remaining = max(0, 4000 - len(diagnostic) - 1)
             extra_stderr = ("\n" + error[-remaining:]
                             if error and error not in diagnostic and remaining else "")
@@ -906,12 +1059,17 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
             _read = _read_final_notes(spec.get("final_notes_regex"), context.get("workdir") or ".")
             if _read:
                 final = _read
-        status = ("ok" if proc.returncode == 0 and final and not stream_error
+        status = ("ok" if proc.returncode == 0 and (final or native_facts.get("completed")) and not stream_error
                   else "error" if stream_error else f"rc{proc.returncode}")
+        if native_facts.get("failed"):
+            status = f"rc{proc.returncode}" if proc.returncode != 0 else "error"
+        elif native_facts.get("completed") is False:
+            status = "incomplete"
         if file_output and proc.returncode == 0:
             status = "ok" if native_output["output_state"] == "completed" else native_output["output_state"]
         return {"status": status, "returncode": proc.returncode,
                 "final": final if file_output else final[-60000:], "error": error[-4000:],
+                "stderr": stderr[-4000:],
                 "elapsed": round(time.time() - t0, 2), "command": command,
                 "events": records[-100:],
                 "usage_records": _usage_records([_answer_rec] if file_output else records),
@@ -955,8 +1113,131 @@ def _consume_sse(url: str, timeout_s: int, event_cb: Callable[[dict], None] | No
             "usage_records": _usage_records(records)}
 
 
+def _valid_readonly_fields(fields: Any, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    if fields is True:
+        return True
+    if isinstance(fields, dict):
+        return bool(fields) and all(
+            isinstance(key, str) and bool(key) and _valid_readonly_fields(value, depth + 1)
+            for key, value in fields.items())
+    return isinstance(fields, list) and len(fields) == 1 and _valid_readonly_fields(fields[0], depth + 1)
+
+
+def _project_readonly_fields(value: Any, fields: Any) -> Any:
+    """Keep declared observations only; True is a scalar, never a whole private object."""
+    if value is None:
+        return None
+    if fields is True:
+        return value if isinstance(value, (str, int, float, bool)) else None
+    if isinstance(fields, dict) and isinstance(value, dict):
+        return {key: _project_readonly_fields(value[key], child)
+                for key, child in fields.items() if key in value}
+    if isinstance(fields, list) and isinstance(value, list):
+        return [_project_readonly_fields(item, fields[0]) for item in value]
+    raise ValueError("Native observation shape does not match its declaration")
+
+
+def is_readonly_loopback_http(spec: Any) -> bool:
+    """The existing HTTP spec, narrowed to a parameter-free local JSON read."""
+    if (not isinstance(spec, dict)
+            or set(spec) - {"type", "method", "read_only_loopback", "url", "headers", "response_fields"}
+            or spec.get("type") != "http" or spec.get("method") != "GET"
+            or spec.get("read_only_loopback") is not True):
+        return False
+    if ("response_fields" in spec and (
+            not isinstance(spec["response_fields"], (dict, list))
+            or not _valid_readonly_fields(spec["response_fields"]))):
+        return False
+    url = spec.get("url")
+    if (not isinstance(url, str) or not url.startswith("{instance_url}/")
+            or any(ord(char) <= 32 or ord(char) == 127 for char in url)
+            or any(char in url[len("{instance_url}"):] for char in "{}?#\\")
+            or url.startswith("{instance_url}//")):
+        return False
+    headers = spec.get("headers", {})
+    forbidden = {"host", "origin", "authorization", "proxy-authorization", "cookie",
+                 "content-length", "transfer-encoding", "connection", "proxy-connection",
+                 "upgrade", "expect", "x-api-key", "x-auth-token"}
+    return isinstance(headers, dict) and all(
+        isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9-]+", name)
+        and name.lower() not in forbidden and isinstance(value, str)
+        and not any(ord(char) < 32 or ord(char) == 127 or char in "{}" for char in value)
+        for name, value in headers.items()
+    )
+
+
+def _readonly_loopback_http(spec: dict, context: dict[str, str], timeout_s: float) -> dict:
+    def failed(code, error, *, status="error", **facts):
+        return {"status": status, "code": code, "error": error, "protocol": "http", **facts}
+
+    if not is_readonly_loopback_http(spec):
+        return failed("invalid_readonly_http_contract", "Invalid read-only HTTP declaration.")
+    value = context.get("instance_url")
+    try:
+        if not isinstance(value, str) or any(ord(char) <= 32 or ord(char) == 127 for char in value):
+            raise ValueError()
+        parsed = urllib.parse.urlsplit(value)
+        if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port is None or not 1 <= parsed.port <= 65535
+                or parsed.path not in {"", "/"} or parsed.query or parsed.fragment
+                or "?" in value or "#" in value
+                or parsed.netloc.lower() != f"{parsed.hostname}:{parsed.port}"):
+            raise ValueError()
+        authority = f"{parsed.hostname}:{parsed.port}"
+        origin = f"http://{authority}"
+    except (TypeError, ValueError):
+        return failed("invalid_instance_url", "Configure an exact HTTP loopback origin with an explicit port.",
+                      status="invalid_config")
+
+    # Pin localhost to the same IPv4 loopback, preserving the configured HTTP origin.
+    # HTTPConnection has no ambient proxy/cookie/auth handler and does not follow redirects.
+    connection = http.client.HTTPConnection("127.0.0.1", parsed.port, timeout=timeout_s)
+    started = time.monotonic()
+    try:
+        headers = {"Accept": "application/json", **spec.get("headers", {}),
+                   "Host": authority, "Origin": origin}
+        path = spec["url"][len("{instance_url}"):]
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        status = response.status
+        if not 200 <= status < 300:
+            return failed("http_error", f"Native management API returned HTTP {status}.",
+                          status=f"http{status}", http_status=status)
+        if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return failed("invalid_json_response", "Native management API did not return JSON.",
+                          http_status=status)
+        raw = response.read(1_048_577)
+        if len(raw) > 1_048_576:
+            return failed("response_too_large", "Native management response exceeds 1 MiB.",
+                          http_status=status)
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, (dict, list)):
+                raise ValueError()
+            if "response_fields" in spec:
+                payload = redact_native_diagnostic(
+                    _project_readonly_fields(payload, spec["response_fields"]), environment={})
+        except (ValueError, UnicodeError):
+            return failed("invalid_json_response", "Native management API returned invalid JSON.",
+                          http_status=status)
+        return {"status": "ok", "protocol": "http", "http_status": status, "data": payload,
+                **({"data_view": "redacted_observation"} if "response_fields" in spec else {}),
+                "elapsed_ms": round((time.monotonic() - started) * 1000)}
+    except TimeoutError:
+        return failed("http_timeout", "Native management read timed out.", status="timeout")
+    except (OSError, http.client.HTTPException):
+        return failed("connection_error", "Cannot read the explicitly configured local instance.")
+    finally:
+        connection.close()
+
+
 def run_http(spec: dict, context: dict[str, str], env: dict[str, str], timeout_s: int,
              event_cb: Callable[[dict], None] | None = None) -> dict:
+    if "read_only_loopback" in spec:
+        return _readonly_loopback_http(spec, context, timeout_s)
     url = _format(spec.get("url") or "", context)
     if not url:
         raise TransportError("HTTP adapter 缺 url")

@@ -3251,6 +3251,262 @@
         "official": false,
         "description": "第三方 OpenMontage 上游源码；本包仅声明可选固定依赖，不复制或重许可为 MIT。"
       }
+    },
+    {
+      "key": "dsh-superagent",
+      "name": "DSH Superagent",
+      "kind": "capability",
+      "execution_role": "capability",
+      "url": "https://github.com/deepseek-ai/dsh-superagent-prototype",
+      "version": "0.1.0",
+      "revision": "6337fc823ce20251c8de8085948165c81aaa701e",
+      "runtime": {
+        "node": true,
+        "pnpm": "11.7.0"
+      },
+      "install": [
+        [
+          "corepack",
+          "pnpm@11.7.0",
+          "install",
+          "--frozen-lockfile",
+          "--prefer-offline"
+        ],
+        [
+          "corepack",
+          "pnpm@11.7.0",
+          "run",
+          "build"
+        ]
+      ],
+      "install_env": {
+        "pnpm_config_child_concurrency": "1",
+        "pnpm_config_network_concurrency": "4"
+      },
+      "build_probe": {
+        "method": "command",
+        "command": [
+          "{node}",
+          "--check",
+          "{source}/lib/index.js"
+        ]
+      },
+      "probe": {
+        "method": "build",
+        "command": [
+          "{node}",
+          "--check",
+          "{source}/lib/index.js"
+        ]
+      },
+      "transports": [],
+      "capabilities": [
+        "superagent",
+        "read-only-management"
+      ],
+      "provided_tools": [],
+      "capability_actions": {
+        "status": {
+          "description": "只读显式绑定的本机 Superagent 状态、setup 问题与队列；不启动 Host/监听，不提交任务。读取成功不代表已能接单。",
+          "params": [],
+          "timeout_s": 5,
+          "transport": {
+            "type": "http",
+            "method": "GET",
+            "read_only_loopback": true,
+            "url": "{instance_url}/orchestrator/api/state",
+            "headers": {
+              "x-orchestrator-request": "1"
+            },
+            "response_fields": {
+              "paused": true,
+              "load": {
+                "running": true,
+                "queued": true,
+                "maxWorkers": true
+              },
+              "setup": {
+                "problem": {
+                  "place": true,
+                  "code": true
+                },
+                "feishuProblem": {
+                  "place": true,
+                  "code": true
+                },
+                "machine": {
+                  "promptMaxChars": true,
+                  "admissionContextMaxPages": true,
+                  "admissionContextTimeoutMs": true
+                }
+              },
+              "health": {
+                "runtime": {
+                  "state": true
+                },
+                "models": {
+                  "state": true
+                },
+                "evals": {
+                  "state": true
+                },
+                "assessment": {
+                  "state": true
+                },
+                "launch": {
+                  "state": true
+                },
+                "delivery": {
+                  "state": true
+                },
+                "relay": {
+                  "state": true
+                },
+                "notice": {
+                  "state": true
+                },
+                "reply": {
+                  "state": true
+                },
+                "worker": {
+                  "state": true
+                },
+                "github": {
+                  "state": true
+                },
+                "feishu": {
+                  "state": true
+                },
+                "history": {
+                  "state": true
+                },
+                "sync:github": {
+                  "state": true
+                },
+                "sync:feishu": {
+                  "state": true
+                }
+              }
+            }
+          }
+        },
+        "settings": {
+          "description": "只读本机 Superagent 的配置与 revision；不保存设置、不读取登录 token、不替用户选择账号。",
+          "params": [],
+          "timeout_s": 5,
+          "transport": {
+            "type": "http",
+            "method": "GET",
+            "read_only_loopback": true,
+            "url": "{instance_url}/orchestrator/api/settings",
+            "headers": {
+              "x-orchestrator-request": "1"
+            },
+            "response_fields": {
+              "blocks": {
+                "policy": {
+                  "revision": true
+                },
+                "eval": {
+                  "revision": true,
+                  "value": {
+                    "mode": true,
+                    "timeoutSeconds": true
+                  }
+                },
+                "executor": {
+                  "revision": true,
+                  "value": {
+                    "maxWorkers": true
+                  }
+                }
+              },
+              "sources": [
+                {
+                  "id": true,
+                  "kind": true,
+                  "installed": true,
+                  "revision": true,
+                  "value": {
+                    "enabled": true,
+                    "config": {
+                      "repository": true,
+                      "pollSeconds": true,
+                      "failuresBeforeError": true,
+                      "observeIssues": true,
+                      "observePulls": true,
+                      "observeComments": true,
+                      "observeCi": true,
+                      "directMessages": true,
+                      "otherChats": true
+                    }
+                  },
+                  "problem": {
+                    "place": true,
+                    "code": true
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "sources": {
+          "description": "只读本机 Superagent 来源状态、统计与现有问题；不打开 GitHub/飞书监听，不制造 Trigger 或外发。",
+          "params": [],
+          "timeout_s": 5,
+          "transport": {
+            "type": "http",
+            "method": "GET",
+            "read_only_loopback": true,
+            "url": "{instance_url}/orchestrator/api/sources",
+            "headers": {
+              "x-orchestrator-request": "1"
+            },
+            "response_fields": [
+              {
+                "id": true,
+                "installed": true,
+                "enabled": true,
+                "state": true,
+                "problem": {
+                  "place": true,
+                  "code": true
+                },
+                "health": [
+                  {
+                    "name": true,
+                    "state": true
+                  }
+                ],
+                "stats": {
+                  "received": true,
+                  "filtered": true,
+                  "lastAt": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "onboard_checks": [],
+      "credentials": {},
+      "provenance": {
+        "official": true,
+        "description": "DeepSeek 官方公开的 MIT 研究原型，非正式产品；DSH 原生编排能力包，不是独立答题 CLI。"
+      },
+      "integration": {
+        "type": "dsh-bundle",
+        "package_name": "dsh-superagent",
+        "node_engine": "^22.19.0 || >=24.0.0",
+        "dsh_engine": "^0.2.1-alpha.2",
+        "native_manager": "plugin_manager",
+        "probe_scope": "build_only",
+        "native_activation": "separate_native_installation_and_acceptance",
+        "source_plugins": [
+          "dsh-superagent/github-watch",
+          "dsh-superagent/feishu-watch"
+        ]
+      }
     }
   ]
 }

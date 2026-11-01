@@ -1256,7 +1256,9 @@ def _run_tool_inner(tool_id: str, params: dict) -> dict:
         import agent_tool_provider
         active = sys.modules.get("harness_registry")
         has_context = (any(name in os.environ for name in agent_tool_provider._ENV_FIELDS)
-                       or getattr(getattr(active, "_INPROC_RUNTIME_ENV", None), "values", {}))
+                       or getattr(getattr(active, "_INPROC_RUNTIME_ENV", None), "values", {})
+                       or getattr(getattr(active, "_INPROC_RUNTIME_ENV", None),
+                                  "inherit_process_context", True) is False)
         bound = agent_tool_provider._runtime_binding()[1] if has_context else {}
         host_only = os.environ.get("MEYO_NATIVE_HOST_ACTIVE") == "1"
         if host_only:
@@ -1265,7 +1267,8 @@ def _run_tool_inner(tool_id: str, params: dict) -> dict:
                      **bound}
         return registry.run_capability(
             key, action, params, timeout_s=int(params.get("timeout_s") or 0) or None,
-            env=bound or None, workdir=str(bound.get("MEYO_WORKDIR") or ""),
+            env=bound if has_context or host_only else None,
+            workdir=str(bound.get("MEYO_WORKDIR") or ""),
             isolated_environment=host_only)
     # dsh-vision 脚本工具无状态直调(源码在本仓库·PIL纯本地·不派家)。军团 run vision_tool:<name>。
     if tool_id.startswith("vision_tool:"):

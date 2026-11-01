@@ -83,6 +83,40 @@ def plan(case, **kwargs):
         "完整用户目标", user_id=USER, conversation_id=CONVERSATION, **kwargs)
 
 
+def test_native_planner_receives_current_index_without_configured_keys_claim(planner_case):
+    case = planner_case
+    case.monkeypatch.setattr(importlib.import_module("harness_view"), "selection_context",
+                            lambda **kwargs: {"members": [{"key": "codex", "runtime_available": None}],
+                                              "resource_index": {"discovery": [{"id": "actual-resource-index"}]},
+                                              "cache": {"warming": True}})
+    result = plan(case)
+    assert result["ok"]
+    prompt = case.invocations[0][1]
+    assert "actual-resource-index" in prompt
+    assert '"runtime_available": null' in prompt
+    assert "key已配" not in prompt
+
+
+def test_planner_permission_scope_does_not_revoke_user_deliverable(planner_case):
+    case = planner_case
+    question = "只读核对，不修改源代码；把核对结果写成可下载的说明文件。"
+    result = case.core.plan_request_with_model(
+        question, user_id=USER, conversation_id=CONVERSATION)
+    assert result["ok"]
+    prompt = case.invocations[0][1]
+    payload = json.loads(prompt.split("现场:", 1)[1])
+    scope = payload["planning_invocation"]
+    assert scope["role"] == "plan_proposal"
+    assert scope["permissions_apply_to"] == "current_planner_invocation_only"
+    assert scope["user_request"] == question
+    assert scope["delegated_permissions"] == "resolved_by_original_execution_path"
+    assert "不继承规划进程的只读限制" in scope["meaning"]
+    # Explaining the boundary must not relax the actual native invocation.
+    _, _, kwargs = case.invocations[0]
+    assert kwargs["task_facts"]["native_read_only"] is True
+    assert_read_only_payload(*case.calls[0])
+
+
 def test_native_planner_keeps_prompt_but_not_main_workspace_or_history(planner_case):
     case = planner_case
     memory = importlib.import_module("task_memory")

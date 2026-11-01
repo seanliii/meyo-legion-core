@@ -5,6 +5,121 @@ import json
 import os
 from pathlib import Path
 import shutil
+import ctypes
+import errno
+import hashlib
+import stat
+import sys
+import uuid
+
+
+_PUBLIC_MODEL = "all-MiniLM-L6-v2"
+_PUBLIC_MODEL_RECEIPT = ".legion-public-model-cache.json"
+# Public assets matched against a native JCode run that loaded this exact pair.
+# These are deployment dependencies, not a task-selected cache or user memory.
+_PUBLIC_MODEL_ASSETS = {
+    "model.onnx": {
+        "bytes": 90405214,
+        "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+    },
+    "tokenizer.json": {
+        "bytes": 466247,
+        "sha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+    },
+}
+
+
+def _publish_public_model(parent_fd: int, staging_name: str) -> None:
+    """Atomically publish the pair without replacing even an existing empty directory."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    name, flags = ("renameatx_np", 4) if sys.platform == "darwin" else ("renameat2", 1)
+    rename = getattr(libc, name, None) if sys.platform in ("darwin", "linux") else None
+    if rename is None:
+        raise OSError(errno.ENOTSUP, "atomic no-replace directory publication unavailable")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(parent_fd, os.fsencode(staging_name), parent_fd, os.fsencode(_PUBLIC_MODEL), flags):
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def _seed_public_model(home: Path, configured: str) -> dict:
+    """Copy only the pinned public pair into this private home; never download."""
+    facts = {"status": "not_configured", "model": _PUBLIC_MODEL, "assets": []}
+    if not configured:
+        return facts
+    source = Path(configured).expanduser()
+    models = home / "models"
+    target = models / _PUBLIC_MODEL
+    facts.update(source=str(source), destination=str(target))
+    if not source.is_absolute():
+        return {**facts, "status": "not_seeded", "reason": "cache_path_must_be_absolute"}
+    # Existing native/custom/partial resources belong to JCode; do not repair,
+    # overwrite or inspect them. Only a new private model directory is seeded.
+    if models.is_symlink() or os.path.lexists(target):
+        return {**facts, "status": "preserved_existing"}
+    source_fd = parent_fd = stage_fd = None
+    staging_name = ".legion-model-" + uuid.uuid4().hex
+    published = False
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        source_fd = os.open(source, directory_flags)
+        models.mkdir(mode=0o700, exist_ok=True)
+        parent_fd = os.open(models, directory_flags)
+        os.mkdir(staging_name, mode=0o700, dir_fd=parent_fd)
+        stage_fd = os.open(staging_name, directory_flags, dir_fd=parent_fd)
+        assets = []
+        for name, pin in _PUBLIC_MODEL_ASSETS.items():
+            # Open fixed asset names relative to the pinned source directory.
+            # O_NOFOLLOW prevents an asset-name symlink from reading other state.
+            with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=source_fd), "rb") as src:
+                info = os.fstat(src.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != pin["bytes"]:
+                    raise ValueError("public_asset_size_or_type_mismatch:" + name)
+                with os.fdopen(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                       0o600, dir_fd=stage_fd), "wb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+            # Verify the actual private bytes, not just source metadata or a marker.
+            with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd), "rb") as dst:
+                digest = hashlib.file_digest(dst, "sha256").hexdigest()
+                size = os.fstat(dst.fileno()).st_size
+            if digest != pin["sha256"] or size != pin["bytes"]:
+                raise ValueError("public_asset_hash_mismatch:" + name)
+            assets.append({"name": name, "bytes": size, "sha256": digest})
+        receipt = {**facts, "status": "seeded", "method": "copy", "assets": assets}
+        with os.fdopen(os.open(_PUBLIC_MODEL_RECEIPT, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                               0o600, dir_fd=stage_fd), "w") as file:
+            json.dump(receipt, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        _publish_public_model(parent_fd, staging_name)
+        published = True
+        return receipt
+    except FileExistsError:
+        return {**facts, "status": "preserved_existing"}
+    except (OSError, ValueError) as exc:
+        # Optional deployment cache preparation must not disable native fallback.
+        return {**facts, "status": "not_seeded", "reason": f"{type(exc).__name__}:{exc}"}
+    finally:
+        if stage_fd is not None and not published:
+            for name in (*_PUBLIC_MODEL_ASSETS, _PUBLIC_MODEL_RECEIPT):
+                try:
+                    os.unlink(name, dir_fd=stage_fd)
+                except OSError:
+                    pass
+        if stage_fd is not None:
+            os.close(stage_fd)
+        if parent_fd is not None:
+            if not published:
+                try:
+                    os.rmdir(staging_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+            os.close(parent_fd)
+        if source_fd is not None:
+            os.close(source_fd)
 
 
 def executable() -> str:
@@ -58,6 +173,9 @@ def prepare(ctx, checkpoint: dict) -> tuple[dict, Path, str]:
         OPENAI_COMPAT_API_KEY=(ctx.appid or env.get("MEYO_UNIFIED_APPID")
                               or env.get("AIGC_APPID") or env.get("OPENAI_COMPAT_API_KEY", "")),
     )
+    env["LEGION_JCODE_PUBLIC_MODEL_CACHE_RESULT"] = json.dumps(
+        _seed_public_model(home, env.get("LEGION_JCODE_PUBLIC_MODEL_CACHE", "")),
+        ensure_ascii=False)
     return env, home, resume_id
 
 

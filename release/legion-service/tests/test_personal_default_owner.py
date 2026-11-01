@@ -1,4 +1,4 @@
-"""Default personal requests reach the configured native owner, not an old planner."""
+"""Personal auto stays automatic; explicit members and ownership remain native."""
 from __future__ import annotations
 
 import copy
@@ -12,14 +12,14 @@ import pytest
 from test_public_origin_entry import http_entry, isolated
 
 
-def test_personal_startup_declares_its_owner_without_inheriting_another(isolated):
+def test_personal_startup_keeps_auto_without_inheriting_an_implicit_owner(isolated):
     env, _ = isolated.runtime.environment(
         isolated.root, {"MEYO_PERSONAL_DEFAULT_HARNESS": "unrelated-owner"}
     )
-    assert env["MEYO_PERSONAL_DEFAULT_HARNESS"] == "codex"
+    assert env["MEYO_PERSONAL_DEFAULT_HARNESS"] == ""
     assert "LEGION_CODEX_RESPONSES_BINDING" not in env
-    # Missing model configuration must reach the native configuration error,
-    # not select a legacy/company planner or invent another provider.
+    # An execution identity/model binding is not a choice of the task's worker.
+    # Native planning still requires its own valid model binding.
 
 
 def test_default_owner_preserves_original_task_and_context(isolated):
@@ -81,7 +81,7 @@ def test_explicit_owner_still_wins_and_absent_default_keeps_legacy_route(isolate
 
 
 @pytest.mark.parametrize("project_approved", [False, True])
-def test_real_default_http_dispatch_uses_existing_runner_and_subject(http_entry, isolated, project_approved):
+def test_real_default_http_dispatch_plans_without_losing_subject_or_project(http_entry, isolated, project_approved):
     server = http_entry.server
     monkeypatch = isolated.monkeypatch
     env, _ = isolated.runtime.environment(isolated.root, {})
@@ -97,7 +97,9 @@ def test_real_default_http_dispatch_uses_existing_runner_and_subject(http_entry,
 
     def planner(*args, **kwargs):
         planner_calls.append((args, kwargs))
-        return {"ok": False, "error": "planner_tool_unavailable"}
+        return {"ok": True, "suggested_mode": "pk", "reason": "offline native planner",
+                "tasks": {"chosen": {"task": "继续原工程", "assigned_harness": "cc"}},
+                "directions": {"chosen": "programming"}}
 
     def dispatch(question, **kwargs):
         calls.append((question, kwargs))
@@ -145,13 +147,14 @@ def test_real_default_http_dispatch_uses_existing_runner_and_subject(http_entry,
         return
     assert status == 200
     assert len(calls) == 1, raw.decode("utf-8", "replace")[-2200:]
-    assert planner_calls == []
+    assert len(planner_calls) == 1
     question, request = calls[0]
     assert question == "继续原工程"
-    assert request["mode"] == "single"
+    assert request["mode"] == "pk"
     assert request["user_id"] == "invited-test"
     assert request["conversation_id"] == "personaldefault123"
-    assert request["plan"]["tasks"]["codex"]["task"] == question
+    assert request["plan"]["tasks"]["chosen"]["assigned_harness"] == "cc"
+    assert request["plan"]["tasks"]["chosen"]["task"] == question
     assert request["plan"]["quality_context"]
     assert request["plan"]["project_context"]["workspace_root"] == str(workspace)
     assert request["plan"]["project_context"]["continued_from_team_id"] == "personal-default-prior"
@@ -160,6 +163,6 @@ def test_real_default_http_dispatch_uses_existing_runner_and_subject(http_entry,
         if line.startswith("data: ")
     ]
     selection = next(event for event in events if event.get("t") == "mode_selected")
-    assert selection["selection_source"] == "personal_runtime_owner_binding"
-    assert "用户已选择唯一成员" not in selection["reason"]
+    assert selection["mode"] == "pk"
+    assert selection.get("selection_source") != "personal_runtime_owner_binding"
     assert any(event.get("results") for event in events)
