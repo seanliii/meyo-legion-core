@@ -127,6 +127,15 @@ test('pairing uses the original core packager and npm pack on isolated fixed-com
     ok(again.result)
     assert.equal(JSON.parse(await readFile(again.path, 'utf8')).pair_id, pair.pair_id)
   })
+  await t.test('npm report ordering is not mistaken for a changed package file set', async () => {
+    const reordered = JSON.parse(packOutput)
+    reordered[0].files.reverse()
+    const path = join(root, 'npm-other-order.json')
+    await writeFile(path, JSON.stringify(reordered))
+    const result = await invoke({ '--connector-pack-report': path })
+    ok(result.result)
+    assert.equal(JSON.parse(await readFile(result.path, 'utf8')).pair_id, pair.pair_id)
+  })
   await t.test('moving branches and mismatched full commits cannot label an archive', async () => {
     await rejected({ '--core-commit': 'HEAD' }, /commit|object ID/)
     await rejected({ '--connector-commit': 'main' }, /commit|object ID/)

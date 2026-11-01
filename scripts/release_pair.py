@@ -101,7 +101,8 @@ def verify_connector(packager, args, entries):
             if name == "package.json":
                 manifest = json.loads(data, object_pairs_hook=packager._unique_json)
     packager._validate_path_set(files)
-    require(report.get("files") == sorted(native_files, key=lambda row: row["path"])
+    # npm's display order need not be Python's code-point order (e.g. docs/media vs docs/PLAN).
+    require(sorted(report.get("files", []), key=lambda row: row["path"]) == sorted(native_files, key=lambda row: row["path"])
             and report.get("entryCount") == len(files) and report.get("unpackedSize") == total
             and report.get("bundled") == [], "npm pack file set/metadata mismatch (bundled dependencies are not supported)")
     require(isinstance(manifest, dict), "missing connector package.json")
