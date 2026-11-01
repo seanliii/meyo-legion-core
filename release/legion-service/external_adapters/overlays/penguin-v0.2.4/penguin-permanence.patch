@@ -1,0 +1,173 @@
+--- a/packages/core/src/llm/generative-model.ts
++++ b/packages/core/src/llm/generative-model.ts
+@@ -13,15 +13,14 @@
+  *   3. Interruption/error handling: `finishInterrupted` first closes any open
+  *      streaming segments and backfills the complete message, then the output ends — never
+  *      leaking a malformed structure. This interface **never retries internally** — it only
+- *      labels, and `context_engine` owns the retry policy: every LLM error retries on the
+- *      engine's ladder EXCEPT `auth`. The label picks the taxonomy, not the policy:
++ *      labels, and `context_engine` owns the retry policy: LLM errors retry on the
++ *      engine's ladder EXCEPT `auth` and explicitly permanent failures:
+  *      transport-shaped errors (network/transport drops, timeouts, 429/5xx, see
+  *      `isRetryableError`) end with `timeout`; AgentHub JSON parse errors end with
+  *      `malformed`; everything else — provider 4xx rejections included — ends with
+- *      `failed`, and the engine reconnects on all three the same. One `failed` shape is
+- *      additionally marked `permanent`: AgentHub's fast-mode UnsupportedParameterError
+- *      (see `isFastModeUnsupportedError`), a deterministic client-side rejection the
+- *      engine aborts on instead of retrying. User interruption ends
++ *      `failed`, and the engine normally reconnects on all three. An explicit HTTP
++ *      no-retry hint or AgentHub's fast-mode UnsupportedParameterError carries `permanent`,
++ *      so the engine stops instead of retrying the known refusal. User interruption ends
+  *      with `aborted`; credentials failures end with their own terminal status `auth` (see
+  *      `isAuthenticationError`) — the one status the engine refuses to retry, and the one
+  *      hosts key on to gate input.
+@@ -915,6 +914,33 @@
+ }
+ 
+ /**
++ * Preserve an explicit no-retry fact from an HTTP error's SDK metadata. A status alone,
++ * an error message, or a string-valued body flag must not make a rejection permanent.
++ * OpenAI exposes the parsed error at `error`; Anthropic may retain the whole body there.
++ */
++function isExplicitlyNonRetryableHttpError(error: unknown): boolean {
++  return anyInCauseChain(error, (level) => {
++    const err = level as {
++      status?: unknown;
++      statusCode?: unknown;
++      headers?: { get?: (name: string) => unknown; [key: string]: unknown };
++      error?: { retryable?: unknown; error?: { retryable?: unknown } };
++    };
++    const status = err.status ?? err.statusCode;
++    if (typeof status !== "number" || !Number.isInteger(status) || status < 400 || status > 599) {
++      return false;
++    }
++    const hint =
++      typeof err.headers?.get === "function"
++        ? err.headers.get("x-should-retry")
++        : Object.entries(err.headers ?? {}).find(
++            ([key]) => key.toLowerCase() === "x-should-retry",
++          )?.[1];
++    return hint === "false" || err.error?.retryable === false || err.error?.error?.retryable === false;
++  });
++}
++
++/**
+  * Actionable tail appended to a fast-mode rejection's error text: the raw AgentHub message
+  * says what is unsupported ("Kimi does not support fast mode."); this says where the switch
+  * lives. Exported for the outcome-classification tests.
+@@ -924,8 +950,8 @@
+ 
+ /**
+  * Determines whether an error is transport-shaped — the `timeout` vs `failed` LABEL for
+- * an errored request, not the retry gate: the engine retries every LLM error except
+- * `auth`, whatever this returns. What the label buys is honest taxonomy for
++ * an errored request, not the retry gate: `auth` and explicit permanent hints are checked
++ * separately. What the label buys is honest taxonomy for
+  * observability and hosts — `timeout` reads as "connectivity/provider hiccup", `failed`
+  * as "the provider rejected the request" — while both ride the same reconnect ladder.
+  *
+@@ -1172,6 +1198,7 @@
+    *     any network I/O when this config enables `fast_mode` on a model without a fast
+    *     tier) is a `failed` marked `permanent: true`, which the engine aborts on with the
+    *     actionable message instead of retrying.
++   *     Explicit HTTP no-retry metadata likewise preserves `permanent: true`.
+    *
+    * Timeout detection: the idle timer resets on every event received; once idle exceeds
+    * `requestTimeoutMs`, the underlying stream is aborted and handled as needing reconnection
+@@ -1322,6 +1349,10 @@
+           permanent: true,
+           errorMessage: `${describeError(error)} ${FAST_MODE_UNSUPPORTED_GUIDANCE}`,
+         };
++      } else if (isExplicitlyNonRetryableHttpError(error)) {
++        // Reuse the engine's existing permanent-failed path; retain the original detail.
++        // No inference from message vocabulary, and no blanket ban on any HTTP status.
++        outcome = { status: "failed", permanent: true, errorMessage: describeError(error) };
+       } else if (isRetryableError(error)) {
+         // Transport-shaped failure (network drop, 429/5xx) -> labeled timeout. The detail
+         // rides on the outcome so observability (request_end -> the Cost center's errors
+--- a/packages/core/src/engine/context-engine.ts
++++ b/packages/core/src/engine/context-engine.ts
+@@ -192,7 +192,8 @@
+   /**
+    * Maximum retries for a failing compaction request — one budget for every failure kind:
+    * the transport statuses (see RETRY_STATUSES) and a committed response that isn't a usable
+-   * summary (empty, or tool calls) all draw from it; only `auth` stops without retrying.
++   * summary (empty, or tool calls) all draw from it; `auth` and explicitly permanent
++   * failed outcomes stop without retrying.
+    * Defaults to the shared `maxReconnects`: a compaction request is an ordinary LLM request
+    * and deserves the same patience (issue #170 — the earlier tighter budget made a
+    * struggling provider fail compaction fast, and a session whose every turn re-triggers
+@@ -756,7 +757,7 @@
+         // rationale below doesn't apply: this isn't a gateway phrasing a transient fault
+         // its own way, it's AgentHub's own typed error, so the ladder would only delay the
+         // actionable message.
+-        if (turn.outcome.status === "failed" && turn.outcome.permanent) {
++        if (turn.outcome.status === "failed" && turn.outcome.permanent === true) {
+           this.pendingCarryOver = this.buildCarryOver(attemptInput, turn);
+           yield* this.emitAbort(`llm request error: ${turn.outcome.errorMessage ?? "unknown"}`);
+           return;
+@@ -997,7 +998,7 @@
+   ): number | undefined {
+     // A permanent failure is aborted on, never retried (see the turn loop): announcing a
+     // countdown for it would be a lie.
+-    if (outcome.permanent) return undefined;
++    if (outcome.status === "failed" && outcome.permanent === true) return undefined;
+     if (!retries.includes(outcome.status)) return undefined;
+     if (reconnectsSoFar >= cap) return undefined;
+     return reconnectDelayMs(
+@@ -1399,8 +1400,9 @@
+    * response (empty summary, or tool calls — answered with synthesized failed outputs and
+    * retried behind a corrective note, see the loop body) and the transport failures
+    * (failed/timeout/malformed) all reconnect under the one `compactionMaxReconnects` budget
+-   * (defaulting to the turn loop's budget and ladder — see RETRY_STATUSES); only `auth` stops
+-   * without retrying. Once the budget is exhausted the compaction fails; on failure/abort, the original
++   * (defaulting to the turn loop's budget and ladder — see RETRY_STATUSES); `auth` and
++   * explicitly permanent failures stop without retrying. Once the budget is exhausted
++   * the compaction fails; on failure/abort, the original
+    * context and Trace index are kept — it does not fall back to discard. The first **committed**
+    * attempt absorbs `pendingToolOutputs` into the old context's history (issue #85): later
+    * resends carry only the repairs and the Prompt, and the result's `committed` flag tells
+@@ -1443,7 +1445,7 @@
+     let pendingRepairs: OmniMessage[] = [];
+     // One retry budget for every failure: an unusable committed response (empty summary /
+     // tool calls) counts exactly like a transport failure (issue #170) — same counter, same
+-    // exponential ladder — and only `auth` stops without retrying.
++    // exponential ladder — except auth and an explicitly permanent failed request.
+     let reconnects = 0;
+     // The compaction_end event's share of the RetryDetail block (also what the server's
+     // error record carries): the final attempt ordinal, and the last failure's detail.
+@@ -1520,11 +1522,14 @@
+         this.stashRepairs(pendingRepairs);
+         yield* this.emitCompactionEnd(reason, "summarize", "aborted", { attempt: attempts });
+         return { status: "aborted", committed };
+-      } else if (attempt.status === "auth") {
+-        // `auth` is the one status that never retries: credentials don't heal on a ladder.
++      } else if (
++        attempt.status === "auth" ||
++        (attempt.status === "failed" && attempt.permanent === true)
++      ) {
++        // Auth and an explicitly permanent rejection cannot heal on this retry ladder.
+         // It folds into `failed` here: the compaction event pair keeps its
+         // completed/failed/aborted set, the original context is kept, and the host learns
+-        // about the credential problem from the request's own terminal status (a turn-loop
++        // about the original problem from the request's own terminal status (a turn-loop
+         // request will surface it; the compaction request_end is Trace-only).
+         this.stashRepairs(pendingRepairs);
+         yield* this.emitCompactionEnd(reason, "summarize", "failed", {
+@@ -1621,6 +1626,8 @@
+       usage: OmniMessage | null;
+       /** Error detail (LLMOutcome.errorMessage) on non-completed statuses — becomes compaction_end.error_message when this failure ends the compaction. */
+       errorMessage?: string;
++      /** The existing LLMOutcome fact; unknown/non-boolean values are not promoted. */
++      permanent?: boolean;
+     }
+   > {
+     // The compaction request is itself an ordinary Request, emitting paired request events —
+@@ -1674,6 +1681,7 @@
+           toolCalls,
+           usage,
+           ...(res.value.errorMessage !== undefined ? { errorMessage: res.value.errorMessage } : {}),
++          ...(typeof res.value.permanent === "boolean" ? { permanent: res.value.permanent } : {}),
+         };
+       }
+       const msg = res.value;

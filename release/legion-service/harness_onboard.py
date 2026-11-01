@@ -183,7 +183,7 @@ def main():
     ap.add_argument("--from-github", default="", help="GitHub URL 一条指令全自动:clone->识别->生成spec->六环")
     ap.add_argument("--skip-install", action="store_true")
     ap.add_argument("--no-server", action="store_true")
-    ap.add_argument("--build-only", action="store_true", help="仅安装已登记成员；不注册、不调用模型、不作运行验收")
+    ap.add_argument("--build-only", action="store_true", help="仅构建成员；可用显式 --spec 持锁登记，不调用模型、不作运行验收")
     ap.add_argument("--install-timeout", type=int, default=1500, help="单个安装步骤时限（秒）；不改变任务执行时限")
     ap.add_argument("--model", default="gpt-5.6-sol")
     args = ap.parse_args()
@@ -191,8 +191,10 @@ def main():
         ap.error("--install-timeout 必须为正整数")
 
     if args.build_only:
-        if not args.key or args.spec or args.from_github or args.skip_install:
-            ap.error("--build-only 必须指定已登记 --key，不能与注册或跳过安装选项组合")
+        if not args.key or args.from_github or args.skip_install:
+            ap.error("--build-only 必须指定 --key，不能与 --from-github 或 --skip-install 组合")
+        if args.spec:
+            _upsert_catalog(args.key, args.spec)
         result = R.install(args.key, confirm=True, timeout_s=args.install_timeout, build_only=True)
         # Build evidence is deliberately distinct from the full onboarding verdict.
         print(json.dumps({"scope": "build_only", "runtime_acceptance": "not_run",

@@ -1,0 +1,20 @@
+{
+  "scope": "source_patch_only_not_an_installer",
+  "repository": "https://github.com/Prism-Shadow/penguin-harness.git",
+  "upstream_revision": "966af59018562657df0a9853671ff41e7b1ea027",
+  "version": "0.2.4",
+  "patch_file": "penguin-permanence.patch",
+  "patch_sha256": "d001faa4f33e482becd96ace711787d793fadd00f179394dcf0d709d391073a6",
+  "files": {
+    "packages/core/src/llm/generative-model.ts": {
+      "before_sha256": "b2f20945356fc9b8a33b019456a86a37469f81ffad11b62312ac3868191dab4d",
+      "after_sha256": "d6758d3d69f31be80df92604f26ba804e7d744b21cd939ce8b7c917ecc8fd647"
+    },
+    "packages/core/src/engine/context-engine.ts": {
+      "before_sha256": "9685044e95fd672baea92f81dadd342879525988f4a7804d2ce96a59ca7ce970",
+      "after_sha256": "30236b16e7ceb85db5569262c26a467dfc7bba8fd1a91712a95fc754cf427ef5"
+    }
+  },
+  "runtime_artifact": null,
+  "installed": false
+}

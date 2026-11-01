@@ -30,6 +30,28 @@ The embedded instruction, license and NOTICE bytes are preserved. Those
 third-party contents remain under their original terms; the root MIT license
 does not replace them.
 
+## Penguin native-source compatibility patch — MIT
+
+`release/legion-service/external_adapters/overlays/penguin-v0.2.4/`
+contains a narrow source patch for `Prism-Shadow/penguin-harness`,
+upstream revision `966af59018562657df0a9853671ff41e7b1ea027` (v0.2.4).
+It preserves explicit permanent-error facts through normal requests and native
+context compaction. The patch includes portions of the upstream source; its
+original MIT license is retained in that directory's `LICENSE`.
+
+The included first-party hook only checks, applies or reverses that exact source
+patch in an exclusive staging checkout. It is not an installer and does not
+replace anyone's installed Penguin, create a model account or certify all versions.
+The source archive does not bundle the separately built Penguin executable,
+its Node runtime, dependency store or private build records.
+
+## DSH connector source
+
+`connectors/dsh-plugin-legion/` is the first-party connector's canonical source,
+with its own MIT `LICENSE` retained. Its package remains separately installable.
+The DSH packages listed in its lockfile and peer dependencies retain their
+upstream terms and are not bundled into this Git source tree.
+
 ## Separately installed dependencies and optional capabilities
 
 Python requirements, npm lockfiles, wheel indexes, harness profiles and the
