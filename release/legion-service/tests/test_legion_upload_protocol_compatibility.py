@@ -297,6 +297,51 @@ def assert_download(scene, entry, content):
         assert code == 403 and body != content
 
 
+def test_local_media_inspection_does_not_publish_or_advertise_download(scene, tmp_path):
+    """Replay the real tool/GET failure using local bytes, not the user's media."""
+    path = tmp_path / "unpublished.mp4"
+    content = b"not a video container"
+    path.write_bytes(content)
+    before = scene["files"]()
+    body = json.dumps({"tool": "runnable:media_inspect",
+                       "params": {"path": str(path)}})
+
+    code, raw, _ = scene["request"](
+        "/api/legion/tool", body=body, content_type="application/json")
+    result = json.loads(raw)
+
+    assert code == 200 and result["ok"] is True
+    assert result["url"] == ""
+    assert result["downloadable"] is False and result["renderable"] is False
+    assert result["path"] == str(path) and result["bytes"] == len(content)
+    assert result["format_inference"]["basis"] == "filename_extension"
+    assert result["content_processing"]["read"] == "not_performed"
+    assert result["content_processing"]["media_decode"] == "not_performed"
+    assert result["link"]["availability"] == "not_provided"
+    assert scene["request"]("/media/unpublished.mp4")[0] == 404
+    assert scene["files"]() == before
+    assert path.read_bytes() == content
+
+
+def test_inspection_keeps_supplied_private_url_and_existing_access_checks(scene):
+    url = scene["original_url"]
+    path = Path(scene["server"].PATHS.uploads_dir()) / url.removeprefix("/media/")
+    body = json.dumps({"tool": "runnable:file_read",
+                       "params": {"path": str(path), "url": url}})
+
+    code, raw, _ = scene["request"](
+        "/api/legion/tool", body=body, content_type="application/json")
+    result = json.loads(raw)
+
+    assert code == 200 and result["ok"] is True
+    assert result["url"] == url and result["downloadable"] is True
+    assert result["renderable"] is True and result["preview"]["ok"] is True
+    assert result["link"] == {"source": "caller", "availability": "unverified"}
+    assert result["content_processing"]["read"] == "performed"
+    # Only this explicit GET proves access; describe must not confer ownership.
+    assert_download(scene, result, b"o" * 46)
+
+
 @pytest.mark.parametrize("data_url", [False, True])
 def test_legacy_json_keeps_complete_single_object_response(scene, data_url):
     content = "原 JSON 上传兼容\n".encode()

@@ -11,6 +11,7 @@ import os
 import pathlib
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -1196,12 +1197,39 @@ def _readonly_loopback_http(spec: dict, context: dict[str, str], timeout_s: floa
     # HTTPConnection has no ambient proxy/cookie/auth handler and does not follow redirects.
     connection = http.client.HTTPConnection("127.0.0.1", parsed.port, timeout=timeout_s)
     started = time.monotonic()
+    deadline = started + timeout_s
+    expired = threading.Event()
+    timer = None
+    connected_socket = None
+
+    def expire():
+        expired.set()
+        # Shutdown this exact socket, including the file object used by
+        # HTTPResponse. A peer sending one byte at a time must not extend the
+        # caller's budget, even while getresponse() is reading header lines.
+        if connected_socket is not None:
+            try:
+                connected_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def within_deadline():
+        if expired.is_set() or time.monotonic() >= deadline:
+            raise TimeoutError()
+
     try:
+        connection.connect()
+        connected_socket = connection.sock
+        within_deadline()
+        timer = threading.Timer(max(0, deadline - time.monotonic()), expire)
+        timer.daemon = True
+        timer.start()
         headers = {"Accept": "application/json", **spec.get("headers", {}),
                    "Host": authority, "Origin": origin}
         path = spec["url"][len("{instance_url}"):]
         connection.request("GET", path, headers=headers)
         response = connection.getresponse()
+        within_deadline()
         status = response.status
         if not 200 <= status < 300:
             return failed("http_error", f"Native management API returned HTTP {status}.",
@@ -1210,6 +1238,7 @@ def _readonly_loopback_http(spec: dict, context: dict[str, str], timeout_s: floa
             return failed("invalid_json_response", "Native management API did not return JSON.",
                           http_status=status)
         raw = response.read(1_048_577)
+        within_deadline()
         if len(raw) > 1_048_576:
             return failed("response_too_large", "Native management response exceeds 1 MiB.",
                           http_status=status)
@@ -1223,14 +1252,20 @@ def _readonly_loopback_http(spec: dict, context: dict[str, str], timeout_s: floa
         except (ValueError, UnicodeError):
             return failed("invalid_json_response", "Native management API returned invalid JSON.",
                           http_status=status)
+        within_deadline()
         return {"status": "ok", "protocol": "http", "http_status": status, "data": payload,
                 **({"data_view": "redacted_observation"} if "response_fields" in spec else {}),
                 "elapsed_ms": round((time.monotonic() - started) * 1000)}
     except TimeoutError:
         return failed("http_timeout", "Native management read timed out.", status="timeout")
     except (OSError, http.client.HTTPException):
+        if expired.is_set() or time.monotonic() >= deadline:
+            return failed("http_timeout", "Native management read timed out.", status="timeout")
         return failed("connection_error", "Cannot read the explicitly configured local instance.")
     finally:
+        if timer is not None:
+            timer.cancel()
+            timer.join()
         connection.close()
 
 

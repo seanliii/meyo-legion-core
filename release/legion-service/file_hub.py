@@ -104,28 +104,47 @@ def _read_code(path: str, max_bytes: int = 60000) -> dict:
 
 
 def describe(path: str, url: str = "") -> dict:
-    """统一元数据:任意文件 → {kind, url, name, bytes, preview, renderable, downloadable}。
+    """Describe local facts, optional inline content, and a caller-supplied URL.
 
-    前端一套逻辑按 kind 渲染;preview 是喂给 harness / 前端预览的结构化内容。
+    ``ok`` covers file metadata, not successful decoding, playback or publication.
+    ``kind`` is inferred from the filename. ``renderable`` means an inline preview
+    or a supported URL presentation is available; ``downloadable`` only preserves
+    the legacy indication that a URL was supplied, never that access was verified.
+    Preview reads can be bounded. A failed reader may have consumed some bytes,
+    so its read status is unknown rather than a claim that no content was read.
     """
     if not os.path.isfile(path):
         return {"ok": False, "error": f"文件不存在: {path}", "kind": "file"}
     kind = kind_of(path)
+    supplied_url = url or ""
+    processing = {"read": "not_performed", "preview": "not_performed",
+                  "media_decode": "not_performed"}
     meta = {"ok": True, "kind": kind, "name": os.path.basename(path),
-            "url": url or ("/media/" + os.path.basename(path)),
-            "bytes": os.path.getsize(path), "renderable": kind != "file",
-            "downloadable": True}
+            "path": os.path.abspath(path), "url": supplied_url,
+            "bytes": os.path.getsize(path),
+            "format_inference": {"basis": "filename_extension",
+                                 "extension": os.path.splitext(path)[1].lower()},
+            "content_processing": processing,
+            "link": {"source": "caller" if supplied_url else "none",
+                     "availability": "unverified" if supplied_url else "not_provided"},
+            "renderable": bool(supplied_url) and kind != "file",
+            "downloadable": bool(supplied_url)}
     if kind == "spreadsheet":
         meta["preview"] = _read_spreadsheet(path)
     elif kind == "code":
         meta["preview"] = _read_code(path)
     elif kind == "text":
         try:
-            meta["preview"] = {"ok": True, "text": open(path, encoding="utf-8",
-                                                        errors="ignore").read(20000)}
+            with open(path, encoding="utf-8", errors="ignore") as stream:
+                meta["preview"] = {"ok": True, "text": stream.read(20000)}
         except Exception as e:
             meta["preview"] = {"ok": False, "error": str(e)}
-    # 图/视频/音频/pdf 由前端直接按 url 渲染,无需 preview
+    if "preview" in meta:
+        ready = bool(meta["preview"].get("ok"))
+        processing["read"] = "performed" if ready else "unknown"
+        processing["preview"] = "succeeded" if ready else "failed"
+        meta["renderable"] = meta["renderable"] or ready
+    # No media decoder, publisher or URL/authentication probe runs here.
     return meta
 
 

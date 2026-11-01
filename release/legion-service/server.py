@@ -115,6 +115,31 @@ def _uid_from_request(handler, qs=None, body=None) -> str | None:
     return handler._personal_user()
 
 
+def _readonly_instance_environment(user_id: str) -> dict:
+    """Bind local owner observations without reloading login/model credentials.
+
+    Only an authenticated subject and the trusted launcher's persisted instance
+    mapping may supply this namespace; never a request body or a public instance.
+    """
+    source = os.environ
+    if (not user_id or source.get("LEGION_PERSONAL_OWNER") != user_id
+            or not source.get("MEYO_PERSONAL_STATE_DIR")
+            or source.get("LEGION_PUBLIC_ORIGIN") is not None
+            or source.get("LEGION_ALLOW_REMOTE_BIND", "0") != "0"):
+        return {}
+    import personal_runtime
+    try:
+        root = personal_runtime._root(source["MEYO_PERSONAL_STATE_DIR"])
+        config = personal_runtime._configuration(root)  # config.json only, not environment()
+    except (OSError, ValueError, TypeError):
+        return {}
+    if (config["user"] != user_id or "public_origin" in config
+            or source.get("MEYO_LEGION_DIR") != str(root / "data")
+            or source.get("LEGION_HOME_DIR") != str(root / "legion-home")):
+        return {}
+    return {"MEYO_LEGION_DIR": str(root / "data")}
+
+
 def request_origin_allowed(remote_addr: str, bound_host: str, host_header: str,
                            origin_header: str = "") -> bool:
     """强执行 API 只接受回环来源；浏览器 Origin 必须与 Host（含端口）同源。
@@ -2326,6 +2351,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "capability_policy must be an object"}, 400)
                 return None
             context["MEYO_CAPABILITY_POLICY_JSON"] = json.dumps(policy, ensure_ascii=False)
+        if (str(payload.get("tool") or "") in {
+                "external_capability:dsh-superagent:status",
+                "external_capability:dsh-superagent:settings",
+                "external_capability:dsh-superagent:sources",
+            } and _PUBLIC_ORIGIN is None and not _REMOTE_BIND_OK
+                and str(self.client_address[0]).lower() in _LOOPBACKS
+                and str(self.server.server_address[0]).lower() in _LOOPBACKS
+                and not getattr(self, "_request_ticket_identity", None)):
+            context.update(_readonly_instance_environment(self._personal_user()))
         return context
 
     def _do_POST_inner(self):

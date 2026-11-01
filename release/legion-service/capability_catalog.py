@@ -48,6 +48,16 @@ def search_skills(query: str, agent_type: str = "legion", timeout: int = 120,
 
 def inventory() -> dict:
     """Return facts and invocation paths; the caller decides which capability to use."""
+    import external_agent_registry
+    # Use the same live declarations as execution. Presence is not an install,
+    # health check, instance binding or permission to run an action.
+    actions = [{
+        **row, "name": row["id"], "runnable": True, "live_verified": False,
+        "installed": None, "health": "unknown",
+        "invoke": "legion_tool.py run " + row["id"] + " "
+                  + repr(json.dumps({name: "<填写>" for name in row.get("params", [])},
+                                    ensure_ascii=False)),
+    } for row in external_agent_registry.capability_actions()["actions"]]
     import media_model_cli
     script = HERE / "legion_tool.py"
     decision_example = json.dumps({
@@ -70,6 +80,7 @@ def inventory() -> dict:
         "ok": True,
         "discovery": [
             *model_entries,
+            *actions,
             {
                 "id": "research_capabilities", "name": "统一研究能力层", "ready": True,
                 "description": "搜索、抓取、结构化抽取、证据压缩、实体关系、多跳路径、文档和多媒体处理。",

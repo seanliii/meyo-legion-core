@@ -1121,7 +1121,8 @@ def _readonly_capability_instance(key: str, env: dict | None,
     try:
         if path.parent.is_symlink() or path.is_symlink():
             return "", invalid
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
             if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077
