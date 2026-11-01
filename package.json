@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-legion",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "One goal, a co-evolving harness team. Native DSH companions, shared capabilities and continued work, with visible configuration and delivery facts.",
   "type": "module",
   "main": "index.js",

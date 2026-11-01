@@ -203,7 +203,7 @@ test('the Node SDK export stays compatible and declared client peers remain on t
   assert.equal(sdk.LegionClient, LegionClient)
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
-  assert.equal(pkg.version, '0.5.1')
+  assert.equal(pkg.version, '0.5.2')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages[''].version, pkg.version)
   assert.equal(pkg.engines.dsh, '0.2.1-rc.2')
