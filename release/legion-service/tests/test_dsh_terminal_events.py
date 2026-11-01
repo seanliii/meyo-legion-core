@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -31,6 +32,7 @@ def native_dsh(cli_stack, monkeypatch, tmp_path):
     case, registry = cli_stack, cli_stack.registry
     case.mode = "completed"
     case.answer = "controlled native text"
+    case.error_message = "controlled protocol rejection"
     case.http_calls = []
     case.process_results = []
     case.receipts = []
@@ -85,10 +87,26 @@ net.Socket.prototype.connect = function (...args) {
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            messages_wire = urlsplit(self.path).path.rstrip("/").endswith("/messages")
             # Synthetic request metadata only; never retain prompts/messages.
+            primary = any(
+                message.get("role") == "user" and (
+                    message.get("content") == "Reply once."
+                    or isinstance(message.get("content"), list) and any(
+                        block.get("type") == "text" and block.get("text") == "Reply once."
+                        for block in message["content"] if isinstance(block, dict)))
+                for message in body.get("messages") or [] if isinstance(message, dict))
             case.http_calls.append({
                 "message_count": len(body.get("messages") or []),
                 "mode": case.mode,
+                "path": self.path,
+                "wire": "anthropic-messages" if messages_wire else "openai-completions",
+                "model": body.get("model"),
+                "max_tokens": body.get("max_tokens", body.get("max_completion_tokens")),
+                "primary": primary,
+                "credential_matches": (
+                    self.headers.get("Authorization") == "Bearer controlled-fixture-key"
+                    or self.headers.get("x-api-key") == "controlled-fixture-key"),
             })
             case.request_seen.set()
             if case.mode == "cancelled":
@@ -96,7 +114,7 @@ net.Socket.prototype.connect = function (...args) {
                 return
             if case.mode == "error":
                 data = json.dumps({"error": {"code": "FIXTURE_REJECTED",
-                                            "message": "controlled protocol rejection"}}).encode()
+                                            "message": case.error_message}}).encode()
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -107,6 +125,38 @@ net.Socket.prototype.connect = function (...args) {
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            if messages_wire:
+                # Real installed rc.2 llm-deepseek speaks Messages, not Chat.
+                # These are protocol fixtures, not an adapter-side conversion.
+                frames = [
+                    {"type": "message_start", "message": {
+                        "id": "fixture-message", "type": "message", "role": "assistant",
+                        "model": body["model"], "content": [], "stop_reason": None,
+                        "usage": {"input_tokens": 13, "output_tokens": 0}}},
+                    {"type": "content_block_start", "index": 0,
+                     "content_block": {"type": "thinking", "thinking": ""}},
+                    {"type": "content_block_delta", "index": 0,
+                     "delta": {"type": "thinking_delta",
+                               "thinking": "PRIVATE_REASONING_SENTINEL"}},
+                    {"type": "content_block_delta", "index": 0,
+                     "delta": {"type": "signature_delta", "signature": "fixture-signature"}},
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "content_block_start", "index": 1,
+                     "content_block": {"type": "text", "text": ""}},
+                    {"type": "content_block_delta", "index": 1,
+                     "delta": {"type": "text_delta", "text": case.answer}},
+                    {"type": "content_block_stop", "index": 1},
+                    {"type": "message_delta",
+                     "delta": {"stop_reason": "max_tokens" if reason == "length" else "end_turn",
+                               "stop_sequence": None},
+                     "usage": {"output_tokens": 7}},
+                    {"type": "message_stop"},
+                ]
+                for frame in frames:
+                    self.wfile.write(
+                        ("event: " + frame["type"] + "\ndata: " + json.dumps(frame) + "\n\n").encode())
+                self.wfile.flush()
+                return
             for frame in [
                 {"choices": [{"index": 0, "delta": {
                     "role": "assistant", "content": case.answer,
@@ -124,6 +174,8 @@ net.Socket.prototype.connect = function (...args) {
     thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
     thread.start()
     case.gateway = f"http://127.0.0.1:{httpd.server_port}/v1"
+    monkeypatch.setenv("MEYO_UNIFIED_GATEWAY", case.gateway)
+    monkeypatch.setattr(registry, "_UNIFIED_GATEWAY", case.gateway)
     native_run = registry._run_task
 
     def run(command, *args, **kwargs):
@@ -326,10 +378,12 @@ def test_real_core_consumes_native_output_limit_and_keeps_rc_and_cursor(native_d
     case.started = time.monotonic()
     case.registry.set_inproc_cancel_check(lambda: time.monotonic() - case.started > 12)
     monkeypatch.setitem(case.registry._STANDALONE_ADAPTERS, KEY, case.registry._deepseek_adapter)
+    events = []
     result = case.core.run_one(
         KEY, "Reply once.", qhash="__ut_dsh_core_terminal",
         preferred_model="fixture-model", preferred_appid="controlled-fixture-key",
         user_id="owner-a", conversation_id="conversation-a", execution_depth="quick",
+        cb=events.append,
         task_facts={"project_context": {"repo_root": str(case.project), "user_id": "owner-a"}},
     )
     assert result["status"] == "error"
@@ -337,6 +391,7 @@ def test_real_core_consumes_native_output_limit_and_keeps_rc_and_cursor(native_d
     assert result["native_facts"]["process_returncode"] == 1
     assert result["native_facts"]["dsh_stop_reason"] == "max-tokens"
     assert result["native_checkpoint"]["session_id"] == result["native_facts"]["session_id"]
+    assert "PRIVATE_" not in json.dumps({"result": result, "events": events})
 
 
 def test_timeout_without_a_native_receipt_does_not_invent_a_session(cli_stack, monkeypatch):
@@ -351,7 +406,8 @@ def test_timeout_without_a_native_receipt_does_not_invent_a_session(cli_stack, m
     monkeypatch.setattr(registry, "_run_task", timeout)
     result = registry._deepseek_adapter(
         "request-is-not-a-native-uuid", "Reply once.", ctx=registry.HarnessCtx(
-            workdir=str(cli_stack.project), session_id="logical-conversation-only"))
+            model="fixture-model", workdir=str(cli_stack.project),
+            session_id="logical-conversation-only"))
     assert result["status"] == "timeout"
     assert not result.get("native_checkpoint")
 
@@ -369,10 +425,13 @@ def test_unknown_observation_does_not_demote_native_success_in_real_core(
 
     def receipt(command, *args, **kwargs):
         result = native(command, *args, **kwargs)
+        patch = json.loads(Path(command[command.index("--patch") + 1]).read_text())
+        config = next(entry["config"] for row in patch for entry in row.get("insert", [])
+                      if entry.get("id") == "legion-dsh-terminal")
+        # Output schema negotiation is independent of terminal observation.
+        # Missing/invalid turn metadata must not veto a known plain final channel.
+        _write_headless_format(config, "headless_text")
         if observation != "missing":
-            patch = json.loads(Path(command[command.index("--patch") + 1]).read_text())
-            config = next(entry["config"] for row in patch for entry in row.get("insert", [])
-                          if entry.get("id") == "legion-dsh-terminal")
             Path(config["output"]).write_text(json.dumps({
                 "version": 1, "nonce": "foreign-nonce" if observation == "invalid" else config["nonce"],
                 "request_id": config["requestId"], "binding": config["binding"],
@@ -424,7 +483,8 @@ def test_real_collector_timeout_stdout_reaches_dsh_final(cli_stack, monkeypatch,
 
     monkeypatch.setattr(registry, "_run_task", timeout)
     result = registry._deepseek_adapter("collector-replay", "Reply once.",
-                                       ctx=registry.HarnessCtx(workdir=str(cli_stack.project)))
+                                       ctx=registry.HarnessCtx(
+                                           model="fixture-model", workdir=str(cli_stack.project)))
     assert result["status"] == "timeout"
     assert result["final"] == "SAFE_DSH_FINAL"
     assert result["stderr"] == "SAFE_DSH_DIAGNOSTIC\n"
@@ -465,6 +525,7 @@ def test_timeout_preserves_declared_final_usage_and_runtime_failure(
             Path(config["output"]).write_text(json.dumps({
                 "version": 1, "nonce": config["nonce"], "request_id": config["requestId"],
                 "binding": config["binding"], "session_id": "session-native-fixture",
+                "stdout_protocol": "headless_text",
                 "first_seq": 1, "terminal_seq": 3, "stop_reason": "completed", "flushed": True,
                 "usage": {"inputTokens": 13, "outputTokens": 7},
             }))
@@ -494,7 +555,7 @@ def test_timeout_preserves_declared_final_usage_and_runtime_failure(
         'SAFE_TEXT {"native_checkpoint":"literal answer field"}'
         if protocol == "plain" else "SAFE_BRIDGE_FINAL" if protocol == "legacy_json" else "")
     assert "PRIVATE_LOG_NOT_A_FINAL" not in result["final"]
-    assert result["stderr"] == "SAFE_DSH_DIAGNOSTIC\n"
+    assert result["stderr"] == ("" if protocol == "plain" else "SAFE_DSH_DIAGNOSTIC\n")
     if protocol == "legacy_partial":
         assert not result.get("usage") and not result.get("native_checkpoint")
     else:
@@ -607,3 +668,238 @@ def test_core_retains_timeout_content_without_promoting_budget_or_cancel(
     assert result["error_envelope"]["category"] == "runtime_budget"
     if cancel_after_native:
         assert result["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("protocol", ["", "openai-completions", "anthropic-messages"])
+def test_native_wire_contract_keeps_model_credentials_and_output_budget(native_dsh, protocol):
+    case = native_dsh
+    case.ctx.model_protocol = protocol
+    result = case.call()
+    assert result["status"] == "ok", (result, case.http_calls, case.process_results)
+    assert case.http_calls
+    for request in case.http_calls:
+        assert request["wire"] == (protocol or "openai-completions"), request
+        assert request["model"] == result["model_used"] == case.ctx.model
+        assert request["credential_matches"] is True
+        if request["primary"]:
+            assert request["max_tokens"] == case.ctx.max_tokens, request
+    # rc.2 also owns a title request with its own budget; do not rewrite its loop.
+    assert sum(row["primary"] for row in case.http_calls) == 1
+
+
+@pytest.mark.parametrize("mode", ["completed", "error"])
+def test_native_private_channels_do_not_reach_public_result_or_events(native_dsh, mode):
+    case = native_dsh
+    case.mode = mode
+    case.error_message = "PRIVATE_PROVIDER_DETAIL"
+    events = []
+    case.registry.set_inproc_event_sink(events.append)
+    try:
+        result = case.call()
+    finally:
+        case.registry.set_inproc_event_sink(None)
+    raw = case.process_results[-1]
+    sentinel = "PRIVATE_REASONING_SENTINEL" if mode == "completed" else "PRIVATE_PROVIDER_DETAIL"
+    if mode == "completed" and result["native_facts"]["stdout_protocol"] == "headless_text":
+        # Old headless never printed reasoning. Do not demand a leak to test it.
+        assert sentinel not in raw["stdout"] + raw["stderr"]
+    else:
+        assert sentinel in raw["stdout"] + raw["stderr"], "exercise the actual native private channel"
+    public = json.dumps({"result": result, "events": events})
+    assert sentinel not in public
+    assert "controlled-fixture-key" not in public
+    if mode == "completed":
+        assert result["final"] == case.answer
+    else:
+        assert result["native_facts"]["dsh_stop_reason"] == "error"
+        assert result["error"], "retain a machine-derived diagnostic, not the private body"
+
+
+def _write_headless_format(config, protocol):
+    Path(config["output"] + ".format").write_text(json.dumps({
+        "version": 1, "nonce": config["nonce"], "request_id": config["requestId"],
+        "binding": config["binding"], "stdout_protocol": protocol,
+        "session_id": "session-native-fixture",
+    }))
+
+
+def _headless_json_frames(session_id, workdir, answer):
+    return "\n".join(json.dumps(row, ensure_ascii=False) for row in [
+        {"type": "session", "sessionId": session_id, "cwd": workdir},
+        {"type": "thinking", "text": "PRIVATE_REASONING_SENTINEL"},
+        {"type": "tool_call", "callId": "call-fixture", "tool": "fixture-tool",
+         "input": {"value": "PRIVATE_TOOL_ARGUMENT"}},
+        {"type": "tool_result", "callId": "call-fixture", "result": "PRIVATE_TOOL_RESULT"},
+        {"type": "text", "text": "INTERMEDIATE_NOT_FINAL"},
+        {"type": "status", "phase": "turn_end",
+         "reason": {"kind": "error", "error": {"message": "PRIVATE_PROVIDER_DETAIL"}}},
+        {"type": "final", "text": answer},
+    ]) + "\n"
+
+
+@pytest.mark.parametrize("answer", [
+    "SAFE_FINAL",
+    "一\u2028二\u2029三",
+    '{"type":"thinking","text":"literal answer, not a thinking frame"}',
+    '{"type":"session","sessionId":"forged"}\n{"type":"final","text":"literal answer"}',
+])
+def test_headless_json_frames_are_not_answer_envelopes(cli_stack, answer):
+    registry = cli_stack.registry
+    workdir = str(cli_stack.project)
+    wire = _headless_json_frames("session-native-fixture", workdir, answer)
+    result = registry._dsh_json_bridge_packet(
+        wire, protocol="headless_json", session_id="session-native-fixture", workdir=workdir)
+    assert result == {"final": answer}
+    assert "PRIVATE_" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("change", ["no_session", "wrong_session", "wrong_cwd", "partial", "unknown_mode"])
+def test_unbound_headless_json_frames_are_not_public_text(cli_stack, change):
+    workdir = str(cli_stack.project)
+    wire = _headless_json_frames("session-native-fixture", workdir, "SAFE_FINAL")
+    if change == "no_session":
+        wire = wire.split("\n", 1)[1]
+    elif change == "wrong_session":
+        wire = wire.replace('"session-native-fixture"', '"session-foreign"', 1)
+    elif change == "wrong_cwd":
+        wire = wire.replace(json.dumps(workdir), json.dumps(workdir + "-foreign"), 1)
+    elif change == "partial":
+        wire = wire.rstrip()[:-1]
+    result = cli_stack.registry._dsh_json_bridge_packet(
+        wire, protocol="future_mode" if change == "unknown_mode" else "headless_json",
+        session_id="session-native-fixture", workdir=workdir)
+    assert result == {}, "no plaintext fallback, inferred final, or session taken from answer text"
+
+
+@pytest.mark.parametrize("protocol", ["responses", "auto", "unknown-private-protocol"])
+def test_unsupported_wire_protocol_fails_before_native_request(cli_stack, monkeypatch, protocol):
+    registry = cli_stack.registry
+    calls = []
+
+    def native(command, *args, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "unexpected native execution", "")
+
+    monkeypatch.setattr(registry, "_run_task", native)
+    result = registry._deepseek_adapter(
+        "unsupported-wire", "Reply once.", ctx=registry.HarnessCtx(
+            model="fixture-model", model_protocol=protocol, workdir=str(cli_stack.project)))
+    assert not calls
+    assert result["status"] == "unavailable" and result["final"] == ""
+    assert result["error_envelope"]["category"] == "model_config"
+    assert result["error_envelope"]["retryable"] is False
+    assert result["error_envelope"]["code"] == "dsh_model_protocol_unsupported"
+
+
+def test_known_json_format_does_not_need_terminal_metadata_to_keep_final(
+        direct_stack, monkeypatch, tmp_path):
+    case, registry = direct_stack, direct_stack.registry
+    binary = tmp_path / "offline-dsh"
+    binary.write_text("never executed\n")
+    monkeypatch.setattr(registry._sh, "which",
+                        lambda name: str(binary) if name == "dsh" else None)
+
+    def native(command, *args, **kwargs):
+        rows = json.loads(Path(command[command.index("--patch") + 1]).read_text())
+        config = next(entry["config"] for row in rows for entry in row.get("insert", [])
+                      if entry.get("id") == "legion-dsh-terminal")
+        _write_headless_format(config, "headless_json")
+        # No turn/end receipt: the stdout contract and actual session are still known.
+        wire = _headless_json_frames("session-native-fixture", str(case.project), case.answer)
+        return subprocess.CompletedProcess(command, 0, wire, "PRIVATE_DIAGNOSTIC")
+
+    monkeypatch.setattr(registry, "_run_task", native)
+    select_adapter(case, monkeypatch, "deepseek")
+    result = invoke(case)
+    assert result["status"] == "done" and result["final"] == case.answer
+    assert result["native_facts"]["dsh_stop_reason"] == "unknown"
+    assert result["native_facts"].get("completed") is not True
+    assert not case.packets[0]["native_checkpoint"]
+    assert "PRIVATE_" not in json.dumps({"result": result, "events": case.events})
+
+
+@pytest.mark.parametrize("format_state", ["missing", "unbound", "unsupported"])
+def test_unknown_output_format_cannot_promote_private_stdout_to_final(
+        direct_stack, monkeypatch, tmp_path, format_state):
+    case, registry = direct_stack, direct_stack.registry
+    binary = tmp_path / "offline-dsh"
+    binary.write_text("never executed\n")
+    monkeypatch.setattr(registry._sh, "which",
+                        lambda name: str(binary) if name == "dsh" else None)
+
+    def native(command, *args, **kwargs):
+        rows = json.loads(Path(command[command.index("--patch") + 1]).read_text())
+        config = next(entry["config"] for row in rows for entry in row.get("insert", [])
+                      if entry.get("id") == "legion-dsh-terminal")
+        if format_state != "missing":
+            header = dict(config)
+            if format_state == "unbound":
+                header["nonce"] = "not-this-invocation"
+            _write_headless_format(
+                header, "future_mode" if format_state == "unsupported" else "headless_json")
+        wire = _headless_json_frames("session-native-fixture", str(case.project), case.answer)
+        return subprocess.CompletedProcess(command, 0, wire, "PRIVATE_DIAGNOSTIC")
+
+    monkeypatch.setattr(registry, "_run_task", native)
+    packet = registry._deepseek_adapter(
+        "unverified-output", "Reply once.", ctx=registry.HarnessCtx(
+            model="fixture-model", workdir=str(case.project)))
+    assert packet["final"] == "" and packet["status"] == "error"
+    assert packet["native_facts"]["process_returncode"] == 0
+    assert packet["native_facts"]["dsh_stop_reason"] == "unknown"
+    assert packet["error_envelope"]["code"] == "dsh_output_protocol_unavailable"
+    assert "PRIVATE_" not in json.dumps(packet)
+
+
+def test_missing_model_does_not_silently_select_another_native_default(cli_stack, monkeypatch):
+    def no_request(*args, **kwargs):
+        raise AssertionError("missing model must not start a native request")
+
+    monkeypatch.setattr(cli_stack.registry, "_run_task", no_request)
+    result = cli_stack.registry._deepseek_adapter(
+        "missing-model", "Reply once.", ctx=cli_stack.registry.HarnessCtx(
+            workdir=str(cli_stack.project)))
+    assert result["status"] == "unavailable"
+    assert result["error_envelope"]["code"] == "dsh_model_not_configured"
+
+
+@pytest.mark.parametrize("runtime_reason", [None, "runtime_budget"])
+def test_headless_json_output_timeout_keeps_final_but_not_private_channels(
+        cli_stack, monkeypatch, tmp_path, runtime_reason):
+    registry = cli_stack.registry
+    binary = tmp_path / "offline-dsh"
+    binary.write_text("never executed\n")
+    monkeypatch.setattr(registry._sh, "which",
+                        lambda name: str(binary) if name == "dsh" else None)
+    monkeypatch.setattr(registry, "_legion_prompt", lambda question, ctx: question)
+
+    def timeout(command, *args, **kwargs):
+        rows = json.loads(Path(command[command.index("--patch") + 1]).read_text())
+        config = next(entry["config"] for row in rows for entry in row.get("insert", [])
+                      if entry.get("id") == "legion-dsh-terminal")
+        Path(config["output"]).write_text(json.dumps({
+            "version": 1, "nonce": config["nonce"], "request_id": config["requestId"],
+            "binding": config["binding"], "session_id": "session-native-fixture",
+            "stdout_protocol": "headless_json",
+            "first_seq": 1, "terminal_seq": 3, "stop_reason": "completed", "flushed": True,
+            "usage": {"inputTokens": 13, "outputTokens": 7},
+        }))
+        error = subprocess.TimeoutExpired(command, 1)
+        error.legion_stdout = _headless_json_frames(
+            "session-native-fixture", str(cli_stack.project), "SAFE_FINAL")
+        error.legion_stderr = "PRIVATE_REASONING_SENTINEL\nPRIVATE_PROVIDER_DETAIL\n"
+        if runtime_reason:
+            error.runtime_reason = runtime_reason
+        raise error
+
+    monkeypatch.setattr(registry, "_run_task", timeout)
+    result = registry._deepseek_adapter(
+        "json-budget", "Reply once.", ctx=registry.HarnessCtx(
+            model="fixture-model", workdir=str(cli_stack.project)))
+    assert result["status"] == "timeout" and result["final"] == "SAFE_FINAL"
+    assert "PRIVATE_" not in json.dumps(result)
+    assert result["usage"]["total_tokens"] == 20
+    assert result["native_checkpoint"]["session_id"] == "session-native-fixture"
+    if runtime_reason:
+        assert result["error_envelope"]["category"] == runtime_reason
+        assert result["error_envelope"]["retryable"] is False

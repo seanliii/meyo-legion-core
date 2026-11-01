@@ -22,17 +22,46 @@ export async function apply(ctx, config) {
     binding: config.binding, session_id: "", first_seq: null,
     turn_id: null, terminal_seq: null, stop_reason: "unknown",
     error_code: "", cancel_cause: "", usage: {}, flushed: false, resumed: false,
+    stdout_protocol: "unknown",
   };
   const publish = () => {
     const pending = config.output + ".tmp";
     writeFileSync(pending, JSON.stringify(record), { mode: 0o600 });
     renameSync(pending, config.output);
   };
+  const publishFormat = () => {
+    const output = config.output + ".format";
+    const pending = output + ".tmp";
+    writeFileSync(pending, JSON.stringify({
+      version: 1, nonce: config.nonce, request_id: config.requestId,
+      binding: config.binding, stdout_protocol: record.stdout_protocol,
+      session_id: record.session_id,
+    }), { mode: 0o600 });
+    renameSync(pending, output);
+  };
+  // Feature detection against the installed official schema, not a version guess.
+  // rc.2 otherwise streams reasoning to stderr; its JSON mode separates channels.
+  const fields = native.Config?.dict;
+  if (!fields || !Object.hasOwn(fields, "task")) {
+    record.error_code = "DSH_HEADLESS_CONFIG_UNSUPPORTED";
+    publish();
+    throw new Error(record.error_code);
+  }
+  const json = Object.hasOwn(fields, "json");
+  record.stdout_protocol = json ? "headless_json" : "headless_text";
+  publishFormat();
+  publish();
   let created = false;
   const inlet = {
     async create(options) {
       if (created) throw new Error("dsh_headless_duplicate_create");
       created = true;
+      if (config.model && (options.agentOptions?.model !== config.model ||
+          options.agentOptions?.provider !== "legion-dsh")) {
+        record.error_code = "DSH_MODEL_BINDING_MISMATCH";
+        publish();
+        throw new Error(record.error_code);
+      }
       const expected = config.resumeSessionId || options.sessionId;
       const setup = async (agentCtx) => {
         await options.setup?.(agentCtx);
@@ -95,6 +124,7 @@ export async function apply(ctx, config) {
       }
       record.session_id = session.id;
       record.resumed = Boolean(config.resumeSessionId);
+      publishFormat();
       publish();
       return handle;
     },
@@ -119,5 +149,5 @@ export async function apply(ctx, config) {
       return Reflect.get(target, key, target);
     },
   });
-  native.apply(driverCtx, { task: ctx.get("headlessStartup").task });
+  native.apply(driverCtx, { task: ctx.get("headlessStartup").task, ...(json ? { json: true } : {}) });
 }

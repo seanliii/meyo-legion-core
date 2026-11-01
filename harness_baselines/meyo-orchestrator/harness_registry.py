@@ -4818,8 +4818,35 @@ print(json.dumps(_frame({{"type":"result","hermes_adapter_result":True,"final":r
             _usage_tmp.cleanup()
 
 
-def _dsh_json_bridge_packet(stdout):
-    """Only for the existing bridge's declared JSON stdout protocol."""
+def _dsh_json_bridge_packet(stdout, *, protocol="legacy_bridge", session_id="", workdir=""):
+    """Decode a declared native channel; never interpret JSON inside its final."""
+    if protocol == "headless_json":
+        opened = False
+        packet = {}
+        # JSONL is delimited by LF, not by every Unicode text line separator.
+        for line in stdout.split("\n"):
+            if not line.strip():
+                continue
+            try:
+                row = _json.loads(line)
+            except (ValueError, TypeError):
+                continue  # Partial/private output is never a plaintext fallback.
+            if not isinstance(row, dict):
+                continue
+            if not opened:
+                if (row.get("type") != "session" or not session_id or not workdir
+                        or row.get("sessionId") != session_id or row.get("cwd") != workdir):
+                    return {}
+                opened = True
+            elif row.get("type") == "session":
+                return {}  # A second/foreign session is not this invocation.
+            elif row.get("type") == "final" and isinstance(row.get("text"), str):
+                packet = {"final": row["text"]}
+            # thinking/text/tool_call/tool_result/status/error bodies stay private.
+        return packet
+    if protocol != "legacy_bridge":
+        return {}
+    # Backward compatibility for the pre-existing source resume bridge only.
     for line in reversed(stdout.splitlines()):
         try:
             row = _json.loads(line)
@@ -4836,7 +4863,24 @@ def _dsh_terminal_projection(path, nonce, request_id, binding, returncode):
     """Read only the request-local machine receipt, never native message logs."""
     import math
     facts = {"process_returncode": returncode, "dsh_stop_reason": "unknown",
-             "terminal_observation": "unavailable"}
+             "terminal_observation": "unavailable", "stdout_protocol": "unknown",
+             "diagnostic_body_projected": False}
+    # Schema/session negotiation is independent of turn/end and persistence.
+    # A lost terminal receipt must not erase a safely identified final channel.
+    try:
+        format_path = _P(str(path) + ".format")
+        if not format_path.is_symlink() and format_path.stat().st_size <= 65536:
+            header = _json.loads(format_path.read_text())
+            if (isinstance(header, dict) and header.get("version") == 1
+                    and header.get("nonce") == nonce and header.get("request_id") == request_id
+                    and header.get("binding") == binding
+                    and header.get("stdout_protocol") in {"headless_text", "headless_json"}):
+                facts["stdout_protocol"] = header["stdout_protocol"]
+                sid = header.get("session_id")
+                if isinstance(sid, str) and _re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", sid):
+                    facts["output_session_id"] = sid
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     unavailable = dict(facts)
     try:
         if path.is_symlink() or path.stat().st_size > 65536:
@@ -4844,9 +4888,20 @@ def _dsh_terminal_projection(path, nonce, request_id, binding, returncode):
         row = _json.loads(path.read_text())
         if (not isinstance(row, dict) or row.get("version") != 1
                 or row.get("nonce") != nonce or row.get("request_id") != request_id
-                or row.get("binding") != binding
-                or not isinstance(row.get("session_id"), str)
+                or row.get("binding") != binding):
+            return facts, None, None
+        # The driver declares its output format before starting a session.
+        # Missing terminal metadata must not erase that independent fact.
+        if row.get("stdout_protocol") in {"headless_text", "headless_json"}:
+            if facts["stdout_protocol"] not in {"unknown", row["stdout_protocol"]}:
+                return unavailable, None, None
+            facts["stdout_protocol"] = row["stdout_protocol"]
+        if (isinstance(row.get("error_code"), str)
+                and _re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", row["error_code"])):
+            facts["native_error_code"] = row["error_code"]
+        if (not isinstance(row.get("session_id"), str)
                 or not _re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", row["session_id"])
+                or facts.get("output_session_id", row["session_id"]) != row["session_id"]
                 or not isinstance(row.get("usage") or {}, dict)):
             return facts, None, None
         start, end = row.get("first_seq"), row.get("terminal_seq")
@@ -4893,12 +4948,15 @@ def _dsh_terminal_projection(path, nonce, request_id, binding, returncode):
 
 
 def _deepseek_adapter(qhash, question, gold="", ctx=None):
-    """DeepSeek Harness CLI adapter(依据 `dsh --help`: --profile headless <task>)。"""
-    # ctx 化(权限下放·同 penguin 模式):失败回流拼进 prompt 让它自判换招(dsh 模型走 profile,
-    # 换 model 需改 profile·超出本轮最小落地;先把失败回流接通·依据 deepseek timeout-policy
-    # 把 error 结构化原样喂回)。老调用零回归。
+    """Installed DSH owns the loop; its official provider owns wire compatibility."""
     ctx = ctx or HarnessCtx.from_env()
     t0 = _t.time()
+    _wire = getattr(ctx, "model_protocol", "") or "openai-completions"
+    if not isinstance(_wire, str) or _wire not in {"openai-completions", "anthropic-messages"}:
+        return {"final": "", "status": "unavailable", "elapsed": 0.0,
+                "error": "DSH requires openai-completions or anthropic-messages; no protocol fallback.",
+                "error_envelope": {"category": "model_config", "scope": "request",
+                    "retryable": False, "code": "dsh_model_protocol_unsupported"}}
     binp = _sh.which("dsh") or str(_P.home() / ".npm-global/bin/dsh")
     env = dict(os.environ)
     # ctx.appid 优先(单一事实源·同 codex/hermes 2026-09-01 修法):旧版只读全局 _UNIFIED_APPID→
@@ -4926,6 +4984,11 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
         _persist_root = str(_P(ctx.memory_dir or _wd) / "deepseek-sessions")
         _source = _resume_bridge.parents[2] if _resume_bridge.exists() else None
         if _resume_bridge.exists() and _sh.which("pnpm"):
+            if _wire != "openai-completions":
+                return {"final": "", "status": "unavailable", "elapsed": 0.0,
+                        "error": "The legacy DSH source bridge only declares the Chat contract.",
+                        "error_envelope": {"category": "model_config", "scope": "request",
+                            "retryable": False, "code": "dsh_source_bridge_protocol_unsupported"}}
             _json_bridge = True
             _cmd = ["pnpm", "exec", "tsx", str(_resume_bridge), _wd, _persist_root,
                     _native_sid, _legion_prompt(_prior_attempts_prelude(ctx.prior_attempts) + question, ctx)]
@@ -4946,20 +5009,27 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
         else:
             _cmd = [binp, "--profile", "headless"]
             _patches = []
-            if ctx.model:
-                # Native loader overlay, scoped to this invocation. The headless
-                # default otherwise silently uses its own model instead of ctx.
-                _model_spec = {"id": ctx.model, "name": ctx.model,
-                               "inputModalities": ["text"]}
-                if ctx.max_tokens:
-                    _model_spec["maxTokens"] = ctx.max_tokens
-                elif ctx.model in _GATEWAY_MODEL_MAX_TOKENS:
-                    _model_spec["maxTokens"] = _GATEWAY_MODEL_MAX_TOKENS[ctx.model]
-                _patches.extend([
-                    {"id": "agent-default-model", "config": {
-                        "provider": "deepseek-official", "model": ctx.model}},
-                    {"id": "llm-deepseek", "config": {"models": [_model_spec]}},
-                ])
+            if not ctx.model:
+                return {"final": "", "status": "unavailable", "elapsed": 0.0,
+                        "error": "DSH needs an explicit model for the configured wire contract.",
+                        "error_envelope": {"category": "model_config", "scope": "request",
+                            "retryable": False, "code": "dsh_model_not_configured"}}
+            # Both installed versions expose the official pi-ai provider profile.
+            # New llm-deepseek is Messages-only: never relabel a Chat gateway or
+            # implement a wire converter here. Preserve the model and credential.
+            _model_spec = {"id": ctx.model, "name": ctx.model, "input": ["text"]}
+            if ctx.max_tokens:
+                _model_spec["maxTokens"] = ctx.max_tokens
+            elif ctx.model in _GATEWAY_MODEL_MAX_TOKENS:
+                _model_spec["maxTokens"] = _GATEWAY_MODEL_MAX_TOKENS[ctx.model]
+            _patches.extend([
+                {"id": "agent-default-model", "config": {
+                    "provider": "legion-dsh", "model": ctx.model}},
+                {"id": "llm-pi-ai", "config": {"providers": {"legion-dsh": {
+                    "api": _wire, "apiKeyEnv": "DEEPSEEK_API_KEY",
+                    "baseURL": env["DEEPSEEK_BASE_URL"], "models": [_model_spec],
+                }}}},
+            ])
             # Installed headless owns the native loop/stdout/exit code. Extend
             # only its public creation inlet and scoped machine-event channel.
             _observer = _P(__file__).with_name("dsh_terminal_bridge.mjs")
@@ -4987,6 +5057,7 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
                     "requestId": str(qhash), "binding": _binding,
                     "output": str(_P(_terminal_dir.name) / "terminal.json"),
                     "resumeSessionId": str(_checkpoint.get("session_id") or ""),
+                    "model": ctx.model,
                 }
                 _patches.extend([
                     {"id": "headless-runner", "disabled": True},
@@ -5006,11 +5077,11 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
             _launch_cwd = str(_P(_wd).resolve())
         r = _run_task(_cmd, _WALL_S, env=env, cwd=_launch_cwd, tag="deepseek")
         final = r.stdout.strip()[-_FINAL_CAP:]
-        # Only the pre-existing JSON bridge declares stdout as an envelope.
-        # Native headless stdout is answer text, including JSON-looking answers.
+        # Source-bridge envelopes and native JSONL are different contracts.
+        # Native output format comes from the bound driver receipt below.
         parsed = _dsh_json_bridge_packet(r.stdout or "") if _json_bridge else {}
         status = "ok" if r.returncode == 0 else f"rc{r.returncode}"
-        if "MISSING_CREDENTIAL" in r.stderr:
+        if not _terminal_config and "MISSING_CREDENTIAL" in r.stderr:
             status = "unavailable"
         if parsed:
             final = str(parsed.get("final") or "")[-_FINAL_CAP:]
@@ -5032,7 +5103,26 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
                 _P(_terminal_config["output"]), _terminal_config["nonce"],
                 str(qhash), _terminal_config["binding"], r.returncode)
             packet.update(native_facts=facts, native_checkpoint=checkpoint, usage=usage,
-                          resumed_native=facts.get("resumed_native", False))
+                          resumed_native=facts.get("resumed_native", False), stderr="")
+            protocol = facts["stdout_protocol"]
+            if protocol == "headless_json":
+                decoded = _dsh_json_bridge_packet(
+                    r.stdout or "", protocol=protocol,
+                    session_id=facts.get("output_session_id") or facts.get("session_id", ""),
+                    workdir=_terminal_config["binding"]["workdir"])
+                packet["final"] = decoded.get("final", "").strip()[-_FINAL_CAP:]
+            elif protocol != "headless_text":
+                packet.update(final="", status="error",
+                              error="DSH native output format could not be verified; body withheld.",
+                              error_envelope={"category": "harness_runtime", "scope": "request",
+                                  "retryable": False, "code": "dsh_output_protocol_unavailable"})
+            code = facts.get("native_error_code")
+            if code and not packet["error"]:
+                packet["error"] = "DSH native error: " + code
+            elif r.returncode != 0 and not packet["error"]:
+                packet["error"] = f"DSH native process exited {r.returncode}; diagnostic body withheld."
+            if code == "MISSING_CREDENTIAL":
+                packet["status"] = "unavailable"
             stop = facts["dsh_stop_reason"]
             if stop == "max-tokens":
                 packet.update(error="DSH native turn ended at its output limit; process exit retained.",
@@ -5070,7 +5160,18 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
             facts, checkpoint, usage = _dsh_terminal_projection(
                 _P(_terminal_config["output"]), _terminal_config["nonce"],
                 str(qhash), _terminal_config["binding"], None)
-            packet.update(native_facts=facts, native_checkpoint=checkpoint, usage=usage)
+            packet.update(native_facts=facts, native_checkpoint=checkpoint, usage=usage,
+                          resumed_native=facts.get("resumed_native", False), stderr="")
+            protocol = facts["stdout_protocol"]
+            if protocol == "headless_json":
+                decoded = _dsh_json_bridge_packet(
+                    stdout, protocol=protocol,
+                    session_id=facts.get("output_session_id") or facts.get("session_id", ""),
+                    workdir=_terminal_config["binding"]["workdir"])
+                packet["final"] = decoded.get("final", "").strip()[-_FINAL_CAP:]
+            elif protocol != "headless_text":
+                packet["final"] = ""
+                facts["output_protocol_unavailable"] = True
         elif not packet.get("native_checkpoint") and _checkpoint.get("session_id"):
             # Preserve a caller's known native cursor; never invent one from qhash.
             packet["native_checkpoint"] = dict(_checkpoint)
