@@ -4707,6 +4707,80 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
         return _hermes_boundary_failure(exc)
 
 
+def _dsh_json_bridge_packet(stdout):
+    """Only for the existing bridge's declared JSON stdout protocol."""
+    for line in reversed(stdout.splitlines()):
+        try:
+            row = _json.loads(line)
+            checkpoint = row.get("native_checkpoint") if isinstance(row, dict) else None
+            if (isinstance(checkpoint, dict) and isinstance(checkpoint.get("session_id"), str)
+                    and checkpoint["session_id"] and isinstance(row.get("final"), str)):
+                return row
+        except (ValueError, TypeError):
+            continue
+    return {}
+
+
+def _dsh_terminal_projection(path, nonce, request_id, binding, returncode):
+    """Read only the request-local machine receipt, never native message logs."""
+    import math
+    facts = {"process_returncode": returncode, "dsh_stop_reason": "unknown",
+             "terminal_observation": "unavailable"}
+    unavailable = dict(facts)
+    try:
+        if path.is_symlink() or path.stat().st_size > 65536:
+            return facts, None, None
+        row = _json.loads(path.read_text())
+        if (not isinstance(row, dict) or row.get("version") != 1
+                or row.get("nonce") != nonce or row.get("request_id") != request_id
+                or row.get("binding") != binding
+                or not isinstance(row.get("session_id"), str)
+                or not _re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", row["session_id"])
+                or not isinstance(row.get("usage") or {}, dict)):
+            return facts, None, None
+        start, end = row.get("first_seq"), row.get("terminal_seq")
+        ended = type(start) is int and type(end) is int and 0 <= start < end
+        stop = row.get("stop_reason") if ended else "unknown"
+        if stop not in {"completed", "max-tokens", "error", "aborted", "blocked", "interrupted"}:
+            stop = "unknown"
+        facts.update(
+            terminal_observation="session_event" if ended else "no_terminal_event",
+            session_id=row["session_id"], first_seq=start, terminal_seq=end,
+            dsh_stop_reason=stop, completed=None if stop == "unknown" else stop == "completed",
+            failed=None if stop == "unknown" else stop == "error",
+            interrupted=stop in {"aborted", "interrupted"},
+            turn_status={"completed": "completed", "error": "failed",
+                         "aborted": "cancelled", "unknown": "unknown"}.get(stop, "incomplete"),
+            native_error_code=(row["error_code"] if isinstance(row.get("error_code"), str)
+                               and _re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", row["error_code"]) else ""),
+            cancel_cause=(row.get("cancel_cause") if row.get("cancel_cause") in
+                          ("user", "parent", "hook", "disposed", "legacy") else ""),
+            resumed_native=row.get("resumed") is True,
+        )
+        usage = {}
+        for source, target in (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
+                               ("cacheReadTokens", "cache_read_tokens"),
+                               ("cacheWriteTokens", "cache_write_tokens"),
+                               ("reasoningTokens", "reasoning_output_tokens")):
+            value = (row.get("usage") or {}).get(source)
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                usage[target] = value
+        if usage:
+            usage["total_tokens"] = sum(usage.get(k, 0) for k in
+                ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+            usage.update(source="dsh_session_event", granularity="task")
+            if not ended:
+                usage.update(complete=False, coverage="partial")
+        checkpoint = None
+        if ended and row.get("flushed") is True:
+            checkpoint = {"kind": "deepseek_session", "session_id": row["session_id"],
+                          "dsh_binding": binding, "dsh_terminal_seq": end,
+                          "dsh_checkpoint_source": "headless_session_events_v1"}
+        return facts, checkpoint, usage or None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return unavailable, None, None
+
+
 def _deepseek_adapter(qhash, question, gold="", ctx=None):
     """DeepSeek Harness CLI adapter(依据 `dsh --help`: --profile headless <task>)。"""
     # ctx 化(权限下放·同 penguin 模式):失败回流拼进 prompt 让它自判换招(dsh 模型走 profile,
@@ -4728,6 +4802,9 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
     _wd = ctx.workdir or str(_P.home() / ".meyo" / "legion" / "outputs" / f"deepseek_{qhash}")
     _P(_wd).mkdir(parents=True, exist_ok=True)
     _profile_patch = None
+    _terminal_dir = None
+    _terminal_config = None
+    _json_bridge = False
     try:
         # 生产原生恢复：完整源码环境使用 DeepSeek 的 agents.resume + JSONL persistence bridge。
         # 依据 examples/headless-agent/tests/resume.e2e.ts:40-62；每轮固定 session_id，进程退出后
@@ -4738,6 +4815,7 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
         _persist_root = str(_P(ctx.memory_dir or _wd) / "deepseek-sessions")
         _source = _resume_bridge.parents[2] if _resume_bridge.exists() else None
         if _resume_bridge.exists() and _sh.which("pnpm"):
+            _json_bridge = True
             _cmd = ["pnpm", "exec", "tsx", str(_resume_bridge), _wd, _persist_root,
                     _native_sid, _legion_prompt(_prior_attempts_prelude(ctx.prior_attempts) + question, ctx)]
             # C1(军团 deepseek dogfood 梳理):把父层选的 model 透传给桥(第5位参数·桥默认仍 flash)。
@@ -4756,38 +4834,70 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
             _launch_cwd = str(_source)
         else:
             _cmd = [binp, "--profile", "headless"]
+            _patches = []
             if ctx.model:
                 # Native loader overlay, scoped to this invocation. The headless
                 # default otherwise silently uses its own model instead of ctx.
-                import tempfile as _tf
-                _fd, _profile_patch = _tf.mkstemp(prefix="legion_dsh_", suffix=".json")
                 _model_spec = {"id": ctx.model, "name": ctx.model,
                                "inputModalities": ["text"]}
                 if ctx.max_tokens:
                     _model_spec["maxTokens"] = ctx.max_tokens
                 elif ctx.model in _GATEWAY_MODEL_MAX_TOKENS:
                     _model_spec["maxTokens"] = _GATEWAY_MODEL_MAX_TOKENS[ctx.model]
-                with os.fdopen(_fd, "w") as _patch_file:
-                    _json.dump([
-                        {"id": "agent-default-model", "config": {
-                            "provider": "deepseek-official", "model": ctx.model}},
-                        {"id": "llm-deepseek", "config": {"models": [_model_spec]}},
-                    ], _patch_file)
+                _patches.extend([
+                    {"id": "agent-default-model", "config": {
+                        "provider": "deepseek-official", "model": ctx.model}},
+                    {"id": "llm-deepseek", "config": {"models": [_model_spec]}},
+                ])
+            # Installed headless owns the native loop/stdout/exit code. Extend
+            # only its public creation inlet and scoped machine-event channel.
+            _observer = _P(__file__).with_name("dsh_terminal_bridge.mjs")
+            if _observer.is_file() and _P(binp).is_file():
+                import tempfile as _tf
+                import secrets as _secrets
+                _binding = {
+                    "user_id": str(ctx.user_id), "conversation_id": str(ctx.session_id or qhash),
+                    "workdir": str(_P(_wd).resolve()),
+                    "dsh_home": str(_P(env.get("DSH_HOME") or _P.home() / ".dsh").resolve()),
+                }
+                if _checkpoint and (
+                        _checkpoint.get("kind") != "deepseek_session"
+                        or _checkpoint.get("dsh_binding") != _binding
+                        or _checkpoint.get("dsh_checkpoint_source") != "headless_session_events_v1"
+                        or not _checkpoint.get("session_id")):
+                    return {"final": "", "status": "error", "elapsed": 0.0,
+                            "error": "DSH native checkpoint binding is unavailable",
+                            "error_envelope": {"category": "native_session_unavailable",
+                                "scope": "request", "retryable": False,
+                                "code": "dsh_checkpoint_binding_unavailable"}}
+                _terminal_dir = _tf.TemporaryDirectory(prefix="legion_dsh_terminal_")
+                _terminal_config = {
+                    "nativeEntry": str(_P(binp).resolve()), "nonce": _secrets.token_hex(24),
+                    "requestId": str(qhash), "binding": _binding,
+                    "output": str(_P(_terminal_dir.name) / "terminal.json"),
+                    "resumeSessionId": str(_checkpoint.get("session_id") or ""),
+                }
+                _patches.extend([
+                    {"id": "headless-runner", "disabled": True},
+                    {"insert": [{"id": "legion-dsh-terminal", "name": str(_observer),
+                                 "config": _terminal_config}]},
+                ])
+            if _patches:
+                if not _profile_patch:
+                    import tempfile as _tf
+                    _fd, _profile_patch = _tf.mkstemp(prefix="legion_dsh_", suffix=".json")
+                    os.close(_fd)
+                _P(_profile_patch).write_text(_json.dumps(_patches))
                 _cmd += ["--patch", _profile_patch]
             _cmd.append(_legion_prompt(_prior_attempts_prelude(ctx.prior_attempts) + question, ctx))
-            # Native 0.1.5 headless session and filesystem use process.cwd().
+            # Native headless session and filesystem use process.cwd().
             # Profile resolution is owned by DSH_HOME; it is not the workspace.
             _launch_cwd = str(_P(_wd).resolve())
         r = _run_task(_cmd, _WALL_S, env=env, cwd=_launch_cwd, tag="deepseek")
         final = r.stdout.strip()[-_FINAL_CAP:]
-        parsed = None
-        for line in reversed((r.stdout or "").splitlines()):
-            try:
-                obj = _json.loads(line)
-                if isinstance(obj, dict) and obj.get("native_checkpoint"):
-                    parsed = obj; break
-            except Exception:
-                continue
+        # Only the pre-existing JSON bridge declares stdout as an envelope.
+        # Native headless stdout is answer text, including JSON-looking answers.
+        parsed = _dsh_json_bridge_packet(r.stdout or "") if _json_bridge else {}
         status = "ok" if r.returncode == 0 else f"rc{r.returncode}"
         if "MISSING_CREDENTIAL" in r.stderr:
             status = "unavailable"
@@ -4799,22 +4909,66 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
         # 不是桥说谎是 adapter 漏接)。把桥回的真实 model_used/error 透传出去。
         _bridge_model = (parsed or {}).get("model_used")
         _bridge_err = (parsed or {}).get("error")
-        return {"final": final, "status": status,
+        packet = {"final": final, "status": status,
                 "elapsed": round(_t.time() - t0, 1), "stderr": r.stderr[-500:],
                 "model_used": _bridge_model or getattr(ctx, "model", None),
                 "error": _bridge_err or "", "usage": (parsed or {}).get("usage"),
                 "native_events": (parsed or {}).get("native_events") or [],
                 "native_checkpoint": (parsed or {}).get("native_checkpoint"),
                 "resumed_native": bool((parsed or {}).get("resumed_native"))}
+        if _terminal_config:
+            facts, checkpoint, usage = _dsh_terminal_projection(
+                _P(_terminal_config["output"]), _terminal_config["nonce"],
+                str(qhash), _terminal_config["binding"], r.returncode)
+            packet.update(native_facts=facts, native_checkpoint=checkpoint, usage=usage,
+                          resumed_native=facts.get("resumed_native", False))
+            stop = facts["dsh_stop_reason"]
+            if stop == "max-tokens":
+                packet.update(error="DSH native turn ended at its output limit; process exit retained.",
+                              error_envelope={"category": "output_limit", "scope": "request",
+                                  "retryable": checkpoint is not None, "code": "dsh_max_tokens",
+                                  "message": "DSH native turn/end reports max-tokens.",
+                                  "details": {"native_source": "dsh_session_event",
+                                              "reported_output_limit": None}})
+            # Missing/unknown observation is not evidence against the native
+            # success receipt. Keep its status/final and the unknown fact side by side.
+            elif r.returncode == 0 and stop not in {"completed", "unknown"}:
+                packet["status"] = "incomplete"
+        return packet
     except _sp.TimeoutExpired as _te:
-        # P0-2:deepseek 走原生 resume 桥·session_id 是父层生成(_native_sid)·persist_root 里有 event log·
-        # timeout 时仍可 resume 续跑。返回 native_checkpoint(session_id)让下一轮从同一会话恢复·不从零重开。
-        _sid = locals().get("_native_sid") or (ctx.session_id if ctx else "") or f"legion-{qhash}"
-        return {**_runtime_timeout(_te), "final": "", "status": "timeout", "elapsed": round(_t.time() - t0, 1),
-                "native_checkpoint": {"kind": "deepseek_session", "session_id": _sid}}
+        def captured_text(stream):
+            value = getattr(_te, "legion_" + stream, None)
+            if value is None:
+                value = getattr(_te, stream, None)
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value if isinstance(value, str) else ""
+
+        stdout, stderr = captured_text("stdout"), captured_text("stderr")
+        # The collector already drained these buffers. A timeout does not erase
+        # emitted content, nor does content change the timeout/budget outcome.
+        captured = _dsh_json_bridge_packet(stdout) if _json_bridge else {}
+        final = captured.get("final", "") if _json_bridge else stdout
+        packet = {key: captured[key] for key in (
+            "native_checkpoint", "usage", "model_used", "native_events", "resumed_native")
+                  if key in captured}
+        packet.update({**_runtime_timeout(_te),
+                  "final": final.strip()[-_FINAL_CAP:], "stderr": stderr[-500:], "status": "timeout",
+                  "elapsed": round(_t.time() - t0, 1)})
+        if _terminal_config:
+            facts, checkpoint, usage = _dsh_terminal_projection(
+                _P(_terminal_config["output"]), _terminal_config["nonce"],
+                str(qhash), _terminal_config["binding"], None)
+            packet.update(native_facts=facts, native_checkpoint=checkpoint, usage=usage)
+        elif not packet.get("native_checkpoint") and _checkpoint.get("session_id"):
+            # Preserve a caller's known native cursor; never invent one from qhash.
+            packet["native_checkpoint"] = dict(_checkpoint)
+        return packet
     except FileNotFoundError:
         return {"final": "", "status": "unavailable", "elapsed": 0.0, "error": "dsh CLI 未安装"}
     finally:
+        if _terminal_dir:
+            _terminal_dir.cleanup()
         if _profile_patch:
             with _ctx.suppress(OSError):
                 _P(_profile_patch).unlink()
