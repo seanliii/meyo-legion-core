@@ -1451,6 +1451,101 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
 
     def preserve_failed_transport(transport, result):
         nonlocal last_error_envelope
+        import math
+        import error_envelope as _ee
+        import token_telemetry as _tokens
+
+        # This is a typed observation projection, not a verdict about content.
+        # Unknown strings (including new vendor reasons) stay in the private file.
+        statuses = {"ok", "done", "completed", "error", "failed", "incomplete", "cancelled",
+                    "aborted", "interrupted", "timeout", "exception", "unavailable",
+                    "harness_runtime", "malformed", "auth", "running", "unreported", "unknown"}
+        reasons = {"stop", "end_turn", "stop_sequence", "tool_use", "tool_calls", "tool-calls",
+                   "length", "max_tokens", "max_output_tokens", "content_filter", "content-filter",
+                   "refusal", "pause_turn", "error", "aborted", "cancelled", "interrupted",
+                   "timeout", "completed", "unknown", "other", "unrecognized_stop",
+                   "user_interrupt", "api_error", "max_turns", "budget_exhausted"}
+
+        def status_code(value):
+            if not isinstance(value, str):
+                return None
+            if value in statuses or re.fullmatch(r"http[1-5][0-9]{2}", value):
+                return value
+            if re.fullmatch(r"rc-?(?:0|[1-9][0-9]{0,9})", value):
+                if -(2**31) <= int(value[2:]) < 2**32:
+                    return value
+            return None
+
+        def number(value):
+            return (type(value) in (int, float) and value >= 0
+                    and (type(value) is int or math.isfinite(value)))
+
+        def machine_fields(raw):
+            raw = raw if isinstance(raw, dict) else {}
+            out = {name: raw[name] for name in (
+                "completed", "failed", "cancelled", "interrupted", "aborted", "parent_timeout",
+                "partial_observation", "matched_session", "result_seen", "session_received",
+                "budget_exhausted", "stderr_is_error", "is_error")
+                if type(raw.get(name)) is bool}
+            if "process_returncode" in raw and (
+                    raw["process_returncode"] is None or type(raw["process_returncode"]) is int):
+                out["process_returncode"] = raw["process_returncode"]
+            out.update({name: raw[name] for name in ("attempt", "num_turns", "attempts", "execution_calls")
+                        if type(raw.get(name)) is int and raw[name] >= 0})
+            out.update({name: raw[name] for name in ("http_status", "api_error_status")
+                        if type(raw.get(name)) is int and 100 <= raw[name] <= 599})
+            out.update({name: raw[name] for name in (
+                "elapsed", "elapsed_s", "duration_ms", "duration_api_ms", "ttft_ms")
+                if number(raw.get(name))})
+            enums = {
+                "status": statuses, "turn_status": statuses, "request_status": statuses,
+                "reason": reasons, "stop_reason": reasons, "turn_exit_reason": reasons,
+                "terminal_reason": reasons,
+                "type": {"step_start", "step_finish", "text", "request_end", "result",
+                         "turn.completed", "turn.failed", "response.completed",
+                         "response.incomplete", "message_stop", "agent_end", "error"},
+            }
+            out.update({name: raw[name] for name, allowed in enums.items()
+                        if isinstance(raw.get(name), str) and raw[name] in allowed})
+            # The existing core budget consumer recognizes this one reason
+            # family with optional numeric counters; it is not arbitrary text.
+            exit_reason = raw.get("turn_exit_reason")
+            if isinstance(exit_reason, str) and re.fullmatch(
+                    r"max_iterations_reached(?:\([0-9]+/[0-9]+\))?", exit_reason):
+                out["turn_exit_reason"] = exit_reason
+            return out
+
+        def usage_fields(raw):
+            if not isinstance(raw, dict):
+                return {}
+            # Keep the existing telemetry spellings/semantics, without coercing
+            # string counts, estimating tokens, or exposing model/source strings.
+            integers = set().union(*_tokens._ALIASES.values(), _tokens._TURN_ALIASES,
+                                   ("attempts_total", "attempts_reported", "attempts_unreported"))
+            out = {name: value for name, value in raw.items()
+                   if name in integers and type(value) is int and value >= 0}
+            out.update({name: raw[name] for name in (
+                *_tokens._COST_ALIASES, *_tokens._DURATION_ALIASES, "elapsed_s")
+                if number(raw.get(name))})
+            out.update({name: raw[name] for name in ("available", "complete")
+                        if type(raw.get(name)) is bool})
+            for name, allowed in {
+                "granularity": {"request", "task", "thread_cumulative"},
+                "coverage": {"complete", "partial", "unavailable"},
+                "source": {"native", "external_native_event", "unavailable"},
+                "input_semantics": {"cache_buckets"},
+            }.items():
+                if isinstance(raw.get(name), str) and raw[name] in allowed:
+                    out[name] = raw[name]
+            for name in ("input_tokens_details", "prompt_tokens_details"):
+                detail = raw.get(name)
+                if isinstance(detail, dict):
+                    known = {k: detail[k] for k in ("cached_tokens", "cache_read_tokens")
+                             if type(detail.get(k)) is int and detail[k] >= 0}
+                    if known:
+                        out[name] = known
+            return out
+
         envelope = result.get("error_envelope")
         last_error_envelope = dict(envelope) if isinstance(envelope, dict) else None
         # A failed native attempt can already own a real session. Keep the
@@ -1461,10 +1556,80 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
             last_native_recovery.update(native_checkpoint=dict(checkpoint))
             if isinstance(result.get("resumed_native"), bool):
                 last_native_recovery["resumed_native"] = result["resumed_native"]
-        # 失败正文/原生日志可能含私有推理，只保存到本单私有现场。
-        # 对外只给引用；复用 core/task_memory 已有 native_facts 保存与恢复。
-        fact = {"transport": str(transport.get("type") or ""),
-                "status": str(result.get("status") or "error")}
+        raw_facts = result.get("native_facts")
+        raw_facts = raw_facts if isinstance(raw_facts, dict) else {}
+        facts = machine_fields(raw_facts)
+        for name in ("terminal_event", "request_end", "turn_result"):
+            nested = machine_fields(raw_facts.get(name))
+            # A reason without its recognized frame discriminator must not
+            # become a terminal record merely because the reason is familiar.
+            if "type" in nested:
+                facts[name] = nested
+        kind = transport.get("type")
+        fact = {"transport": kind if kind in ("cli", "http", "acp", "mcp", "sdk") else "unknown",
+                "status": status_code(result.get("status")) or "error", "native_facts": facts}
+        if type(result.get("returncode")) is int:
+            fact["returncode"] = result["returncode"]
+        if number(result.get("elapsed")):
+            fact["elapsed"] = result["elapsed"]
+        if type(result.get("http_status")) is int and 100 <= result["http_status"] <= 599:
+            fact["http_status"] = result["http_status"]
+        if result.get("exception_type") in (
+                "TransportError", "TimeoutExpired", "OSError", "TimeoutError", "FileNotFoundError",
+                "PermissionError", "ConnectionError", "ConnectionRefusedError",
+                "ConnectionResetError", "BrokenPipeError"):
+            fact["exception_type"] = result["exception_type"]
+        for name in ("cancelled", "partial", "budget_exhausted"):
+            if type(result.get(name)) is bool:
+                fact[name] = result[name]
+        usage = usage_fields(result.get("usage"))
+        if usage:
+            fact["usage"] = usage
+        records, identities = [], set()
+        raw_records = result.get("usage_records")
+        for row in raw_records if isinstance(raw_records, list) else []:
+            if not isinstance(row, dict):
+                continue
+            identity = row.get("usage_identity")
+            if isinstance(identity, str) and identity:
+                if identity in identities:
+                    continue
+                identities.add(identity)  # Existing telemetry dedup; never expose the opaque ID.
+            known = usage_fields(row)
+            if known:
+                records.append(known)
+        if records:
+            fact["usage_records"] = records
+        if isinstance(envelope, dict):
+            observed = {}
+            for name, allowed in {
+                "category": _ee._RETRYABLE | _ee._USER | {
+                    "harness_runtime", "runtime_budget", "task_error", "unknown", "request_too_large"},
+                "scope": {"request", "task", "harness", "provider", "tool", "user"},
+            }.items():
+                if isinstance(envelope.get(name), str) and envelope[name] in allowed:
+                    observed[name] = envelope[name]
+            if type(envelope.get("retryable")) is bool:
+                observed["retryable"] = envelope["retryable"]
+            code = envelope.get("code")
+            if status_code(code) or code in ("request_total_budget_exhausted", "max_output_tokens",
+                                            "native_output_limit", "context_length_exceeded"):
+                observed["code"] = code
+            details = envelope.get("details")
+            if isinstance(details, dict):
+                known = {name: details[name] for name in ("used", "limit", "reserved_output")
+                         if number(details.get(name))}
+                if details.get("dimension") in (
+                        "input_tokens", "output_tokens", "model_calls", "wall_seconds"):
+                    known["dimension"] = details["dimension"]
+                if type(details.get("usage_known")) is bool:
+                    known["usage_known"] = details["usage_known"]
+                if known:
+                    observed["details"] = known
+            if observed:
+                fact["error_envelope"] = observed
+        # Bodies/diagnostics stay private. Only the last original error is used
+        # by the final result; an earlier diagnostic must not classify a later attempt.
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=session_dir,
                                              prefix="transport-failure-", suffix=".json",
@@ -1474,14 +1639,26 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
                 fact["private_result_path"] = output.name
         except (OSError, TypeError, ValueError) as exc:
             fact["evidence_storage_error"] = type(exc).__name__
-        transport_evidence.append(fact)
+        transport_evidence.append((fact, result.get("error", "")))
 
     def attach_transport_evidence(result):
         if transport_evidence:
+            import copy
+
+            if result.get("status") != "ok":
+                # The final actually executed transport owns current facts.
+                # Never fill missing fields from an older failure, or OR failure
+                # flags into a later success. History remains separate evidence.
+                latest, error = transport_evidence[-1]
+                for name in ("status", "native_facts", "returncode", "http_status", "elapsed",
+                             "usage", "usage_records", "cancelled", "partial", "budget_exhausted"):
+                    if name in latest:
+                        result[name] = copy.deepcopy(latest[name])
+                result["error"] = error
             facts = dict(result.get("native_facts") or {})
-            facts["transport_failures"] = list(transport_evidence)
+            facts["transport_failures"] = [observation for observation, _ in transport_evidence]
             result["native_facts"] = facts
-            result["transport_failures"] = list(transport_evidence)
+            result["transport_failures"] = list(facts["transport_failures"])
         return result
 
     for transport in item.get("transports") or []:
