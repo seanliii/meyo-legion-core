@@ -179,7 +179,8 @@ def prepare(ctx, checkpoint: dict) -> tuple[dict, Path, str]:
     return env, home, resume_id
 
 
-def result_from_native(process, checkpoint: dict, home: Path, requested_model: str) -> dict:
+def result_from_native(process, checkpoint: dict, home: Path, requested_model: str,
+                       *, workdir: str = "") -> dict:
     """Consume native start/done/error and the matching session; never infer an ID."""
     result = {"final": "", "status": f"rc{process.returncode}" if process.returncode else "harness_runtime",
               "model_used": None, "requested_model": requested_model, "usage": None,
@@ -195,7 +196,7 @@ def result_from_native(process, checkpoint: dict, home: Path, requested_model: s
         legacy = isinstance(whole, dict) and not whole.get("type") and "text" in whole
         records = [whole] if isinstance(whole, dict) else []
         if not records:
-            for line in stdout.splitlines():
+            for line in stdout.split("\n"):
                 try:
                     row = json.loads(line)
                 except ValueError:
@@ -221,6 +222,9 @@ def result_from_native(process, checkpoint: dict, home: Path, requested_model: s
         stored = json.loads(session_path.read_text())
         if not isinstance(stored, dict) or stored.get("id") != sid:
             raise ValueError("JCode native session file identity mismatch")
+        if (workdir and stored.get("working_dir")
+                and Path(stored["working_dir"]).resolve() != Path(workdir).resolve()):
+            raise ValueError("JCode native session belongs to another project")
         result.update(
             native_checkpoint={"kind": "jcode_session", "session_id": sid,
                                "jcode_home": str(home), "session_path": str(session_path)},
@@ -234,12 +238,21 @@ def result_from_native(process, checkpoint: dict, home: Path, requested_model: s
                       native_facts={"protocol": "json" if legacy else "ndjson",
                                     "terminal_event": report.get("type") if terminal else None,
                                     "session_received": True})
-        if process.returncode or report.get("type") == "error":
+        if not terminal:
+            raise ValueError("JCode native output ended before a complete terminal report")
+        # Extract the validated machine data before interpreting process exit.
+        # A parent timeout has no observed returncode; it must not invent rc=0.
+        if isinstance(report.get("usage"), dict):
+            result["usage"] = report["usage"]
+        if report.get("type") != "error" and isinstance(report.get("text"), str):
+            result["final"] = report["text"]
+        if process.returncode not in (None, 0) or report.get("type") == "error":
             result["error"] = text(report.get("message") or stderr or "JCode native command failed")[-1500:]
             return result
-        if not terminal or not isinstance(report.get("text"), str):
+        if not isinstance(report.get("text"), str):
             raise ValueError("JCode native output ended before a complete done report")
-        result.update(final=report["text"], status="ok", usage=report.get("usage"))
+        if process.returncode == 0:
+            result["status"] = "ok"
     except (OSError, ValueError, TypeError) as exc:
         result["error"] = (stderr or str(exc))[-1500:]
     return result

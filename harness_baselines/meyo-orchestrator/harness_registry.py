@@ -3974,17 +3974,29 @@ def _jcode_adapter(qhash, question, gold="", ctx=None):
         if _resume_id:
             cmd += ["--resume", _resume_id]
         r = _run_task(cmd, _WALL_S, env=env, cwd=ctx.workdir or None, tag="jcode")
-        result = result_from_native(r, _checkpoint, home, ctx.model)
+        result = result_from_native(r, _checkpoint, home, ctx.model, workdir=ctx.workdir)
+        if getattr(r, "cancelled", False):
+            result.update(status="cancelled", cancelled=True, partial=True,
+                          fail_kind="user_cancel", error="用户停止")
+            result.setdefault("native_facts", {})["process_returncode"] = r.returncode
         if ctx.appid and result.get("error"):
             result["error"] = result["error"].replace(ctx.appid, "[redacted]")
         return {**result, "usage": result.get("usage"), "elapsed": round(_t.time() - t0, 1)}
     except _sp.TimeoutExpired as _te:
         captured = result_from_native(
             _sp.CompletedProcess(
-                cmd, -1, getattr(_te, "legion_stdout", None) or _te.output or "",
+                cmd, None, getattr(_te, "legion_stdout", None) or _te.output or "",
                 getattr(_te, "legion_stderr", None) or _te.stderr or ""),
-            _checkpoint, home, ctx.model)
-        return {**captured, **_runtime_timeout(_te), "final": "", "status": "timeout",
+            _checkpoint, home, ctx.model, workdir=ctx.workdir)
+        captured.setdefault("native_facts", {}).update(parent_timeout=True, process_returncode=None)
+        if ctx.appid and captured.get("error"):
+            captured["error"] = captured["error"].replace(ctx.appid, "[redacted]")
+        if captured.get("error"):
+            captured["native_facts"]["worker_error"] = captured["error"]
+        return {**captured, "error": "JCode parent timed out",
+                "error_envelope": {"category": "timeout", "scope": "harness",
+                                   "retryable": True, "message": "JCode parent timed out"},
+                **_runtime_timeout(_te), "partial": True, "status": "timeout",
                 "elapsed": round(_t.time() - t0, 1)}
     except FileNotFoundError:
         return {"final": "", "status": "unavailable", "elapsed": 0.0,
@@ -4307,6 +4319,12 @@ def _hermes_adapter(qhash, question, gold="", ctx=None):
                     "native_resume_error": {"stage": "checkpoint_validation"},
                     "error_envelope": {"category": "native_session_unavailable", "retryable": False,
                                        "scope": "harness", "message": "invalid Hermes native checkpoint"}}
+        import secrets as _hermes_secrets
+        _hermes_frame_binding = {
+            "nonce": _hermes_secrets.token_hex(24), "request_id": str(qhash),
+            "user_id": str(ctx.user_id or ""), "workdir": str(_hermes_ws),
+            "session_id": str(_resume_id or ctx.session_id or ""),
+        }
         _fallback = ""
         _fb_list = getattr(ctx, "fallback_models", None) or []
         if _fb_list:
@@ -4331,6 +4349,13 @@ def _hermes_adapter(qhash, question, gold="", ctx=None):
 if {_terminal_pythonpath is not None!r}:
     os.environ["PYTHONPATH"]={_terminal_pythonpath!r}
 import json,time,re,threading,math,hashlib
+_HERMES_BINDING={_hermes_frame_binding!r}
+def _frame(value):
+    if value.get("hermes_adapter_result") is True or value.get("hermes_adapter_snapshot") is True:
+        value=dict(value)
+        value["hermes_adapter_binding"]=_HERMES_BINDING
+        value["hermes_native_session"]=getattr(globals().get("a"),"session_id",None) or globals().get("sid")
+    return value
 sys.path.insert(0,{str(source)!r})
 from run_agent import AIAgent
 t=time.time(); sid={(_resume_id or ctx.session_id)!r} or None
@@ -4344,12 +4369,12 @@ try:
             raise ValueError("native session history empty or invalid")
 except Exception as exc:
     message="native session load failed: " + type(exc).__name__ + ": " + str(exc)
-    print(json.dumps({{"type":"result","hermes_adapter_result":True,"status":"error","final":"","error":message,
+    print(json.dumps(_frame({{"type":"result","hermes_adapter_result":True,"status":"error","final":"","error":message,
         "resumed_native":False,"native_facts":{{}},
         "native_checkpoint":{{"kind":"hermes_session","session_id":sid}},
         "native_resume_error":{{"stage":"session_load","session_id":sid,"message":message}},
         "error_envelope":{{"category":"native_session_unavailable","retryable":False,
-            "scope":"harness","message":message}}}},ensure_ascii=False),flush=True)
+            "scope":"harness","message":message}}}}),ensure_ascii=False),flush=True)
     raise SystemExit(0)
 requested_model={_model!r}
 
@@ -4374,7 +4399,7 @@ def usage(native=None):
     if cs in ("known","estimated") and src not in ("none","",None) and numeric(cost) and numeric(base) and cost>=base:u["cost_usd"]=cost-base
     return u
 def emit(value):
-    with lock:print(json.dumps(value,ensure_ascii=False),flush=True)
+    with lock:print(json.dumps(_frame(value),ensure_ascii=False),flush=True)
 def snapshot(phase,event=None,**facts):
     session=getattr(a,"session_id",None) or sid
     emit({{"type":"result","hermes_adapter_snapshot":True,"native_checkpoint":{{"kind":"hermes_session","session_id":session}},"native_facts":{{"phase":phase,"session_id":session,**facts}},"model_used":getattr(a,"model",None) or requested_model,"usage":usage(),"tool_event":event}})
@@ -4496,11 +4521,14 @@ budget_exit=re.fullmatch(r"max_iterations_reached(?:\\(\\d+/\\d+\\))?",str(r.get
 status=("cancelled" if r.get("interrupted") else "error" if r.get("failed") or native_error else
         "incomplete" if budget_exit else "ok" if r.get("completed") else "incomplete")
 usage_data=usage(r)
-print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("final_response") or "","status":status,"error":native_error,"elapsed":round(time.time()-t,1),"model_used":r.get("model") or getattr(a,"model",None) or {_model!r},"usage":usage_data,"native_checkpoint":{{"kind":"hermes_session","session_id":getattr(a,"session_id",None) or sid}},"resumed_native":bool(history),"native_facts":{{k:r[k] for k in ('turn_exit_reason', 'completed', 'failed', 'interrupted', 'error', 'failure_reason', 'cleanup_errors', 'model', 'provider', 'session_id', 'base_url', 'cost_status', 'cost_source') if k in r}},**{{k:r[k] for k in ("error_envelope",) if k in r}}}},ensure_ascii=False),flush=True)'''
+print(json.dumps(_frame({{"type":"result","hermes_adapter_result":True,"final":r.get("final_response") or "","status":status,"error":native_error,"elapsed":round(time.time()-t,1),"model_used":r.get("model") or getattr(a,"model",None) or {_model!r},"usage":usage_data,"native_checkpoint":{{"kind":"hermes_session","session_id":getattr(a,"session_id",None) or sid}},"resumed_native":bool(history),"native_facts":{{k:r[k] for k in ('turn_exit_reason', 'completed', 'failed', 'interrupted', 'error', 'failure_reason', 'cleanup_errors', 'model', 'provider', 'session_id', 'base_url', 'cost_status', 'cost_source') if k in r}},**{{k:r[k] for k in ("error_envelope",) if k in r}}}}),ensure_ascii=False),flush=True)'''
 
         def parse_hermes(stdout):
             final, snapshot, tools = None, {}, []
-            for line in (stdout or "").splitlines():
+            rejected = False
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            for line in (stdout or "").split("\n"):
                 try:
                     value = _json.loads(line)
                 except (ValueError, TypeError):
@@ -4512,6 +4540,27 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
                     if receipt_key not in _mailbox_receipts_seen and len(_mailbox_receipt_errors) < 8:
                         _mailbox_receipt_errors.append("native mailbox receipt was not handled")
                     continue
+                if (value.get("hermes_adapter_snapshot") is True
+                        or value.get("hermes_adapter_result") is True):
+                    checkpoint = value.get("native_checkpoint")
+                    native_sid = value.get("hermes_native_session")
+                    if (value.get("hermes_adapter_binding") != _hermes_frame_binding
+                            or checkpoint and (
+                                not isinstance(checkpoint, dict)
+                                or checkpoint.get("kind") != "hermes_session"
+                                or checkpoint.get("session_id") != native_sid)):
+                        rejected = True
+                        continue
+                    # The native instance may rotate its SID during compaction.
+                    # Its output SID is bound to this invocation, not guessed
+                    # from the input SID or an unrelated session's log.
+                    if ((value.get("final") or value.get("usage"))
+                            and (not isinstance(native_sid, str) or not native_sid)):
+                        rejected = True
+                        continue
+                    value = dict(value)
+                    value.pop("hermes_adapter_binding", None)
+                    value.pop("hermes_native_session", None)
                 if value.get("hermes_adapter_snapshot") is True:
                     snapshot = value
                     if (_managed_linux
@@ -4534,6 +4583,12 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
                 if snapshot.get("model_used"):
                     final["model_used"] = snapshot["model_used"]
             final["native_facts"] = facts
+            if rejected and not snapshot and final.get("hermes_adapter_result") is not True:
+                facts["binding_matches"] = False
+                final.update(status="error", error="Hermes native output binding mismatch",
+                             error_envelope={"category": "native_session_unavailable",
+                                 "scope": "request", "retryable": False,
+                                 "message": "Hermes native output binding mismatch"})
             if _mailbox_receipt_errors:
                 errors = list(dict.fromkeys(_mailbox_receipt_errors))[:8]
                 facts["mailbox_receipt_errors"] = errors
@@ -4609,28 +4664,46 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
             data["elapsed"] = round(_t.time() - t0, 1)
             data["native_facts"]["process_returncode"] = r.returncode
             if getattr(r, "cancelled", False):
-                data.update(status="cancelled", cancelled=True)
+                if data.get("error_envelope"):
+                    data["native_facts"]["worker_error_envelope"] = data["error_envelope"]
+                if data.get("error"):
+                    data["native_facts"]["worker_error"] = _hermes_diagnostic(data["error"])
+                data.update(status="cancelled", cancelled=True, partial=True, error="用户停止",
+                            error_envelope={"category": "user_cancel", "scope": "request",
+                                            "retryable": False, "message": "用户停止"})
             elif data.get("hermes_adapter_result") is not True:
                 data.update(status="error", error="Hermes final result marker missing")
             if r.returncode and r.stderr:
                 diagnostic = _hermes_diagnostic(r.stderr)
-                data["stderr"] = diagnostic
-                data["error"] = _hermes_diagnostic(
-                    str(data.get("error") or "") + "\n" + diagnostic)
+                if getattr(r, "cancelled", False):
+                    data["native_facts"]["worker_stderr"] = diagnostic
+                else:
+                    data["stderr"] = diagnostic
+                    data["error"] = _hermes_diagnostic(
+                        str(data.get("error") or "") + "\n" + diagnostic)
             data.pop("type", None)
             data.pop("hermes_adapter_result", None)
             return _preserve_failed_native_input(data)
         except _sp.TimeoutExpired as exc:
-            data = parse_hermes(getattr(exc, "legion_stdout", "") or "")
+            data = parse_hermes(getattr(exc, "legion_stdout", None) or exc.output or "")
             data.pop("type", None)
             data.pop("hermes_adapter_result", None)
-            data.update(final="", status="timeout", elapsed=round(_t.time()-t0,1))
+            data.update(status="timeout", partial=True, elapsed=round(_t.time()-t0,1))
             data.setdefault("model_used", _model)
             if not data.get("native_checkpoint") and (_resume_id or ctx.session_id):
                 data["native_checkpoint"] = {"kind": "hermes_session", "session_id": _resume_id or ctx.session_id}
                 data["resumed_native"] = False  # Input fallback, not an observed native snapshot.
-            data.update(_runtime_timeout(exc))
-            data["native_facts"].update(parent_timeout=True, timeout_seconds=exc.timeout)
+            parent = _runtime_timeout(exc) or {
+                "error": "Hermes parent timed out",
+                "error_envelope": {"category": "timeout", "scope": "harness",
+                                   "retryable": True, "message": "Hermes parent timed out"}}
+            if data.get("error_envelope"):
+                data["native_facts"]["worker_error_envelope"] = data.pop("error_envelope")
+            if data.get("error"):
+                data["native_facts"]["worker_error"] = _hermes_diagnostic(data["error"])
+            data.update(parent)
+            data["native_facts"].update(parent_timeout=True, timeout_seconds=exc.timeout,
+                                        process_returncode=None)
             return _preserve_failed_native_input(data)
         except (ImportError, OSError, ValueError, RuntimeError) as exc:
             if not _managed_linux:
@@ -4660,14 +4733,48 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
     # ctx.appid 优先(单一事实源):env["AIGC_APPID"] 上面已按 ctx.appid or _UNIFIED_APPID 设好·
     # AI_GATEWAY_API_KEY 复用它·别再退回全局 _UNIFIED_APPID(否则场景分配的独立 appid 传不进 gateway provider)。
     env["AI_GATEWAY_API_KEY"] = env.get("AIGC_APPID") or _UNIFIED_APPID
+    _usage_tmp = None
+    _usage_path = None
+
+    def read_hermes_usage_file():
+        """Only this invocation's private sidecar; never scan native history."""
+        import math
+        import stat
+        if _usage_path is None:
+            return {}, None
+        try:
+            fd = os.open(_usage_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                    return {}, None
+                payload = stream.read(65537)
+            if len(payload) > 65536:
+                return {}, None
+            row = _json.loads(payload)
+            if not isinstance(row, dict):
+                return {}, None
+            usage = {name: row[name] for name in ("model", "provider")
+                     if isinstance(row.get(name), str)}
+            for name in ("total_tokens", "input_tokens", "output_tokens",
+                         "estimated_cost_usd", "api_calls"):
+                value = row.get(name)
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    usage[name] = value
+            return row, usage or None
+        except (OSError, ValueError, TypeError):
+            return {}, None
+
     try:
         # ★权威成败判据=--usage-file(源码实证·2026-09-10 监督提供):hermes oneshot.py
         #   127-167 _write_usage_file 失败也写JSON,含 completed/failed/failure/model/tokens;
         #   233-243 stderr被redirect到devnull(不可靠),283-294 response非空即rc0(不可靠)。
         #   每单独立usage文件,退出后读JSON判:failed=true/completed=false→error(保留failure
         #   原文与usage);正常答案(哪怕解释401原理)completed=true完全不受影响。
-        _usage_path = _hermes_ws / f"hermes_usage_{int(_t.time()*1000)}_{os.getpid()}.json"
-        _usage_path.parent.mkdir(parents=True, exist_ok=True)
+        import tempfile as _hermes_tf
+        _usage_tmp = _hermes_tf.TemporaryDirectory(prefix=".hermes-usage-", dir=_hermes_ws)
+        _usage_path = _P(_usage_tmp.name) / "usage.json"
         r = _run_hermes_process(
             [binp, "-z", _legion_prompt(_q, ctx), "-m", _model] + _prov_args
             + ["--yolo", "--ignore-user-config", "--usage-file", str(_usage_path)], "hermes-cli")
@@ -4676,18 +4783,16 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
                 r.stderr or "Hermes CLI exited before its usage record", r.stderr)
         final = r.stdout.strip()[-_FINAL_CAP:]
         status = "ok" if r.returncode == 0 and "API call failed" not in final else "error"
-        _usage = None
+        _uj, _usage = read_hermes_usage_file()
         _failure = ""
-        try:
-            _uj = _json.loads(_usage_path.read_text(encoding="utf-8"))
-            _usage = {k: _uj.get(k) for k in ("model", "provider", "total_tokens",
-                                              "input_tokens", "output_tokens",
-                                              "estimated_cost_usd", "api_calls")}
-            if _uj.get("failed") or _uj.get("completed") is False:
-                status = "error"
-                _failure = str(_uj.get("failure") or "")[:300] or "CLI usage-file 报告 failed"
-        except Exception:
-            pass  # usage文件缺失/损坏:退回rc/API-call-failed判据(不更严也不更松)
+        if _uj.get("failed") or _uj.get("completed") is False:
+            status = "error"
+            _failure = str(_uj.get("failure") or "")[:300] or "CLI usage-file 报告 failed"
+        if getattr(r, "cancelled", False):
+            # Legacy stdout is not a proven content-only channel on parent stop.
+            return _preserve_failed_native_input({
+                "final": "", "status": "cancelled", "cancelled": True, "partial": True,
+                "usage": _usage, "error": "用户停止", "elapsed": round(_t.time()-t0, 1)})
         return _preserve_failed_native_input({"final": final, "status": status,
                 "elapsed": round(_t.time() - t0, 1), "stderr": _hermes_diagnostic(r.stderr),
                 "model_used": _model, "usage": _usage,
@@ -4699,12 +4804,18 @@ print(json.dumps({{"type":"result","hermes_adapter_result":True,"final":r.get("f
             return _hermes_boundary_failure(exc)
         return _preserve_failed_native_input({
                 "final": "", "status": "timeout" if isinstance(exc,_sp.TimeoutExpired) else "unavailable",
-                "elapsed": round(_t.time()-t0,1), "error": str(exc)[:200],
+                "elapsed": round(_t.time()-t0,1),
+                "error": "Hermes CLI timed out" if isinstance(exc, _sp.TimeoutExpired) else "Hermes CLI unavailable",
+                "usage": read_hermes_usage_file()[1],
+                "partial": isinstance(exc, _sp.TimeoutExpired),
                 **_runtime_timeout(exc)})
     except (ImportError, OSError, ValueError) as exc:
         if not _managed_linux:
             raise
         return _hermes_boundary_failure(exc)
+    finally:
+        if _usage_tmp is not None:
+            _usage_tmp.cleanup()
 
 
 def _dsh_json_bridge_packet(stdout):
@@ -4980,7 +5091,8 @@ def _deepagents_adapter(qhash, question, gold="", ctx=None):
     appid = getattr(ctx, "appid", "") or _UNIFIED_APPID
     if not appid:
         return {"status": "unavailable", "final": "", "error": "AIGC_APPID 未配置"}
-    workdir = ctx.workdir or str(_P.home() / ".meyo" / "legion" / "outputs" / f"deepagents_{qhash}")
+    workdir = str(_P(ctx.workdir or _P.home() / ".meyo" / "legion" / "outputs"
+                     / f"deepagents_{qhash}").resolve())
     _P(workdir).mkdir(parents=True, exist_ok=True)
     legion_tool = _legion_tool_path()
     worker = _P(legion_tool).with_name("deepagents_checkpoint.py")
@@ -4996,35 +5108,100 @@ def _deepagents_adapter(qhash, question, gold="", ctx=None):
         "gateway_output_limit": _GATEWAY_MODEL_MAX_TOKENS.get(ctx.model),
         "search_cli": _find_search_cli(), "python": "python3.12",
     }
+    import secrets as _deepagents_secrets
+    checkpoint = request["native_checkpoint"]
+    native_sid = (checkpoint.get("session_id") if isinstance(checkpoint, dict)
+                  and checkpoint.get("kind") == "deepagents_langgraph_sqlite"
+                  else request["session_id"])
+    binding = {"nonce": _deepagents_secrets.token_hex(24), "request_id": str(qhash),
+               "user_id": str(ctx.user_id or ""), "workdir": workdir,
+               "session_id": str(native_sid or "")}
+    # The launcher owns the result frame; the native worker still owns the
+    # graph/model/checkpoint. The nonce is never passed to the model request.
     code = (f"import sys,json;sys.path.insert(0,{str(worker.parent)!r});"
             "import deepagents_checkpoint;"
-            "print(json.dumps(deepagents_checkpoint.run_native(json.load(sys.stdin)),ensure_ascii=False))")
+            "_output=sys.stdout;"
+            "_result=deepagents_checkpoint.run_native(json.load(sys.stdin));"
+            f"_frame={{'type':'deepagents_adapter_result','version':1,'binding':{binding!r},'result':_result}};"
+            "_output.write('\\n'+json.dumps(_frame,ensure_ascii=False)+'\\n');_output.flush()")
+
+    def parse_deepagents(stdout):
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        for line in reversed((stdout or "").split("\n")):
+            try:
+                frame = _json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if (not isinstance(frame, dict)
+                    or frame.get("type") != "deepagents_adapter_result"
+                    or frame.get("version") != 1 or frame.get("binding") != binding):
+                continue
+            result = frame.get("result")
+            if (not isinstance(result, dict) or not isinstance(result.get("status"), str)
+                    or not isinstance(result.get("final", ""), str)
+                    or not isinstance(result.get("native_facts"), dict)
+                    or result["native_facts"].get("engine") != "deepagents"
+                    or not isinstance(result.get("usage_records", []), list)
+                    or any(not isinstance(row, dict) for row in result.get("usage_records", []))):
+                continue
+            try:
+                if ("workdir" in result and _P(result["workdir"]).resolve() != _P(workdir)):
+                    continue
+                observed = result.get("native_checkpoint")
+                if observed and (
+                        not isinstance(observed, dict)
+                        or observed.get("kind") != "deepagents_langgraph_sqlite"
+                        or observed.get("session_id") != native_sid
+                        or observed.get("workdir") != workdir
+                        or observed.get("qhash") != request["qhash"]
+                        or not isinstance(observed.get("path"), str)
+                        or not _P(observed["path"]).is_absolute()
+                        or _P(observed["path"]).is_symlink()
+                        or _P(observed["path"]).resolve().parent != (_P(workdir) / ".sessions").resolve()):
+                    continue
+            except (OSError, TypeError, ValueError):
+                continue
+            result = dict(result)
+            result.setdefault("model_used", ctx.model)
+            result.setdefault("usage_records", [])
+            result.setdefault("workdir", workdir)
+            result["native_facts"] = dict(result["native_facts"])
+            return result
+        return {"status": "harness_runtime", "final": "", "usage_records": [],
+                "workdir": workdir, "native_checkpoint": checkpoint or None,
+                "resumed_native": False,
+                "native_facts": {"engine": "deepagents", "terminal_observation": "unavailable"},
+                "error": "DeepAgents worker returned no matching terminal frame"}
+
     started = _t.time()
     try:
         response = _run_task(["python3.12", "-c", code], _WALL_S,
                              input=_json.dumps(request, ensure_ascii=False), cwd=workdir,
                              env=dict(os.environ), tag="deepagents")
-        for line in reversed(response.stdout.splitlines()):
-            try:
-                result = _json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(result, dict) or "status" not in result:
-                continue
-            result.setdefault("model_used", ctx.model)
-            result.setdefault("usage_records", [])
-            result.setdefault("workdir", workdir)
-            result["elapsed"] = round(_t.time() - started, 2)
-            if response.returncode:
-                result["status"] = f"rc{response.returncode}"
-            return result
-        return {"status": f"rc{response.returncode}", "final": "", "workdir": workdir,
-                "error": response.stderr[-500:] or "native DeepAgents worker returned no result"}
+        result = parse_deepagents(response.stdout)
+        result["elapsed"] = round(_t.time() - started, 2)
+        if getattr(response, "cancelled", False):
+            if result.get("error_envelope"):
+                result["native_facts"]["worker_error_envelope"] = result["error_envelope"]
+            result.update(status="cancelled", cancelled=True, partial=True, error="用户停止",
+                          error_envelope={"category": "user_cancel", "scope": "request",
+                                          "retryable": False, "message": "用户停止"})
+        elif response.returncode:
+            result["status"] = f"rc{response.returncode}"
+        return result
     except _sp.TimeoutExpired as _te:
-        return {**_runtime_timeout(_te), "status": "timeout", "final": "", "workdir": workdir,
-                "elapsed": round(_t.time() - started, 2), "error": "native DeepAgents worker timed out",
-                "native_checkpoint": request["native_checkpoint"] or None,
-                "native_facts": {"engine": "deepagents", "completed": False}}
+        result = parse_deepagents(getattr(_te, "legion_stdout", None) or _te.output or "")
+        if result.get("error_envelope"):
+            result["native_facts"]["worker_error_envelope"] = result.pop("error_envelope")
+        result.update({"error": "native DeepAgents worker timed out",
+                       "error_envelope": {"category": "timeout", "scope": "harness",
+                                          "retryable": True, "message": "native DeepAgents worker timed out"},
+                       **_runtime_timeout(_te),
+                       "status": "timeout", "partial": True,
+                       "elapsed": round(_t.time() - started, 2)})
+        result["native_facts"].update(parent_timeout=True, process_returncode=None)
+        return result
 
 
 def _auto_adapter(qhash, question, gold="", ctx=None):

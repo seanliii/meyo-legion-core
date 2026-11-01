@@ -673,10 +673,18 @@ def test_hermes_adapter_loads_native_session_history_and_preserves_timeout_check
         # Inspect the real -c payload, not whichever argument happens to be last.
         assert "-c" in cmd
         captured["code"] = cmd[cmd.index("-c") + 1]
+        # Read the real producer's invocation binding, rather than maintaining
+        # an unbound legacy terminal fixture after the protocol changed.
+        binding = next(ast.literal_eval(node.value) for node in ast.parse(captured["code"]).body
+                       if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "_HERMES_BINDING"
+                               for target in node.targets))
         return type("Result", (), {"returncode": 0,
                                    "stdout": __import__('json').dumps({
                                        "final": "完成", "status": "ok", "model_used": "m",
                                        "type": "result", "hermes_adapter_result": True,
+                                       "hermes_adapter_binding": binding,
+                                       "hermes_native_session": "sid",
                                        "native_checkpoint": {"kind": "hermes_session", "session_id": "sid"},
                                        "resumed_native": True}), "stderr": ""})()
 

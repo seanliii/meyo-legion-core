@@ -103,7 +103,7 @@ def _records(raw) -> list[dict]:
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
     rows = []
-    for line in str(raw or "").splitlines():
+    for line in str(raw or "").split("\n"):
         try:
             value = json.loads(line)
         except ValueError:
@@ -120,6 +120,9 @@ def _result(rows, ctx, home, checkpoint, binding, *, failed=False, timed_out=Fal
            "model_used": None, "requested_model": ctx.model, "resumed_native": False,
            "native_checkpoint": checkpoint or None, "usage": None,
            "error": "JCode SDK did not report a complete native result"}
+    if timed_out:
+        out["partial"] = True
+    session_matches = False
     sid = latest.get("session_id")
     if isinstance(sid, str) and sid and Path(sid).name == sid and sid not in (".", ".."):
         path = home / "sessions" / (sid + ".json")
@@ -129,13 +132,9 @@ def _result(rows, ctx, home, checkpoint, binding, *, failed=False, timed_out=Fal
             return out
         if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(home):
             data = json.loads(path.read_text())
-            if data.get("id") == sid:
-                out["native_checkpoint"] = {
-                    "kind": "jcode_session", "session_id": sid, "jcode_home": str(home),
-                    "session_path": str(path), "runtime_transport": "sdk",
-                    "ccr_binding": dict(binding), "sdk_version": SDK_VERSION,
-                }
-                out["resumed_native"] = bool(old)
+            session_matches = data.get("id") == sid and (
+                not data.get("working_dir")
+                or Path(data["working_dir"]).resolve() == Path(ctx.workdir).resolve())
     native_model = latest.get("model")
     out["model_used"] = (ctx.model if native_model == binding["wire_model"]
                          else native_model if isinstance(native_model, str) and native_model else None)
@@ -143,10 +142,21 @@ def _result(rows, ctx, home, checkpoint, binding, *, failed=False, timed_out=Fal
         "transport": "official-jcode-sdk", "sdk_version": SDK_VERSION,
         "wire_model": native_model, "model_binding_matches": latest.get("model_binding_matches"),
         "session_binding_matches": latest.get("session_binding_matches"),
-        "cleanup": latest.get("cleanup"), "tool_results": latest.get("tool_results", []),
+        "cleanup": latest.get("cleanup"),
     }
-    if timed_out:
+    bound = (session_matches and latest.get("session_binding_matches") is True
+             and latest.get("model_binding_matches") is True
+             and native_model == binding["wire_model"])
+    if not bound:
+        out["error"] = "JCode SDK result lacks a matching session/model binding"
         return out
+    out["native_checkpoint"] = {
+        "kind": "jcode_session", "session_id": sid, "jcode_home": str(home),
+        "session_path": str(path), "runtime_transport": "sdk",
+        "ccr_binding": dict(binding), "sdk_version": SDK_VERSION,
+    }
+    out["resumed_native"] = bool(old)
+    out["native_facts"]["tool_results"] = latest.get("tool_results", [])
     if latest.get("type") == "jcode_sdk_result":
         out["final"] = latest.get("text") if isinstance(latest.get("text"), str) else ""
         usage = latest.get("usage")
@@ -154,6 +164,10 @@ def _result(rows, ctx, home, checkpoint, binding, *, failed=False, timed_out=Fal
             out["usage"] = {"input_tokens": usage.get("input"), "output_tokens": usage.get("output"),
                             "cache_read_tokens": usage.get("cacheReadInput"),
                             "source": "jcode_native_sdk", "granularity": "turn"}
+        if timed_out:
+            out["error"] = "JCode SDK parent timed out; received native data is partial"
+            out["native_facts"].update(parent_timeout=True, process_returncode=None)
+            return out
         if (not failed and latest.get("status") == "ok"
                 and out["native_checkpoint"] and out["native_checkpoint"].get("session_id") == sid
                 and latest.get("model_binding_matches") is True
@@ -165,6 +179,7 @@ def _result(rows, ctx, home, checkpoint, binding, *, failed=False, timed_out=Fal
             if latest.get("status") == "cancelled":
                 out["status"] = "cancelled"
                 out["fail_kind"] = "user_cancel"
+                out["partial"] = True
     return out
 
 
@@ -215,6 +230,12 @@ def run_harness(ctx, prompt: str, task_runner, *, environment=None, timeout=0) -
                 records = _records(process.stdout)
                 result = _result(records, ctx, home, checkpoint, binding,
                                  failed=process.returncode != 0)
+                if getattr(process, "cancelled", False):
+                    result.update(status="cancelled", cancelled=True, partial=True,
+                                  fail_kind="user_cancel", error="JCode caller cancelled")
+                    result["error_envelope"] = {
+                        "category": "user_cancel", "scope": "request", "retryable": False,
+                        "message": "JCode caller cancelled"}
                 if process.returncode != 0 and not records and process.stderr:
                     result["error"] = str(process.stderr)[-2000:]
         except subprocess.TimeoutExpired as exc:
@@ -222,6 +243,9 @@ def run_harness(ctx, prompt: str, task_runner, *, environment=None, timeout=0) -
                              ctx, home, checkpoint, binding, timed_out=True)
             # Only explicit runner facts classify the timeout; native evidence stays intact.
             from harness_registry import _runtime_timeout
+            result["error_envelope"] = {
+                "category": "timeout", "scope": "harness", "retryable": True,
+                "message": "JCode SDK parent timed out"}
             result.update(_runtime_timeout(exc))
         finally:
             _reap_dead_workers(home)
