@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, writeFile, rm, access, realpath } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm, access, realpath, chmod, rename, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,7 @@ test('release-pair exposes a preparation-only CLI without loading a core or inst
   assert.equal(result.status, 0, 'The offline release-pair preparation entry must exist')
   assert.match(result.stdout, /--core-commit/)
   assert.match(result.stdout, /--connector-pack-report/)
+  assert.match(result.stdout, /--connector-source-path/)
   assert.doesNotMatch(result.stdout, /--publish|--install|--merge/)
 })
 
@@ -75,6 +76,8 @@ test('pairing uses the original core packager and npm pack on isolated fixed-com
   await writeFile(join(connector, 'index.js'), 'export const fixture = true\n')
   await writeFile(join(connector, 'cordis.patch.yml'), '[]\n')
   await writeFile(join(connector, 'README.md'), 'Protocol fixture, not a harness or product result.\n')
+  // Deliberately outside npm's files list: provenance must compare the full Git tree.
+  await writeFile(join(connector, 'maintenance-only.txt'), 'source fact A\n')
   const connectorCommit = commit(connector)
   git(connector, 'tag', 'v0.5.1')
   const coreArchive = join(root, 'core.tar')
@@ -123,6 +126,14 @@ test('pairing uses the original core packager and npm pack on isolated fixed-com
     assert.equal(pair.acceptance.performed_by_preparer, false)
     assert.deepEqual(pair.acceptance.receipts, [])
     assert.equal(pair.publication.performed, false)
+    assert.deepEqual(pair.source_provenance, {
+      status: 'not_verified', reason: 'connector_source_path_not_supplied',
+    })
+    const legacyIdentity = Object.fromEntries(['connector', 'core'].map(name => [name, {
+      commit: pair[name].source_commit, sha256: pair[name].archive.sha256, tree: pair[name].source_tree,
+    }]))
+    assert.equal(pair.pair_id, `sha256:${hash(JSON.stringify(legacyIdentity) + '\n')}`,
+      'Omitting provenance must keep the original pair_id algorithm')
     const again = await invoke()
     ok(again.result)
     assert.equal(JSON.parse(await readFile(again.path, 'utf8')).pair_id, pair.pair_id)
@@ -267,5 +278,112 @@ open(report_path, "w").write(json.dumps(report))
     const nested = join(core, 'nested')
     await mkdir(nested)
     await rejected({ '--core-repo': nested }, /repository root|worktree root/i)
+  })
+  await t.test('optional canonical subtree provenance uses immutable Git facts, not versions or working copies', async t => {
+    const sourcePath = 'connectors/dsh-plugin-legion'
+    const otherPath = 'mirror source/dsh plugin'
+    const sourceFiles = git(connector, 'ls-tree', '-r', '--name-only', connectorCommit).split('\n')
+    for (const prefix of [sourcePath, otherPath]) {
+      for (const path of sourceFiles) {
+        const target = join(core, prefix, path)
+        await mkdir(dirname(target), { recursive: true })
+        await writeFile(target, await readFile(join(connector, path)))
+        await chmod(target, (await stat(join(connector, path))).mode & 0o777)
+      }
+    }
+    const canonicalCommit = commit(core)
+    let archiveSerial = 0
+    const coreInput = async ref => {
+      const archive = join(root, `canonical-${++archiveSerial}.tar`)
+      ok(run(python, ['-I', '-B', packager, 'build', '--repo', core, '--commit', ref,
+        '--output', archive], { env }))
+      return { '--core-commit': ref, '--core-archive': archive, '--core-sha256': hash(await readFile(archive)) }
+    }
+    const canonicalInput = await coreInput(canonicalCommit)
+    const provenInput = { ...canonicalInput, '--connector-source-path': sourcePath }
+    const readPair = async changes => {
+      const { result, path } = await invoke(changes)
+      ok(result)
+      return JSON.parse(await readFile(path, 'utf8'))
+    }
+    await t.test('the exact full subtree, including files not shipped by npm, is a verified source fact', async () => {
+      const value = await readPair(provenInput)
+      const tree = git(core, 'rev-parse', `${canonicalCommit}:${sourcePath}`)
+      assert.equal(tree, git(connector, 'rev-parse', `${connectorCommit}^{tree}`))
+      assert.deepEqual(value.source_provenance, {
+        status: 'verified', method: 'core_subtree_equals_connector_root',
+        core_commit: canonicalCommit, connector_source_path: sourcePath, core_subtree_tree: tree,
+        connector_commit: connectorCommit, connector_tree: tree, files: sourceFiles.length,
+      })
+      assert.ok(value.source_provenance.files > value.connector.files.length,
+        'The source comparison must not be narrowed to the npm package allowlist')
+      assert.equal(JSON.stringify(value.source_provenance).includes(root), false,
+        'Source provenance contains relative source paths and immutable IDs, not private checkout paths')
+      assert.equal(value.acceptance.performed_by_preparer, false)
+      assert.equal(value.publication.performed, false)
+      assert.equal((await readPair(provenInput)).pair_id, value.pair_id)
+    })
+    await t.test('source path participates in new identities, while legacy calls do not certify provenance', async () => {
+      const legacy = await readPair(canonicalInput)
+      const proved = await readPair(provenInput)
+      const other = await readPair({ ...canonicalInput, '--connector-source-path': otherPath })
+      assert.equal(legacy.source_provenance.status, 'not_verified')
+      assert.notEqual(legacy.pair_id, proved.pair_id)
+      assert.notEqual(other.pair_id, proved.pair_id, 'A different declared source path needs its own identity')
+      assert.equal(other.source_provenance.connector_source_path, otherPath, 'Safe spaces remain literal Git path characters')
+      const receipt = join(root, 'legacy-source-receipt.json')
+      await writeFile(receipt, JSON.stringify({
+        format: 'meyo-release-pair-evidence-v1', pair_id: legacy.pair_id, observations: [],
+      }))
+      await rejected({ ...provenInput, '--evidence': receipt }, /evidence.*pair|pair.*evidence/i)
+    })
+    await t.test('unsafe, absolute, noncanonical and revision-like paths are refused without creating output', async () => {
+      for (const path of ['', '.', '..', '../connector', 'connectors/../connector', './connectors/plugin',
+        '/private/connector', 'connectors//plugin', 'connectors/plugin/', 'connectors/./plugin',
+        'connectors\\plugin', 'C:\\connector', 'connectors/plugin:HEAD', 'connectors/plugin\nsuffix',
+        'connectors/.qa/plugin']) {
+        await rejected({ ...canonicalInput, '--connector-source-path': path }, /path|source|credential|data/i)
+      }
+    })
+    await t.test('a file, absent directory and nonexact directory prefix are not source subtrees', async () => {
+      for (const path of ['meyo.py', 'missing', 'connectors/dsh-plugin']) {
+        await rejected({ ...canonicalInput, '--connector-source-path': path }, /path|source|tree/i)
+      }
+    })
+    await t.test('a different core commit cannot borrow an archive or the previous provenance', async () => {
+      await writeFile(join(core, 'meyo.py'), '# New core commit; connector source is unchanged.\n')
+      const next = commit(core)
+      await rejected({ ...provenInput, '--core-commit': next }, /core.*commit|source.*commit/i)
+      const fresh = await readPair({ ...await coreInput(next), '--connector-source-path': sourcePath })
+      assert.equal(fresh.source_provenance.core_commit, next)
+      assert.notEqual(fresh.pair_id, (await readPair(provenInput)).pair_id)
+    })
+    const sourceFile = join(core, sourcePath, 'maintenance-only.txt')
+    for (const [label, mutate] of [
+      ['changed same-size blob', () => writeFile(sourceFile, 'source fact B\n')],
+      ['changed executable mode', () => chmod(sourceFile, 0o755)],
+      ['missing tracked file', () => rm(sourceFile)],
+      ['extra tracked file', () => writeFile(join(core, sourcePath, 'extra-source.txt'), 'extra\n')],
+      ['renamed full path', () => rename(sourceFile, join(core, sourcePath, 'renamed-source.txt'))],
+    ]) {
+      await t.test(`${label} is rejected even when the package version and npm bytes still match`, async () => {
+        git(core, 'restore', '--source', canonicalCommit, '--staged', '--worktree', '--', sourcePath)
+        await mutate()
+        const changed = commit(core)
+        await rejected({ ...await coreInput(changed), '--connector-source-path': sourcePath },
+          /connector.*source|provenance|subtree/i)
+      })
+    }
+    await t.test('selection uses the supplied commit, not a newer HEAD or dirty working directory', async () => {
+      assert.notEqual(git(core, 'rev-parse', 'HEAD'), canonicalCommit)
+      await writeFile(join(core, 'meyo.py'), '# Uncommitted fixture bytes, never a release input.\n')
+      const value = await readPair(provenInput)
+      assert.equal(value.source_provenance.core_commit, canonicalCommit)
+      assert.equal(value.source_provenance.connector_tree, git(connector, 'rev-parse', `${connectorCommit}^{tree}`))
+    })
+    await t.test('requesting provenance never bypasses either archive checksum validation', async () => {
+      await rejected({ ...provenInput, '--core-sha256': '0'.repeat(64) }, /SHA256|sha256|checksum/i)
+      await rejected({ ...provenInput, '--connector-sha256': '0'.repeat(64) }, /SHA256|sha256|checksum/i)
+    })
   })
 })

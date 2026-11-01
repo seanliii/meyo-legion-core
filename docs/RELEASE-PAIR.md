@@ -24,6 +24,13 @@
 | 真实执行与出口 | **9 个真实单体文件预检**；`pk`、`relay`、`orchestrate`、`auto` **4 种 HTTP 模式**走正式交付出口。 |
 | 原生安装与旧现场 | 0.5.2 安装文件 **34/34** 已核对并启用；原 **6 个任务、身份与配置**保留，**1263 字节旧成果**仍可正式下载。 |
 
+**以上是 0.5.2 的历史基线，不是维护源合一候选的验收。** 后续连接器提交
+`8a6ffcd0b20be2bca6702f685c7d423a71fe4af0` 已由原 npm 打出 **42 文件** TGZ，
+复用上述 `52f2e96` 核心包，配对身份为
+`sha256:6d6861d5fb88eba0b4b27146965ac8e57bd5b5cebcb39d7c52709e000fbfc189`。
+该基线的连接器全量为 **757 项通过、零 skip**，绑定原生下载 fixture 已通过；
+**尚未进行该新包的安装或发布**，不能沿用 34/34 安装回执。
+
 **未完成的部分照实保留。** 完整固定样本 **52 × 13 = 676** 仍在跑，原 GAIA、BrowseComp、
 搜索与编程样本没有被后加十类替代；不是官方题库全量，本节不填新分数或提分幅度。
 Superagent 仅 **3 个原生只读管理动作**实跑，真实接单账号未接，不作为第十个答题模型；
@@ -35,17 +42,16 @@ Trinity 仅为待测候选。这些验收不证明所有能力就绪、无人自
 缺回执的项目标“待验证”。这不改变源码的公开分发形态或已有本地验收事实，也不覆盖旧标签与原包。
 安装时按[0.5.2 渠道核验指引](MARKET.md#v052)确认最终目标；文档或封包字节变化后，须重新绑定最终包身份。
 
-## 本次决定：暂不合并仓库
+## 新维护方案：一个主库维护，两个入口发行
 
-| 已读源码 | 对决定的影响 |
-|---|---|
-| 连接器 `package.json` 的 `main`、`exports`、`files`、`dsh.bundle.patch`；根目录 `cordis.patch.yml` | 当前固定 Git 安装认现有包根。`npm pack` 已负责文件选择，没有必要改安装目标或把 Python 核心塞进 TGZ。 |
-| 已安装的 DSH rc.2：`@deepseek-ai/dsh-plugin-manager` 的 `install-spec.js` / `operations.js`，`@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility` | 原生管理器接受 Git/TGZ，检查 DSH 版本并处理启用、构建许可和恢复。配对记录不替代这些机制，也不提供第二个安装器。 |
-| 核心 `scripts/package_core.py` 的 `build_package`、`verify_package`、`_read_tree`；`docs/core-private-package.md` | 原打包器检查**整个固定 Git 树**，不是随意过滤目录的 exporter。直接合仓会改变核心归档的范围，或要求另改打包契约，不属于这次最小接线。 |
-| 核心 `docs/public-core-release.md`；维护树实际提交历史 | 公开初始历史来自纯源码 snapshot。维护历史曾提交后删除 QA；在新 HEAD 删除文件不等于清理了父历史，不能直接推到公开 `main`。 |
-| 两边现有 scripts / Makefile / package scripts / CI | 没有联合发行入口。连接器已有 `node --test test/*.test.js`，因此新增测试直接被原 runner 收录，不新增工作流平台。 |
+已采纳：公开 **`meyo-legion-core` 是唯一维护源**，连接器源码进入
+`connectors/dsh-plugin-legion/`；现有 `dsh-plugin-legion` 仓库保留为单向同步的发行入口，
+继续提供原包根、Git 安装地址和历史版本，不再两边独立改代码。
 
-合仓以后可以单独评估，例如明确新的包子目录和纯净历史迁移；并非 DSH 永远不能用 monorepo。但本次不需要这些迁移，**配对交付先解决“两个包各自更新、证据却串版本”的实际问题**。
+- 复用 Git subtree、原核心打包器、npm 和 DSH 原生安装器，不另造 exporter、runner 或质量裁判。核心归档仍对应**完整主库树**；连接器子树导出到独立 Git 根后，仍由原 npm `files` 清单决定 TGZ。
+- 主库子树、单向同步和 CI 由维护主线程接线；下方新增参数只验证传入的固定提交，不执行迁移、同步或 CI，也不证明远端发行已完成。
+- 新维护候选拟定**连接器 0.6.0／核心 0.2.0**，尚未打 tag；本次配对参数实现不修改包版本。最终版本、提交、包与安装验收另行固定，不继承上方 0.5.2 的回执。
+- 公开历史仍只接审查过的纯净提交，不因工作树相同就合入含私有 QA 的父历史。本机共享 skill 的目录软链接应随迁移指向主库的 `connectors/dsh-plugin-legion/skills/legion-dsh-release/`；由维护主线程更新并读回，不另改一份技能副本。
 
 ## 薄入口做什么、不做什么
 
@@ -56,11 +62,31 @@ Trinity 仅为待测候选。这些验收不证明所有能力就绪、无人自
 3. 生成一份私有 JSON：两边各自的 commit、Git tree、归档 hash、版本来源、安装格式、工具身份，以及共同的 `pair_id`。**同一批次不是两个包必须同版本号或同 SHA。**
 4. 可收录绑定同一 `pair_id` 的验收回执及其 hash。错包、错提交、旧配对回执被拒绝；回执中的 `failed` 和 `not_verified` 原样保留，不变成“整体通过”。
 
+<a id="source-provenance"></a>
+
+### 可选的主库来源校验
+
+提供 **`--connector-source-path connectors/dsh-plugin-legion`** 时，使用原 packager 的安全 Git/path 入口：
+读取 `--core-commit` 中该目录的完整子树，去掉这一明确目录前缀后，与 `--connector-commit` 的仓库根逐项核对
+**完整相对路径、mode、blob、size 和 tree ID**。包括未进入 npm 包的源码文件，不只比版本号或 TGZ 文件。
+绝对路径、`..`、`.`、空路径、非规范分隔和非目录目标会被拒绝；失败不降级为“未请求校验”。
+读取的是指定 commit，不是当前 HEAD 或工作区文件；原有两份归档、摘要与 npm 回执核验全部保留。
+
+结果写入原 pair JSON 的 `source_provenance`：
+
+- 已提供并通过：`status: verified`，记录 `core_commit`、`connector_source_path`、
+  `core_subtree_tree`、`connector_commit`、`connector_tree`、`files`，方法为 `core_subtree_equals_connector_root`。
+- 未提供：`status: not_verified`，原因 `connector_source_path_not_supplied`；保留旧独立仓库用法，不能据此宣称来自唯一维护源。
+
+这些来源事实只含不可变身份和仓库内相对路径，不加入本机 checkout 绝对路径；它们不证明安装、模型能力、自主进化或公开渠道已同步。
+
 **退出 0 只表示配对记录已完整写出。** 入口不打包、不联网、不安装、不运行测试或模型、不更新版本、不推送／发 PR／建 release／合并，也不评判作品质量。没有验收回执仍可准备，但验收为 `not_verified`；没有“准备成功就准予发布”的总开关。
 
 核心没有独立的包版本字段：只有所选提交恰有唯一 `vX.Y.Z` 标签时才记录对应版本，否则 `version: null`，保留完整提交，不借旧 `v0.1.0` 给新维护提交命名。连接器版本从包内 `package.json` 读取，同时列出所选提交实际拥有的标签。**同版本号但不同源码／归档的候选不能覆盖旧发行附件或复用旧回执。**
 
-`pair_id` 只取两份不可变源码／归档身份；本地目录、标签别名和后来追加的回执不参与计算。Git tree 可用于后续对照“维护提交”和“纯净公开提交”的文件身份；即使 tree 相同，也不能把二者 commit 混写或把私有历史推过去。
+不提供来源参数时，`pair_id` 保留原来的两份不可变源码／归档身份算法；提供并验证来源时，将上述 `source_provenance` 一起纳入身份。
+启用来源校验或换相对来源路径后，不能借旧 pair 的验收回执。绝对本地目录、标签别名和后来追加的回执仍不参与计算。
+即使 tree 相同，也不能把不同 commit 混写或把私有历史推过去。
 
 入口不替代安全审查：hash 不是作者签名，路径检查不是内嵌秘密扫描，许可字段不是权属认证，版本数字也不证明协议兼容。供应的 npm 回执和核心校验器必须来自可信准备过程。JSON 含本机绝对路径和私有验收信息，**不是可直接上传的宣传／市场文件**。
 
@@ -95,6 +121,10 @@ python3.12 -I -B "$CONNECTOR/scripts/release_pair.py" \
   --connector-archive "$CONNECTOR_ARCHIVE" --connector-sha256 "$CONNECTOR_SHA256" \
   --connector-pack-report "$OUT/npm-pack.json" --output "$OUT/pair.prepared.json"
 ```
+
+上面保留旧独立仓库命令。主库已包含连接器子树、连接器发行根已由该子树生成时，在同一配对命令中增加
+`--connector-source-path connectors/dsh-plugin-legion`。`--core-repo` 与 `--connector-repo` 仍必须各是 Git 仓库根，
+不要把主库子目录冒充 `--connector-repo`。这只核来源事实；主库与 CI 是否接好、两份最终包是否完成验收，仍看各自回执。
 
 已有包、摘要和配对记录不覆盖；重试选择新输出目录。原核心打包器拒绝脏树时不替别人清文件。核验入口只读显式提交的 Git 对象，不会把随后工作区里的未提交修复混进已冻结的归档。
 

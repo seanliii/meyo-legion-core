@@ -4,6 +4,7 @@
 Does not build, install, run tests/models, fetch, commit or publish. Supply the
 existing trusted core packager, original archives and original npm pack --json
 output. A prepared pair is not a runtime, rights or public-history certification.
+Optional source provenance compares pinned Git trees; it does not migrate or sync.
 """
 
 import argparse
@@ -63,6 +64,34 @@ def source_identity(packager, repo, commit):
     tree = packager._git(repo, ["rev-parse", "--verify", f"{commit}^{{tree}}"]).decode().strip()
     tags = packager._git(repo, ["tag", "--points-at", commit]).decode().splitlines()
     return entries, tree, sorted(tags)
+
+
+def verify_connector_source(packager, args, core_entries, connector_entries, connector_tree):
+    path = getattr(args, "connector_source_path", None)
+    if path is None:
+        return {"status": "not_verified", "reason": "connector_source_path_not_supplied"}
+    # Keep the raw POSIX-relative path: Path.resolve/normpath would hide traversal
+    # or aliases. The original packager rejects unsafe/noncanonical source paths.
+    packager.validate_source_path(path)
+    prefix = path + "/"
+    subtree = {
+        name[len(prefix):]: {**entry, "path": name[len(prefix):]}
+        for name, entry in core_entries.items() if name.startswith(prefix)
+    }
+    require(bool(subtree), "connector source path must identify a nonempty source subtree")
+    require(subtree == connector_entries,
+            "connector source subtree paths/modes/blobs/sizes do not match the connector commit")
+    tree = packager._git(args.core_repo, [
+        "rev-parse", "--verify", f"{args.core_commit}:{path}",
+    ]).decode().strip()
+    require(packager._git(args.core_repo, ["cat-file", "-t", tree]).strip() == b"tree",
+            "connector source path is not a Git tree")
+    require(tree == connector_tree, "connector source subtree tree does not match the connector root tree")
+    return {
+        "status": "verified", "method": "core_subtree_equals_connector_root",
+        "core_commit": args.core_commit, "connector_source_path": path, "core_subtree_tree": tree,
+        "connector_commit": args.connector_commit, "connector_tree": connector_tree, "files": len(subtree),
+    }
 
 
 def verify_connector(packager, args, entries):
@@ -149,6 +178,7 @@ def prepare(args):
     require({row["path"]: {key: row[key] for key in ("path", "mode", "git_blob", "size")} for row in core_manifest["files"]}
             == core_entries, "core archive files do not match the pinned source tree")
     manifest, native, files, report_hash = verify_connector(packager, args, connector_entries)
+    provenance = verify_connector_source(packager, args, core_entries, connector_entries, connector_tree)
     versions = [tag[1:] for tag in core_tags if re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", tag)]
 
     def archive(path, digest, count):
@@ -168,6 +198,8 @@ def prepare(args):
     # Only immutable source/package identities bind receipts; output paths and local tags do not.
     identity = {name: {"commit": side["source_commit"], "tree": side["source_tree"], "sha256": side["archive"]["sha256"]}
                 for name, side in (("core", core), ("connector", connector))}
+    if provenance["status"] == "verified":
+        identity["source_provenance"] = provenance
     pair_id = "sha256:" + sha256(canonical(identity))
     receipts = []
     for path in args.evidence:
@@ -181,7 +213,7 @@ def prepare(args):
                          "environment": receipt.get("environment"), "observations": observations})
     return {
         "format": "meyo-release-pair-v1", "operation": "prepare-only", "pair_id": pair_id,
-        "core": core, "connector": connector,
+        "core": core, "connector": connector, "source_provenance": provenance,
         "tools": {"core_packager": {"path": str(args.core_packager.resolve()), "sha256": sha256(args.core_packager.read_bytes())},
                   "npm_pack_report": {"path": str(args.connector_pack_report.resolve()), "sha256": report_hash}},
         "acceptance": {"performed_by_preparer": False, "missing_receipt_status": "not_verified", "receipts": receipts},
@@ -198,6 +230,8 @@ def main(argv=None):
         parser.add_argument(f"--{side}-archive", required=True, type=Path)
         parser.add_argument(f"--{side}-sha256", required=True)
     parser.add_argument("--connector-pack-report", required=True, type=Path, help="Original npm pack --json --ignore-scripts --offline output")
+    parser.add_argument("--connector-source-path",
+                        help="Optional exact relative directory in the core commit; compare its full Git subtree with the connector root")
     parser.add_argument("--evidence", action="append", default=[], type=Path, help="Optional matching-pair receipt; records facts without rerunning or judging tests")
     parser.add_argument("--output", required=True, type=Path, help="New private JSON file outside both source repositories; never overwritten")
     args = parser.parse_args(argv)
