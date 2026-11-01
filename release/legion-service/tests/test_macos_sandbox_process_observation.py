@@ -84,8 +84,13 @@ finally:
     parent.wait(timeout=3)
 print(json.dumps(facts))
 '''.replace("SERVICE_PATH", repr(str(SERVICE))).replace("PRIVATE_PATH", repr(str(private)))
+    # This kernel/stdlib test intentionally denies the rest of /Users. A venv's
+    # site bootstrap would read its unrelated pyvenv.cfg there before the test
+    # starts. Use the same Python installation's base interpreter, without
+    # expanding the file boundary or borrowing a developer site-packages tree.
+    interpreter = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
     result = subprocess.run(
-        ["/usr/bin/sandbox-exec", "-f", str(profile), sys.executable, "-I", "-B", "-c", payload],
+        ["/usr/bin/sandbox-exec", "-f", str(profile), interpreter, "-I", "-B", "-c", payload],
         cwd=work, capture_output=True, text=True, timeout=20, start_new_session=True)
     assert result.returncode == 0, result.stderr
     facts = json.loads(result.stdout)

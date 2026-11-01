@@ -43,8 +43,10 @@ jobs:
         env:
           MEYO_LEGION_DIR: ${{ runner.temp }}/core-tests/meyo
           LEGION_HOME_DIR: ${{ runner.temp }}/core-tests/legion
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: |
           set -o pipefail
+          export PATH="$GITHUB_WORKSPACE/connectors/dsh-plugin-legion/node_modules/.bin:$PATH"
           python -m pytest -q -ra release/legion-service/tests \
             2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/core-tests.txt"
       - name: DSH checks and original tests, with the real core packager
