@@ -1,0 +1,113 @@
+{
+  "name": "dsh-plugin-legion",
+  "version": "0.5.2",
+  "description": "One goal, a co-evolving harness team. Native DSH companions, shared capabilities and continued work, with visible configuration and delivery facts.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": {
+      "node": "./lib/client.js",
+      "default": "./client/index.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client/",
+    "lib/",
+    "locale/",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "docs/PLAN.md",
+    "docs/PROTOCOL.md",
+    "docs/SECURITY.md",
+    "docs/MARKET.md",
+    "docs/RELEASE-PAIR.md",
+    "docs/ECOSYSTEM.md",
+    "docs/PRODUCT.md",
+    "docs/media/team-overview.png",
+    "docs/TEAM.md",
+    "docs/CORE.md",
+    "scripts/release_pair.py",
+    "skills/legion-dsh-release/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check index.js && node --check client/index.js && node --check lib/client.js && node --check lib/credentials.js && node --check lib/store.js && node --check lib/sse.js && node --check lib/commands.js && node --check lib/json.js && node --check lib/redaction.js && node --check lib/ecosystem.js && node --check lib/extension.js && node --check lib/sources.js && node --check lib/bundles.js && node --check lib/bridge.js && node --check lib/workbench.js && node --check lib/team.js && node --check lib/team-flow.js"
+  },
+  "engines": {
+    "node": ">=24.9.0",
+    "dsh": "0.2.1-rc.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-commands": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-commands": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-plugin-manager": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-schedule": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "author": "seanliii",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seanliii/dsh-plugin-legion.git"
+  },
+  "bugs": {
+    "url": "https://github.com/seanliii/dsh-plugin-legion/issues"
+  },
+  "homepage": "https://github.com/seanliii/dsh-plugin-legion#readme",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "legion",
+    "multi-agent",
+    "delegation",
+    "plugin-ecosystem",
+    "open-source"
+  ]
+}

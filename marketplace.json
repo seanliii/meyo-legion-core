@@ -1,0 +1,68 @@
+{
+  "format": 1,
+  "title": {
+    "en": "Legion co-evolving teams",
+    "zh": "军团协同进化战队"
+  },
+  "description": {
+    "en": "Maintainer-published native DSH bundles. Review pinned sources before installing.",
+    "zh": "由项目维护者发布的 DSH 原生能力包索引；安装前可核对固定来源。"
+  },
+  "plugins": [
+    {
+      "name": "dsh-plugin-legion",
+      "title": {
+        "en": "Legion · a co-evolving harness team",
+        "zh": "军团 · Harness 协同进化战队"
+      },
+      "description": {
+        "en": "One goal, a co-evolving team. Choose companions, share capabilities and keep improving the same work. See DSH author and core-member facts separately; retain task continuity and native schedules. Bring your own models and optional core. Technical preview, not a claim of universal autonomy.",
+        "zh": "一个目标，一支共同进化的战队。选择战友，互用能力，持续改进同一作品；分别看清DSH作者与核心成员状态，保留原任务接续和原生自动安排。使用自己的模型及按需安装的核心；技术预览，不宣称全团无人自治。"
+      },
+      "icon": "icon.svg",
+      "author": "seanliii",
+      "homepage": "https://github.com/seanliii/dsh-plugin-legion#readme",
+      "repository": {
+        "url": "https://github.com/seanliii/dsh-plugin-legion"
+      },
+      "versions": [
+        {
+          "version": "0.5.1",
+          "publishTimestamp": 1793371862,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/seanliii/dsh-plugin-legion.git",
+            "commit": "cb3eca2108d09456a2cbb973afe5da7406c0cf06"
+          },
+          "engines": {
+            "dsh": "0.2.1-rc.2"
+          }
+        },
+        {
+          "version": "0.5.0",
+          "publishTimestamp": 1793358402,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/seanliii/dsh-plugin-legion.git",
+            "commit": "090c82e273dcbf4912ab48906bf28f9f086ae53d"
+          },
+          "engines": {
+            "dsh": "0.2.1-rc.2"
+          }
+        },
+        {
+          "version": "0.4.2",
+          "publishTimestamp": 1793328416,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/seanliii/dsh-plugin-legion.git",
+            "commit": "7ca96434ee077102d2e2459173fffa91747898b5"
+          },
+          "engines": {
+            "dsh": "0.2.1-rc.2"
+          }
+        }
+      ]
+    }
+  ]
+}
