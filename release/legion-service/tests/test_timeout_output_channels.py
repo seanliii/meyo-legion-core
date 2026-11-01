@@ -250,8 +250,15 @@ def test_hermes_parent_stop_owns_error_channel_but_keeps_native_cause(
 def test_hermes_old_cli_timeout_reads_only_its_designated_usage_file(
         cli_stack, monkeypatch, tmp_path, sidecar):
     H = cli_stack.registry
-    monkeypatch.setattr(H, "__file__", str(tmp_path / "old-layout/meyo-orchestrator/harness_registry.py"))
-    monkeypatch.setattr(H._sh, "which", lambda name: "/offline/hermes" if name == "hermes" else None)
+    anchor = tmp_path / "old-layout/meyo-orchestrator/harness_registry.py"
+    monkeypatch.setattr(H, "__file__", str(anchor))
+    # A valid independent CLI remains supported without the default Python's SDK.
+    # Only process results below are doubles; entry/interpreter validation is real.
+    cli = tmp_path / "legacy-cli/hermes"
+    cli.parent.mkdir()
+    cli.write_text(f"#!{sys.executable}\n# process results are supplied by this fixture\n")
+    cli.chmod(0o700)
+    monkeypatch.setattr(H._sh, "which", lambda name: str(cli) if name == "hermes" else None)
     monkeypatch.setattr(H, "_legion_prompt", lambda text, ctx: text)
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **kw: SimpleNamespace(returncode=0, stdout="ai-gateway", stderr=""))

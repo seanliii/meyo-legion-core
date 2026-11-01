@@ -4040,14 +4040,167 @@ def _prime_adapter(qhash, question, gold="", ctx=None):
     return result
 
 
+def _hermes_installed_source(python, *, workdir):
+    """Locate one installed Hermes distribution in the selected native Python.
+
+    Never import Hermes to discover it, search HOME, or resolve a venv executable
+    to its base Python for execution. No cache: each interpreter/source is observed.
+    """
+    if not python:
+        raise ValueError("hermes_python_unavailable")
+    executable = _P(python).absolute()
+    excluded = _P(workdir).resolve()
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ValueError("hermes_python_unavailable")
+    if executable.resolve().is_relative_to(excluded) or executable.is_relative_to(excluded):
+        raise ValueError("hermes_python_overlaps_workdir")
+    code = r'''
+import hashlib, json, re, sys, tomllib
+from importlib import metadata
+from pathlib import Path
+from urllib.parse import urlsplit, unquote
+
+def fail(code):
+    print(json.dumps({"ok": False, "code": code}))
+    raise SystemExit(1)
+
+try:
+    if not (3, 11) <= sys.version_info[:2] < (3, 14):
+        fail("hermes_python_unsupported")
+    package = metadata.distribution("hermes-agent")
+    name = (package.metadata.get("Name") or "").lower().replace("_", "-")
+    version = package.version or ""
+    if name != "hermes-agent" or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+(?:[A-Za-z0-9.+-]*)", version):
+        fail("hermes_distribution_invalid")
+    scripts = {entry.name: entry.value for entry in package.entry_points
+               if entry.group == "console_scripts"}
+    if scripts.get("hermes") != "hermes_cli.main:main" or scripts.get("hermes-agent") != "run_agent:main":
+        fail("hermes_distribution_invalid")
+    raw_url = package.read_text("direct_url.json")
+    direct = json.loads(raw_url) if raw_url else {}
+    editable = (direct.get("dir_info") or {}).get("editable") is True
+    required = ("run_agent.py", "hermes_cli/main.py", "hermes_cli/__init__.py",
+                "agent/__init__.py", "tools/__init__.py")
+    if editable:
+        url = urlsplit(direct.get("url") or "")
+        path = Path(unquote(url.path))
+        if (url.scheme != "file" or url.netloc not in ("", "localhost")
+                or url.query or url.fragment or not path.is_absolute()):
+            fail("hermes_source_url_invalid")
+        source = path.resolve(strict=True)
+    else:
+        owned = {str(path) for path in package.files or []}
+        if not set(required).issubset(owned):
+            fail("hermes_source_layout_invalid")
+        source = Path(package.locate_file("run_agent.py")).resolve(strict=True).parent
+    workdir = Path(sys.argv[1]).resolve()
+    if source.is_relative_to(workdir) or workdir.is_relative_to(source):
+        fail("hermes_source_overlaps_workdir")
+    hashes = {}
+    for relative in required:
+        path = source / relative
+        if not path.is_file() or not path.resolve(strict=True).is_relative_to(source):
+            fail("hermes_source_layout_invalid")
+        with path.open("rb") as stream:
+            hashes[relative] = hashlib.file_digest(stream, "sha256").hexdigest()
+    if editable:
+        project_file = source / "pyproject.toml"
+        if (not project_file.is_file() or project_file.stat().st_size > 65536
+                or not project_file.resolve(strict=True).is_relative_to(source)):
+            fail("hermes_source_layout_invalid")
+        project = tomllib.loads(project_file.read_text())["project"]
+        if str(project.get("name", "")).lower().replace("_", "-") != "hermes-agent":
+            fail("hermes_distribution_invalid")
+        if project.get("version") != version:
+            fail("hermes_source_version_mismatch")
+        hashes["pyproject.toml"] = hashlib.sha256(project_file.read_bytes()).hexdigest()
+    print(json.dumps({
+        "ok": True, "discovery": "installed_distribution", "distribution": "hermes-agent",
+        "version": version, "source": str(source), "editable": editable,
+        "python_executable": sys.executable, "python_version": sys.version.split()[0],
+        "python_prefix": sys.prefix, "source_hashes": hashes,
+        "metadata_sha256": hashlib.sha256((package.read_text("METADATA") or "").encode()).hexdigest(),
+    }))
+except metadata.PackageNotFoundError:
+    fail("hermes_distribution_missing")
+except (OSError, ValueError, TypeError, KeyError):
+    fail("hermes_source_layout_invalid")
+'''
+    try:
+        observed = _run_live(
+            [str(executable), "-I", "-B", "-c", code, str(excluded)], timeout=10,
+            cwd=str(executable.parent),
+            env={name: value for name, value in os.environ.items()
+                 if name in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}},
+            tag="hermes-source-discovery")
+    except (OSError, _sp.TimeoutExpired) as exc:
+        raise ValueError("hermes_metadata_probe_failed") from exc
+    try:
+        if len(observed.stdout or "") > 65536:
+            raise ValueError()
+        record = _json.loads(observed.stdout)
+        if not isinstance(record, dict):
+            raise ValueError()
+    except (ValueError, TypeError) as exc:
+        raise ValueError("hermes_distribution_invalid") from exc
+    if observed.returncode or record.get("ok") is not True:
+        code = record.get("code")
+        raise ValueError(code if isinstance(code, str) and _re.fullmatch(r"hermes_[a-z_]+", code)
+                         else "hermes_distribution_invalid")
+    record.pop("ok", None)
+    # Keep exactly the executable used for discovery, including its venv path.
+    record["python"] = str(executable)
+    return record
+
+
+def _hermes_cli_source(cli, *, workdir):
+    """Check an existing CLI's entry/interpreter, without running or parsing it."""
+    path = _P(cli).absolute()
+    excluded = _P(workdir).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError("hermes_cli_unavailable")
+    if path.is_relative_to(excluded) or path.resolve().is_relative_to(excluded):
+        raise ValueError("hermes_cli_overlaps_workdir")
+    try:
+        with path.open("rb") as stream:
+            first = stream.readline(512)
+    except OSError as exc:
+        raise ValueError("hermes_cli_unavailable") from exc
+    interpreter = None  # Native executables need no guessed Python version.
+    if first.startswith(b"#!"):
+        parts = first[2:].decode("utf-8", errors="replace").strip().split()
+        if not parts or not _P(parts[0]).is_absolute():
+            raise ValueError("hermes_cli_interpreter_unavailable")
+        interpreter = _P(parts[0])
+        if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
+            raise ValueError("hermes_cli_interpreter_unavailable")
+        if interpreter.name == "env" and len(parts) > 1:
+            command = parts[2:] if parts[1] == "-S" else parts[1:]
+            if command and not command[0].startswith("-") and "=" not in command[0]:
+                target = _sh.which(command[0])
+                if not target:
+                    raise ValueError("hermes_cli_interpreter_unavailable")
+                interpreter = _P(target).absolute()
+        if interpreter.is_relative_to(excluded) or interpreter.resolve().is_relative_to(excluded):
+            raise ValueError("hermes_cli_interpreter_unavailable")
+    return {"discovery": "legacy_cli", "cli": str(path),
+            "interpreter": str(interpreter) if interpreter else None}
+
+
 def _hermes_adapter(qhash, question, gold="", ctx=None):
     """Hermes adapter。开发/包内源码用 AIAgent；无源码的老包才退 CLI。"""
     # ctx 化(权限下放·同 penguin 模式):per-call ctx.model 替全局 + 失败回流拼进 prompt。
     # 依据 hermes bedrock.py:108-116 content/reasoning 分字段·失败分类回流让它自判换招。
     ctx = ctx or HarnessCtx.from_env()
+    _source_binding = None
+    _cli_binding = None
+    _metadata_fallback_code = ""
     _managed_browser = None
     _managed_browser_cleanup_errors = []
     def _preserve_failed_native_input(result):
+        if _source_binding is not None or _cli_binding is not None:
+            facts = result.setdefault("native_facts", {})
+            facts["source_runtime"] = dict(_source_binding or _cli_binding)
         if _managed_browser is not None:
             facts = result.get("native_facts")
             if not isinstance(facts, dict):
@@ -4187,6 +4340,60 @@ def _hermes_adapter(qhash, question, gold="", ctx=None):
                 "elapsed": round(_t.time() - t0, 1),
                 "error_envelope": {"category": "harness_runtime", "scope": "harness",
                                    "retryable": False, "message": message}})
+
+    if not (source / "run_agent.py").is_file():
+        # Existing sibling/packaged layouts above keep their original priority.
+        # Only an actual declaration may select the existing deployment resolver.
+        _has_runtime_declaration = False
+        native_python = None
+        try:
+            import runtime_manifest as _runtime_manifest
+            definition = _runtime_manifest.get("hermes")
+            declared = definition.get("runtime") or {}
+            expected_source = None
+            native_python = _sh.which("python3.12")
+            if (isinstance(declared, dict) and
+                    ("deployment_directory" in declared or "python" in declared
+                     or definition.get("local_source"))):
+                _has_runtime_declaration = True
+                import external_agent_registry as _external_registry
+                context = _external_registry._context(definition)
+                expected_source = _P(context["source"]).resolve()
+                native_python = context["runtime_python"]
+            _source_binding = _hermes_installed_source(native_python, workdir=str(_hermes_ws))
+            if expected_source is not None:
+                if _P(_source_binding["source"]) != expected_source:
+                    raise ValueError("hermes_declared_source_mismatch")
+                if (definition.get("version") and
+                        definition["version"] != _source_binding["version"]):
+                    raise ValueError("hermes_declared_version_mismatch")
+                if (definition.get("revision") and
+                        _external_registry._git_revision(expected_source) != definition["revision"]):
+                    raise ValueError("hermes_declared_revision_mismatch")
+                _source_binding["discovery"] = "declared_runtime"
+            elif not _source_binding["python_version"].startswith("3.12."):
+                raise ValueError("hermes_python_version_mismatch")
+            source, _python = _P(_source_binding["source"]), _source_binding["python"]
+            env.pop("PYTHONPATH", None)
+            env.pop("PYTHONHOME", None)
+        except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
+            code = str(exc)
+            if not _re.fullmatch(r"hermes_[a-z_]+", code):
+                code = "hermes_runtime_declaration_invalid"
+            python_missing = not native_python or not _P(native_python).exists()
+            if (not _has_runtime_declaration and (
+                    code == "hermes_distribution_missing"
+                    or code == "hermes_python_unavailable" and python_missing)):
+                # Absence in this Python is not failure of another legal CLI
+                # installation. A declared or invalid identity never takes this exit.
+                _metadata_fallback_code = code
+            else:
+                failure = _hermes_boundary_failure("Hermes runtime binding unavailable: " + code)
+                failure["error_envelope"]["code"] = code
+                failure["blocked_before_native"] = True
+                failure.setdefault("native_facts", {}).update(
+                    native_execution_started=False, model_call_count=0, source_resolution_code=code)
+                return failure
 
     _mailbox_parent = None
     _mailbox_receipts_seen = set()
@@ -4652,7 +4859,8 @@ print(json.dumps(_frame({{"type":"result","hermes_adapter_result":True,"final":r
         env["PYTHONUNBUFFERED"] = "1"
         _INPROC_EVENT_SINK.cb = hermes_sink
         try:
-            r = _run_hermes_process([_python, "-P", "-c", code], "hermes",
+            r = _run_hermes_process(
+                [_python, *(["-I", "-B"] if _source_binding else ["-P"]), "-c", code], "hermes",
                                     native_mailbox=True, native_tools=True)
             data = parse_hermes(r.stdout)
             observed_native = (data.get("hermes_adapter_result") is True
@@ -4716,6 +4924,19 @@ print(json.dumps(_frame({{"type":"result","hermes_adapter_result":True,"final":r
     # config.yaml 读,忽略 config 就没端点。ai-gateway provider 读 AI_GATEWAY_BASE_URL/API_KEY 环境变量,
     # 无需写 config,兼容 --ignore-user-config,干净环境即可跑。真测:ai-gateway+/v1/openai/native+gpt-5.4 → "OK"。
     binp = _sh.which("hermes") or str(_P.home() / ".local/bin/hermes")
+    try:
+        _cli_binding = _hermes_cli_source(binp, workdir=str(_hermes_ws))
+        if _metadata_fallback_code:
+            _cli_binding["metadata_fallback_code"] = _metadata_fallback_code
+    except ValueError as exc:
+        code = str(exc)
+        failure = _hermes_boundary_failure("Hermes CLI runtime unavailable: " + code)
+        failure["error_envelope"]["code"] = code
+        failure["blocked_before_native"] = True
+        failure.setdefault("native_facts", {}).update(
+            native_execution_started=False, model_call_count=0,
+            source_resolution_code=code, metadata_fallback_code=_metadata_fallback_code)
+        return failure
     # provider 自适应(2026-09-10 服务器实锤):内网 pypi 只有 hermes 0.19.0——
     # 它没有 ai-gateway provider(0.20.5 才加),--provider ai-gateway 必败且只回 stderr。
     # 探测:先试 ai-gateway 帮助里有没有;没有则退 openai-api(读 OPENAI_BASE_URL/
@@ -4800,8 +5021,12 @@ print(json.dumps(_frame({{"type":"result","hermes_adapter_result":True,"final":r
                     _failure or r.stderr or "Hermes CLI returned an error")}
                    if status == "error" else {})})
     except (_sp.TimeoutExpired, FileNotFoundError) as exc:
-        if _managed_linux and isinstance(exc, FileNotFoundError):
-            return _hermes_boundary_failure(exc)
+        if isinstance(exc, FileNotFoundError):
+            failure = _hermes_boundary_failure(exc)
+            failure["error_envelope"]["code"] = "hermes_cli_unavailable"
+            failure["blocked_before_native"] = True
+            failure.setdefault("native_facts", {}).update(native_execution_started=False, model_call_count=0)
+            return failure
         return _preserve_failed_native_input({
                 "final": "", "status": "timeout" if isinstance(exc,_sp.TimeoutExpired) else "unavailable",
                 "elapsed": round(_t.time()-t0,1),
