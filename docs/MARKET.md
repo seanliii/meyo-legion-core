@@ -234,6 +234,9 @@ In DSH: **Plugins → More under Experimental plugins → enable Custom plugin m
 
 ## 可复用的维护技能
 
+源码仓库中的 `docs/RELEASE-PAIR.md` 说明双包同步维护：军团核心与连接器按同一产品维护，暂保留独立仓库与原安装入口。
+维护者可用离线薄入口准备两份固定源码／归档的配对记录及匹配验收回执；该维护脚本与新指南不加入运行包，不更新版本、不安装、不发布，也不改变本页既有发行事实。
+
 [legion-dsh-release](../skills/legion-dsh-release/SKILL.md) 保存这条项目的发布、部署与验收方法，三份参考分别覆盖固定源码／市场投稿、独立服务／动态后端／静态站路由、原生操作／截图录屏／正式交付。让支持 Agent Skills 的开发代理按其发现方式加载该目录即可使用；不会因此自动获得账号、工具执行或公开发布权限。
 
 技能源在本仓库 `skills/legion-dsh-release/`。它是后续独立提交，不改写已经冻结的 0.4.2 TGZ 或旧标签，也不声称该旧安装包已经自动装载新技能。版本身份与运行结果继续在 [PLAN](PLAN.md) 分开记录。
