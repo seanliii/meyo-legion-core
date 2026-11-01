@@ -12,7 +12,21 @@ not a claim that every harness is ready or every result leads the industry.
 
 Start in DSH: choose companions, describe what you want, and follow the task and its results in the original conversation. Connect your independent Legion core when you want to delegate work to its members.
 
-**[0.5.2 installation and channel checks](docs/MARKET.md#v052) · [Open the DSH workbench](#open-the-native-workbench) · [Product and verified scope](docs/PRODUCT.md)**
+**[0.6.0 installation and source provenance](docs/MARKET.md#v060) · [Open the DSH workbench](#open-the-native-workbench) · [Product and verified scope](docs/PRODUCT.md)**
+
+<a id="v060"></a>
+
+**0.6.0: one team, one maintenance source.** The core and connector are developed and checked
+together in the public Legion core repository. The existing DSH installation address stays;
+the connector is exported in one direction from that source. Stop reasons, already-produced
+results and formal delivery remain separate facts: stopping execution must not erase existing work.
+
+[Canonical source and development](https://github.com/seanliii/meyo-legion-core/blob/main/docs/development.md) ·
+[Pinned packages and verification scope](docs/RELEASE-PAIR.md#v060). New scores, installations and
+publication receipts are recorded separately; source pairing does not establish unattended evolution or superiority.
+
+<details>
+<summary>Earlier local 0.5.2 verification, not evidence for 0.6.0</summary>
 
 <a id="v052"></a>
 
@@ -21,6 +35,8 @@ Start in DSH: choose companions, describe what you want, and follow the task and
 Local native installation checked **34/34 files** and enabled 0.5.2, preserving the six existing tasks, identity, configuration and a **1,263-byte historical result download**. [Paired source identities, regression counts and local verification scope](docs/RELEASE-PAIR.md#v052) are separate from public distribution receipts.
 
 The fixed **52 × 13 = 676** comparison is still running; no new score or improvement claim is published here. Superagent has only three exercised native read-only management actions, with no real intake account connected; Trinity remains an untested candidate. This does not certify every capability, unattended autonomy or world-leading performance.
+
+</details>
 
 ![Historical 0.5.1: DSH native author, selected members and separate configuration facts](docs/media/team-overview.png)
 
@@ -45,11 +61,11 @@ The fixed **52 × 13 = 676** comparison is still running; no new score or improv
 
 ## Get started
 
-1. Check the [**0.5.2 installation target and channel receipts**](docs/MARKET.md#v052), use the version actually offered by the verified Release or Discover index, then explicitly enable Legion. Git distribution does not require publishing this connector to npm.
-2. Open **Legion**, choose a **Working session**, then follow **Companions → Collaboration → Grow together**. Improvement is enabled by default; submitting saves the preferences and schedules the first round and weekly follow-ups through native DSH, with pause and original-conversation entry points. [Workflow and boundaries](docs/TEAM.md)
-3. For delegated work, verify the [matching 0.5.2 core source and actual release package](docs/RELEASE-PAIR.md#v052), then use the [existing setup procedure](docs/CORE.md#安装自己的实例): a fresh Python 3.12 environment, **`init` → `serve` → `dsh-config` → Save connection**. Configure your own model before submitting work; the connector does not bundle or start the core.
+1. Check the [**0.6.0 installation target and channel receipts**](docs/MARKET.md#v060), use the version actually offered by the verified Release or Discover index, then explicitly enable Legion. Git distribution does not require publishing this connector to npm.
+2. Open **Legion**, choose a **Working session**, then follow **Companions → Collaboration → Grow together**. The improvement plan is enabled by default, while outcomes still require verification; submitting saves the preferences and schedules the first round and weekly follow-ups through native DSH, with pause and original-conversation entry points. [Workflow and boundaries](docs/TEAM.md)
+3. For delegated work, verify the [matching 0.6.0 core source and actual release package](docs/RELEASE-PAIR.md#v060), then use the [existing setup procedure](docs/CORE.md#安装自己的实例): a fresh Python 3.12 environment, **`init` → `serve` → `dsh-config` → Save connection**. Configure your own model before submitting work; the connector does not bundle or start the core.
 
-**Installation template, not a verified live 0.5.2 target.** Replace the placeholder with the tag or full commit confirmed by the actual Release and its package checksums. If no matching target is verifiable, leave installation pending; do not substitute `main` or relabel an older version. Replace the example `web` profile as needed and retain `-w`:
+**Installation template, not a verified live 0.6.0 target.** Replace the placeholder with the tag or full commit confirmed by the actual Release and its package checksums. If no matching target is verifiable, leave installation pending; do not substitute `main` or relabel an older version. Replace the example `web` profile as needed and retain `-w`:
 
 ```sh
 dsh plugin --profile web -w add 'github:seanliii/dsh-plugin-legion#<verified-tag-or-full-commit>'
@@ -189,7 +205,7 @@ The task page does not auto-poll or execute incoming messages. It can page throu
 
 ## Connect your independently installed Legion core
 
-For 0.5.2, first check the [paired core identity and channel receipts](docs/RELEASE-PAIR.md#v052). The v0.1.0 download link below is retained as a historical installation example, not the new pair's package.
+For 0.6.0, first check the [paired core identity and channel receipts](docs/RELEASE-PAIR.md#v060). The v0.1.0 download link below is retained as a historical installation example, not the new pair's package.
 
 Download the [public v0.1.0 archive and SHA-256](docs/CORE.md#public-core-install), then follow [Core installation](docs/CORE.md#安装自己的实例): a fresh **Python 3.12** environment → `init` → `serve` → `dsh-config` → **Save connection**. Model configuration is needed before real delegation, not to obtain the source. Existing authorized instances can continue to use their own connection settings.
 
