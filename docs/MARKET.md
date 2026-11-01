@@ -1,27 +1,45 @@
 # Installation and publication / 安装与发布路线
 
-**0.5.1：同一个目标，先看清你的战队，再继续真实工作。** 首屏区分 DSH 作者模型、所选核心成员和任务安排；成员目录可分页，未取得的状态不再被藏掉。先按下方[Discover 步骤](#官方-discover-索引)或[Git 安装](#v051)启用连接器；需要委托工作，再[下载公开核心 v0.1.0](CORE.md#public-core-install)建立实例。核心是另包安装的技术预览，不随连接器打包。
+**0.5.2：实际成员、预算与失败事实、正式成果交付接在一起。** 让顶尖 Harness 沿原任务协作和改进，不另造质量裁判。先看[本版安装核验](#v052)与[配套核心／本地验收](RELEASE-PAIR.md#v052)；核心仍独立安装，不随连接器打包。
 
-本版源码、包与验收边界见 [0.5.1 记录](PLAN.md#v051)。[0.5.0](PLAN.md#v050) 和 [0.4.2](PLAN.md#v042) 的记录保留原版本归属。
-本页为 `main` 上的后验说明，不移动已发布标签，不替换原 TGZ。
+本版的本地验收与公开发行分别记账：Release、固定 Git 下载、Discover 安装目标、npm 和市场审核各以实际渠道回执为准，缺回执标“待验证”。下方 [0.5.1](PLAN.md#v051)、[0.5.0](PLAN.md#v050)、[0.4.2](PLAN.md#v042) 及更早记录保留原版本归属，不移动标签、不替换原包，也不借旧录屏证明新版。
 
-**0.5.1 uses Git distribution, not npm.** Install and enable the connector, then create your own instance from the public core v0.1.0 source archive. Configure your own models before execution. The core's first-party code is MIT and third-party licenses are retained.
+**0.5.2 local verification is not a distribution receipt.** Use only a tag, commit or package confirmed by the actual Release or index. This page does not establish a Git push, npm publication or marketplace approval.
 
 ## 分清三种分发方式
 
 | 路线 | 提供什么 | npm 是否必需 |
 |---|---|---|
-| 官方 CLI 固定 Git 提交／标签 | 本版为 `v0.5.1`；旧版标签仍保留自己的历史回执。 | 不要求将此包发布到 npm；依赖获取仍可能联网。 |
-| 官方 Discover 自托管索引 | 用户添加可信索引，安装其中声明的 Git 来源；下方提供本版的发布后索引入口。 | Git 来源不要求此包先发 npm。 |
+| 官方 CLI 固定 Git 提交／标签 | 0.5.2 使用实际 Release 核实的固定目标；本地提交不等于远端已可安装。 | 不要求将此包发布到 npm；依赖获取仍可能联网。 |
+| 官方 Discover 自托管索引 | 用户添加可信索引，核对它实际提供的版本与固定 Git 来源；旧版索引记录不证明 0.5.2 已上架。 | Git 来源不要求此包先发 npm。 |
 | 社区目录／1024Store | 提交一份目录 JSON；无 npm 可 **browse-only（仅浏览仓库）** 收录。 | 不是投稿前提；一键安装以商店实际提供的方式为准。 |
 
 社区目录、姐妹站安装界面与官方管理器是不同系统。已保存的姐妹站源码中，常规安装按钮主要提供 npm 路线；底层官方 CLI／命令转发不能概括成“npm-only”。GitHub 元数据也不证明有 Git 一键按钮。不要把来源说明、按钮存在、实际安装或官方背书混为一谈。
 
 ## 固定 Git 安装
 
+<a id="v052"></a>
+
+### v0.5.2：先核本地验收，再核实际安装渠道
+
+本地源码基线为连接器 `124d1d4379f9c56af61014b1cba0f13e03879e7e`，配套纯净核心为
+`52f2e9628cceee364b4fef05d60af126b11a4c68`。本地原生安装已核 **34/34 文件**并启用，
+原 **6 个任务、身份、配置与 1263 字节旧成果下载**保留；详细回归与实跑范围见[配对记录](RELEASE-PAIR.md#v052)。
+这不是匿名公开安装、npm 或市场审核回执；完整 **52 × 13 = 676** 对照仍在跑，不填新分数。
+
+1. 先在实际 Release 核对版本、固定提交、原始包与摘要；Discover 另核当前索引的来源提交。目标不可核实就标“待验证”，不自动换成 `main` 或旧版。
+2. 已有受审本地副本可沿[原生本地安装](ECOSYSTEM.md#native-installation)验收；公开安装只使用渠道中实际可取得并已核对的目标。下方是占位模板，不承诺 `v0.5.2` 标签已存在：
+
+   ```sh
+   dsh plugin --profile web -w add 'github:seanliii/dsh-plugin-legion#<verified-tag-or-full-commit>'
+   ```
+
+3. 使用包声明的 **Node.js >=24.9.0、DSH `0.2.1-rc.2`**。按原生回执处理构建许可、警告和启用状态；升级前结束本人的在途任务，需要防止更新中运行时先停用再更新。核对原任务、身份、配置与旧成果下载，不靠“安装成功”推断全部能力可用。
+4. 核心按[本版配对身份](RELEASE-PAIR.md#v052)另行取得并验证，再沿[原步骤](CORE.md#安装自己的实例)完成 `init` → `serve` → `dsh-config` → 保存连接。旧核心 v0.1.0 的下载示例不代替本版配对证据。
+
 <a id="v051"></a>
 
-### v0.5.1：已公开的固定版本
+### v0.5.1：历史公开固定版本
 
 需要 Node.js >=24.9.0 与 DSH `0.2.1-rc.2`。`web` 是示例 profile，保留 `-w`：
 
@@ -154,6 +172,8 @@ Check actual bundle/plugin loading state in **DSH Plugins**, then open **Legion*
 原生配置和插件开关影响同 profile，不是会话私有；安装、启用、真实执行分别确认。详见[工作台操作与限制](ECOSYSTEM.md#native-workbench)，凭据轮换与重载见[中文连接说明](../README.zh-CN.md#连接你独立安装的军团核心)／[English connection guide](../README.md#connect-your-independently-installed-legion-core)。
 
 ## 官方 Discover 索引
+
+以下保留旧版索引接入示例与原回执，不构成 0.5.2 上架证明；本版按[安装渠道核验](#v052)确认实际目标。
 
 在 DSH 中依次操作：
 

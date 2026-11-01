@@ -27,11 +27,14 @@
     "docs/PROTOCOL.md",
     "docs/SECURITY.md",
     "docs/MARKET.md",
+    "docs/RELEASE-PAIR.md",
     "docs/ECOSYSTEM.md",
     "docs/PRODUCT.md",
     "docs/media/team-overview.png",
     "docs/TEAM.md",
-    "docs/CORE.md"
+    "docs/CORE.md",
+    "scripts/release_pair.py",
+    "skills/legion-dsh-release/"
   ],
   "scripts": {
     "test": "node --test test/*.test.js",

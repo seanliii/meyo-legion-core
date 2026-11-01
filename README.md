@@ -12,15 +12,23 @@ not a claim that every harness is ready or every result leads the industry.
 
 Start in DSH: choose companions, describe what you want, and follow the task and its results in the original conversation. Connect your independent Legion core when you want to delegate work to its members.
 
-**[0.5.1 installation](docs/MARKET.md#v051) · [Open the DSH workbench](#open-the-native-workbench) · [Product and verified scope](docs/PRODUCT.md)**
+**[0.5.2 installation and channel checks](docs/MARKET.md#v052) · [Open the DSH workbench](#open-the-native-workbench) · [Product and verified scope](docs/PRODUCT.md)**
 
-![DSH native author, selected members and separate configuration facts](docs/media/team-overview.png)
+<a id="v052"></a>
 
-[Watch the real before/after walkthrough](https://github.com/seanliii/dsh-plugin-legion/releases/download/v0.5.1/dsh-v051-comparison.mp4) · Original-speed interaction replay, edited between chapters, no live speech. Video duration is not model runtime.
+**0.5.2: keep the work with the member who actually did it.** Carry actual member ownership, budget and failure facts, and formal result delivery through the original task. The aim remains a team of leading harnesses that collaborate and improve together—not a new quality judge above them.
 
-**Technical preview.** 0.5.0 demonstrated single-DSH-author delivery. The 0.5.1 review run demonstrated a bounded two-harness exchange: DSH delegated an independent review to core Codex, then independently reproduced and adopted its findings. This was supervised, not unattended team evolution.
+Local native installation checked **34/34 files** and enabled 0.5.2, preserving the six existing tasks, identity, configuration and a **1,263-byte historical result download**. [Paired source identities, regression counts and local verification scope](docs/RELEASE-PAIR.md#v052) are separate from public distribution receipts.
 
-**0.5.1: see your team clearly.** Selected-member overviews, factual status projection and member pagination distinguish the DSH author model from core members. [Evidence and release status](docs/PLAN.md#v051)
+The fixed **52 × 13 = 676** comparison is still running; no new score or improvement claim is published here. Superagent has only three exercised native read-only management actions, with no real intake account connected; Trinity remains an untested candidate. This does not certify every capability, unattended autonomy or world-leading performance.
+
+![Historical 0.5.1: DSH native author, selected members and separate configuration facts](docs/media/team-overview.png)
+
+[Watch the historical 0.5.1 before/after walkthrough](https://github.com/seanliii/dsh-plugin-legion/releases/download/v0.5.1/dsh-v051-comparison.mp4) · Original-speed interaction replay, edited between chapters, no live speech. Video duration is not model runtime; this is not 0.5.2 evidence.
+
+**Historical demonstrations, still a technical preview.** 0.5.0 demonstrated single-DSH-author delivery. The 0.5.1 review run demonstrated a bounded two-harness exchange: DSH delegated an independent review to core Codex, then independently reproduced and adopted its findings. This was supervised, not unattended team evolution.
+
+**Historical 0.5.1: see your team clearly.** Selected-member overviews, factual status projection and member pagination distinguish the DSH author model from core members. [Version-specific evidence and release status](docs/PLAN.md#v051)
 
 <a id="what-you-can-do"></a>
 
@@ -30,24 +38,24 @@ Start in DSH: choose companions, describe what you want, and follow the task and
 |---|---|
 | **Continue one piece of work together** | Choose candidates and collaboration preferences, then use the original task and conversation to continue revisions instead of starting over. |
 | **Put useful tools to work** | Discover visible capabilities, inspect real interfaces, and use authorized tool and message paths to contribute to the original task. |
-| **Make improvements reusable** | DSH independently reproduced and fixed Codex review findings; the maintainer imported the changes and reran the regression tests. Automatic propagation to later tasks remains unproven. |
+| **Make improvements reusable** | In the historical 0.5.1 case, DSH independently reproduced and fixed Codex review findings; the maintainer imported the changes and reran the regression tests. Automatic propagation to later tasks remains unproven. |
 | **Compare with strong real-world work** | Research relevant high-quality references, compare actual outcomes and revise the same deliverable. Benchmarking is a process, not an unsupported victory claim. |
 
 **DSH is an entry point; the co-evolving team is the product.** It is not a menu for choosing one assistant or a pile of independent answers. [The product idea](docs/PRODUCT.md#one-team) · [Mechanisms and boundaries](docs/ECOSYSTEM.md#co-evolving-team)
 
 ## Get started
 
-1. Install through [**DSH Discover**](docs/MARKET.md#官方-discover-索引) or the [fixed Git command](docs/MARKET.md#v051), then explicitly enable Legion. Neither route requires publishing this connector to npm.
+1. Check the [**0.5.2 installation target and channel receipts**](docs/MARKET.md#v052), use the version actually offered by the verified Release or Discover index, then explicitly enable Legion. Git distribution does not require publishing this connector to npm.
 2. Open **Legion**, choose a **Working session**, then follow **Companions → Collaboration → Grow together**. Improvement is enabled by default; submitting saves the preferences and schedules the first round and weekly follow-ups through native DSH, with pause and original-conversation entry points. [Workflow and boundaries](docs/TEAM.md)
-3. For delegated work, [download and verify core v0.1.0](docs/CORE.md#public-core-install), create a fresh Python 3.12 environment, then follow **`init` → `serve` → `dsh-config` → Save connection**. Configure your own model before submitting work; the connector does not bundle or start the core.
+3. For delegated work, verify the [matching 0.5.2 core source and actual release package](docs/RELEASE-PAIR.md#v052), then use the [existing setup procedure](docs/CORE.md#安装自己的实例): a fresh Python 3.12 environment, **`init` → `serve` → `dsh-config` → Save connection**. Configure your own model before submitting work; the connector does not bundle or start the core.
 
-Before using the 0.5.1 Git target below, check release availability and package verification in the [version record](docs/PLAN.md#v051). Replace the example `web` profile as needed and retain `-w`:
+**Installation template, not a verified live 0.5.2 target.** Replace the placeholder with the tag or full commit confirmed by the actual Release and its package checksums. If no matching target is verifiable, leave installation pending; do not substitute `main` or relabel an older version. Replace the example `web` profile as needed and retain `-w`:
 
 ```sh
-dsh plugin --profile web -w add 'github:seanliii/dsh-plugin-legion#v0.5.1'
+dsh plugin --profile web -w add 'github:seanliii/dsh-plugin-legion#<verified-tag-or-full-commit>'
 ```
 
-Users supply their own models and accounts; no shared credentials are included. The separately installed [public core v0.1.0](https://github.com/seanliii/meyo-legion-core/releases/tag/v0.1.0) is also a technical preview: first-party source is MIT and third-party licenses are retained. Scheduling, model execution and verified improvement remain separate.
+Users supply their own models and accounts; no shared credentials are included. The separately installed [historical public core v0.1.0](https://github.com/seanliii/meyo-legion-core/releases/tag/v0.1.0) retains its original identity and receipts, not those of the 0.5.2 pair. First-party source is MIT and third-party licenses are retained. Local verification does not establish a Git push, npm publication or marketplace approval.
 
 Give DSH a real goal, for example:
 
@@ -180,6 +188,8 @@ If an install reply is uncertain, keep its request ID and use **Recover install 
 The task page does not auto-poll or execute incoming messages. It can page through artifact records and events, and **Download file** reuses the existing **`/legion download`** command in the selected original conversation. The file is saved on the **DSH Host**, not automatically in the browser's Downloads folder; the receipt shows its path, byte count and hash check. Same-name/history records remain distinct, and clipped details or refusal reasons stay marked incomplete. Continuation, feedback and cancellation still use **`/legion` in the original conversation**, not new task-page actions. [Projection and download limits](docs/PROTOCOL.md#workbench-projection) · [Detailed workflows](docs/ECOSYSTEM.md#native-workbench).
 
 ## Connect your independently installed Legion core
+
+For 0.5.2, first check the [paired core identity and channel receipts](docs/RELEASE-PAIR.md#v052). The v0.1.0 download link below is retained as a historical installation example, not the new pair's package.
 
 Download the [public v0.1.0 archive and SHA-256](docs/CORE.md#public-core-install), then follow [Core installation](docs/CORE.md#安装自己的实例): a fresh **Python 3.12** environment → `init` → `serve` → `dsh-config` → **Save connection**. Model configuration is needed before real delegation, not to obtain the source. Existing authorized instances can continue to use their own connection settings.
 
