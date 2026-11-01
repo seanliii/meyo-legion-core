@@ -5018,6 +5018,20 @@ def _deepseek_adapter(qhash, question, gold="", ctx=None):
             # New llm-deepseek is Messages-only: never relabel a Chat gateway or
             # implement a wire converter here. Preserve the model and credential.
             _model_spec = {"id": ctx.model, "name": ctx.model, "input": ["text"]}
+            try:
+                from model_registry import input_modalities
+                # Match the environment _run_live will use, not another worker's
+                # ambient Codex binding; the registry checks the exact model.
+                _model_environment = {
+                    **env, **(getattr(_INPROC_RUNTIME_ENV, "values", {}) or {})}
+                _model_inputs = input_modalities(ctx.model, environment=_model_environment)
+            except (ImportError, TypeError, ValueError):
+                _model_inputs = None
+            if (isinstance(_model_inputs, list) and _model_inputs
+                    and all(isinstance(item, str) and item in ("text", "image")
+                            for item in _model_inputs)):
+                _model_spec["input"] = [
+                    item for item in ("text", "image") if item in _model_inputs]
             if ctx.max_tokens:
                 _model_spec["maxTokens"] = ctx.max_tokens
             elif ctx.model in _GATEWAY_MODEL_MAX_TOKENS:

@@ -59,16 +59,20 @@ def model_catalog_path(environment: dict | None = None) -> str:
     """
     env = os.environ if environment is None else environment
     if "MEYO_MODEL_CATALOG_PATH" not in env:
-        # Keep the legacy override seam, but the unmodified default follows
-        # the current runtime HOME rather than an unrelated import-time HOME.
-        return (os.path.expanduser("~/.claude/skills/aigc-model-router/models.json")
-                if _MODELS_PATH == _IMPORTED_MODELS_PATH else _MODELS_PATH)
+        if environment is None:
+            # Preserve the legacy no-argument override and current process HOME.
+            return (os.path.expanduser("~/.claude/skills/aigc-model-router/models.json")
+                    if _MODELS_PATH == _IMPORTED_MODELS_PATH else _MODELS_PATH)
+        # An explicit request snapshot must not inherit the server's override.
+        env = {**env, "MEYO_MODEL_CATALOG_PATH": "~/.claude/skills/aigc-model-router/models.json"}
     raw = env["MEYO_MODEL_CATALOG_PATH"]
     if not isinstance(raw, str) or not raw.strip() or "\0" in raw:
         raise ModelCatalogError("model_catalog_unavailable")
     path = raw.strip()
     if path == "~" or path.startswith("~/"):
-        home = env.get("HOME") or os.path.expanduser("~")
+        home = env.get("HOME") or (os.path.expanduser("~") if environment is None else "")
+        if not home:
+            raise ModelCatalogError("model_catalog_unavailable")
         path = os.path.join(home, path[2:]) if path != "~" else home
     else:
         path = os.path.expanduser(path)
@@ -76,10 +80,11 @@ def model_catalog_path(environment: dict | None = None) -> str:
     return os.path.join(path, "models.json") if os.path.isdir(path) else path
 
 
-def _load_models() -> dict:
-    explicit = "MEYO_MODEL_CATALOG_PATH" in os.environ
+def _load_models(environment: dict | None = None) -> dict:
+    source = os.environ if environment is None else environment
+    explicit = "MEYO_MODEL_CATALOG_PATH" in source
     try:
-        path = model_catalog_path()
+        path = model_catalog_path() if environment is None else model_catalog_path(environment)
         if explicit and not os.path.isfile(path):
             raise ModelCatalogError("model_catalog_unavailable")
         with open(path, "r", encoding="utf-8") as stream:
@@ -663,9 +668,13 @@ def resolve_overrides(plan: dict, keys: list) -> dict:
     return {k: v["model"] for k, v in resolve_assignments(plan, keys).items()}
 
 
-def _raw_candidate(model: str):
-    d = _load_models()
-    for direction in all_directions():
+def _raw_candidate(model: str, environment: dict | None = None):
+    d = _load_models() if environment is None else _load_models(environment)
+    # Keep the global discovery API unchanged; a scoped read uses only its data.
+    directions = (all_directions() if environment is None else [
+        k for k in ("programming", "vision_understanding", "image_generation",
+                    "general_chat_high_coverage") if k in d])
+    for direction in directions:
         for c in (d.get(direction) or {}).get("candidates", []):
             if c.get("model") == model:
                 return {**c, "direction": direction}
@@ -681,7 +690,9 @@ def input_modalities(model: str, environment: dict | None = None) -> list[str] |
             return None
         value = binding.get("input_modalities")
         return list(value) if value is not None else None
-    value = (_raw_candidate(model) or {}).get("input")
+    candidate = (_raw_candidate(model) if environment is None
+                 else _raw_candidate(model, environment=environment))
+    value = (candidate or {}).get("input")
     if value is None or value == []:
         return None
     if (not isinstance(value, list)

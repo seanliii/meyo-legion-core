@@ -903,3 +903,226 @@ def test_headless_json_output_timeout_keeps_final_but_not_private_channels(
     if runtime_reason:
         assert result["error_envelope"]["category"] == runtime_reason
         assert result["error_envelope"]["retryable"] is False
+
+
+@pytest.mark.parametrize("protocol", ["openai-completions", "anthropic-messages"])
+@pytest.mark.parametrize("declaration,expected", [
+    pytest.param(["image", "text"], ["text", "image"], id="vision"),
+    pytest.param(["text"], ["text"], id="text"),
+    pytest.param(["image"], ["image"], id="image-only"),
+    pytest.param(None, ["text"], id="unknown"),
+    pytest.param([], ["text"], id="empty"),
+    pytest.param("image", ["text"], id="string"),
+    pytest.param(["text", True], ["text"], id="boolean"),
+    pytest.param(["text", None], ["text"], id="null-item"),
+    pytest.param(["text", "IMAGE"], ["text"], id="invalid-enum"),
+    pytest.param(["text", "image", "video"], ["text"], id="unsupported-input"),
+    pytest.param({"model": "other", "input": ["image"]}, ["text"], id="other-object"),
+    pytest.param(ValueError, ["text"], id="invalid-registry"),
+    pytest.param(TypeError, ["text"], id="invalid-registry-type"),
+    pytest.param("legacy-api", ["text"], id="no-unscoped-retry"),
+    pytest.param("missing-api", ["text"], id="missing-api"),
+    pytest.param("other-responses-model", ["text"], id="other-responses-model"),
+    pytest.param("request-text", ["text"], id="request-text-server-image"),
+    pytest.param("request-bad-path", ["text"], id="bad-request-path-no-server-fallback"),
+])
+def test_dsh_model_inputs_follow_exact_request_declaration(
+        cli_stack, monkeypatch, tmp_path, protocol, declaration, expected):
+    """Real spec -> native provider -> intercepted wire bytes; never a model call."""
+    import importlib
+    import signal
+
+    registry = cli_stack.registry
+    models = importlib.import_module("model_registry")
+    original_inputs = models.input_modalities
+    node = shutil.which("node")
+    package_roots = [Path(__file__).resolve().parents[3] /
+                     "connectors/dsh-plugin-legion/node_modules/@deepseek-ai"]
+    if DSH:
+        package_roots.append(Path(DSH).resolve().parents[1] / "node_modules/@deepseek-ai")
+    package_roots = list(dict.fromkeys(str(path) for path in package_roots
+                                     if (path / "dsh-llm-pi-ai/lib/index.js").is_file()))
+    monkeypatch.setattr(registry._sh, "which",
+                        lambda name: "/offline/dsh" if name == "dsh" else None)
+    monkeypatch.setattr(registry, "_legion_prompt", lambda task, ctx: task)
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    catalog = tmp_path / "models.json"
+    catalog.write_text(json.dumps({"programming": {"candidates": [
+        {"model": "fixture-selected", "input": (
+            ["text", "image"] if declaration in ("request-text", "request-bad-path") else ["text"])},
+        {"model": "fixture-other", "input": ["text", "image"]},
+    ]}}))
+    request_home = tmp_path / "request-home"
+    request_home.mkdir()
+    request_catalog = request_home / "models.json"
+    if declaration != "request-bad-path":
+        request_catalog.write_text(json.dumps({"vision_understanding": {"candidates": [
+            {"model": "fixture-selected", "input": (
+                ["text"] if declaration == "request-text" else ["text", "image"])},
+        ]}}))
+    monkeypatch.setenv("MEYO_MODEL_CATALOG_PATH", str(catalog))
+    monkeypatch.setenv("LEGION_CODEX_TRANSPORT", "responses")
+    monkeypatch.setenv("LEGION_CODEX_RESPONSES_BINDING", json.dumps({
+        "model": "fixture-selected", "base_url": "https://worker.invalid/v1",
+        "api_key_env": "FIXTURE_WORKER_KEY", "input_modalities": ["text", "image"],
+    }))
+    monkeypatch.setenv("FIXTURE_WORKER_KEY", "not-the-request-key")
+    request_env = {"MEYO_SESSION_ID": "request-session", "LEGION_CODEX_TRANSPORT": "auto",
+                   "HOME": str(request_home), "MEYO_MODEL_CATALOG_PATH": str(request_catalog)}
+    if declaration == "other-responses-model":
+        request_env.update(LEGION_CODEX_TRANSPORT="responses",
+                           LEGION_CODEX_RESPONSES_BINDING=json.dumps({
+                               "model": "fixture-other", "base_url": "https://other.invalid/v1",
+                               "api_key_env": "FIXTURE_OTHER_KEY", "input_modalities": ["text", "image"],
+                           }), FIXTURE_OTHER_KEY="not-the-request-key")
+    monkeypatch.setattr(registry._INPROC_RUNTIME_ENV, "values", request_env, raising=False)
+    lookups, captured = [], []
+
+    def inputs(model, environment=None):
+        lookups.append(model)
+        assert model == "fixture-selected"
+        assert environment is not None and environment is not os.environ
+        assert all(environment[key] == value for key, value in request_env.items())
+        assert environment["DEEPSEEK_API_KEY"] == "request-key"
+        assert environment["DEEPSEEK_BASE_URL"] == "https://fixture.invalid/v1"
+        if declaration in (ValueError, TypeError):
+            raise declaration("synthetic invalid input declaration")
+        if declaration == ["image", "text"] or declaration in (
+                "other-responses-model", "request-text", "request-bad-path"):
+            return original_inputs(model, environment=environment)
+        return declaration
+
+    if declaration == "missing-api":
+        monkeypatch.delattr(models, "input_modalities")
+    elif declaration == "legacy-api":
+        monkeypatch.setattr(models, "input_modalities", lambda model: lookups.append(model))
+    else:
+        monkeypatch.setattr(models, "input_modalities", inputs)
+
+    def native(command, *args, **kwargs):
+        assert command[command.index("--profile") + 1] == "headless"
+        rows = json.loads(Path(command[command.index("--patch") + 1]).read_text())
+        assert next(row["config"] for row in rows if row.get("id") == "agent-default-model") == {
+            "provider": "legion-dsh", "model": "fixture-selected"}
+        config = next(row["config"] for row in rows if row.get("id") == "llm-pi-ai")
+        route = config["providers"]["legion-dsh"]
+        assert route["api"] == protocol and route["baseURL"] == "https://fixture.invalid/v1"
+        assert route["apiKeyEnv"] == "DEEPSEEK_API_KEY"
+        assert route["models"] == [{
+            "id": "fixture-selected", "name": "fixture-selected",
+            "input": expected, "maxTokens": 32,
+        }]
+        captured.append(config)
+        return subprocess.CompletedProcess(command, 0, "configuration captured", "")
+
+    monkeypatch.setattr(registry, "_run_task", native)
+    registry._deepseek_adapter("declared-inputs", "unchanged task", ctx=registry.HarnessCtx(
+        model="fixture-selected", model_protocol=protocol, appid="request-key",
+        gateway="https://fixture.invalid/v1", max_tokens=32, workdir=str(cli_stack.project)))
+    assert lookups == ([] if declaration in ("missing-api", "legacy-api") else ["fixture-selected"])
+    assert registry._INPROC_RUNTIME_ENV.values == request_env
+    assert os.environ["LEGION_CODEX_TRANSPORT"] == "responses"
+    if declaration != ["image", "text"]:
+        return
+    if not node or not package_roots:
+        pytest.skip("native image serialization needs an already-installed DSH pi-ai package")
+    # Expose one existing resolver in memory, preserving the actual provider and SDK.
+    # The only image service is a deterministic fixture; outbound fetch is intercepted.
+    script = r"""
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {registerHooks} from 'node:module';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import net from 'node:net';
+const payload = JSON.parse(readFileSync(0, 'utf8'));
+let sockets = 0;
+net.Socket.prototype.connect = function () { sockets++; throw Error('network forbidden'); };
+registerHooks({load(url, context, next) {
+  if (url.endsWith('/dsh-llm-pi-ai/lib/index.js?image-fixture'))
+    return {format: 'module', shortCircuit: true,
+      source: readFileSync(fileURLToPath(url), 'utf8') + '\nexport {resolveProfiles as fixtureProfiles};\n'};
+  return next(url, context);
+}});
+const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=', 'base64');
+const hash = value => createHash('sha256').update(value).digest('hex');
+const ref = {attachmentId: 'sha256:' + hash(bytes), name: 'fixture.png',
+  mediaType: 'image/png', width: 1, height: 1, bytes: bytes.length};
+const observations = [];
+let requests = [];
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  const blocks = body.messages.flatMap(message => Array.isArray(message.content) ? message.content : []);
+  const messages = payload.protocol === 'anthropic-messages';
+  assert(new URL(typeof url === 'string' || url instanceof URL ? url : url.url).pathname
+    .endsWith(messages ? '/messages' : '/chat/completions'));
+  const images = blocks.filter(block => block.type === (messages ? 'image' : 'image_url'));
+  const imageBytes = images.map(block => Buffer.from(messages ? block.source.data :
+    block.image_url.url.split(',')[1], 'base64'));
+  assert.equal(body.model, 'fixture-selected');
+  assert.equal(body.max_tokens ?? body.max_completion_tokens, 32);
+  assert.deepEqual(imageBytes.map(hash), [hash(bytes)]);
+  requests.push({images: images.length, hashes: imageBytes.map(hash)});
+  const frames = messages ? [
+    {type: 'message_start', message: {id: 'fixture', type: 'message', role: 'assistant',
+      model: body.model, content: [], usage: {input_tokens: 1, output_tokens: 0}}},
+    {type: 'content_block_start', index: 0, content_block: {type: 'text', text: ''}},
+    {type: 'content_block_delta', index: 0, delta: {type: 'text_delta', text: 'fixture'}},
+    {type: 'content_block_stop', index: 0},
+    {type: 'message_delta', delta: {stop_reason: 'end_turn', stop_sequence: null}, usage: {output_tokens: 1}},
+    {type: 'message_stop'},
+  ].map(frame => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join('') :
+    [{role: 'assistant', content: 'fixture'}, {}].map((delta, index) =>
+      'data: ' + JSON.stringify({id: 'fixture', object: 'chat.completion.chunk', created: 1,
+        model: body.model, choices: [{index: 0, delta, finish_reason: index ? 'stop' : null}],
+        ...(index ? {usage: {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2}} : {})}) +
+      '\n\n').join('') + 'data: [DONE]\n\n';
+  return new Response(frames, {headers: {'content-type': 'text/event-stream'}});
+};
+for (const root of payload.roots) {
+  requests = [];
+  let reads = 0;
+  const native = await import(pathToFileURL(root + '/dsh-llm-pi-ai/lib/index.js').href + '?image-fixture');
+  const parsed = native.Config(structuredClone(payload.config));
+  const providers = typeof parsed.providers.get === 'function' ? parsed.providers.get() : parsed.providers;
+  const profiles = native.fixtureProfiles(providers);
+  const adapter = new native.PiAiAdapter({profiles: () => profiles,
+    resolveApiKey: async () => 'fixture-key',
+    resolveAttachments: () => ({async readImageRequest(actual) {
+      assert.equal(actual.attachmentId, ref.attachmentId); reads++;
+      return {attachment: ref, variantId: ref.attachmentId, data: bytes,
+        mediaType: 'image/png', width: 1, height: 1, bytes: bytes.length, hasAlpha: true};
+    }}),
+  });
+  assert.deepEqual((await adapter.resolveModel('legion-dsh', 'fixture-selected')).inputModalities,
+    ['text', 'image']);
+  for await (const event of adapter.stream({provider: 'legion-dsh', model: 'fixture-selected',
+    messages: [{role: 'user', content: [{type: 'text', text: 'unchanged fixture'},
+      {type: 'image', attachment: ref}]}]})) {}
+  assert.equal(reads, 1);
+  assert.equal(requests.length, 1);
+  observations.push({version: JSON.parse(readFileSync(root + '/dsh-llm-pi-ai/package.json')).version,
+    protocol: payload.protocol, ...requests[0]});
+}
+assert.equal(sockets, 0);
+console.log(JSON.stringify({observations, networkConnections: sockets}));
+"""
+    proc = subprocess.Popen(
+        [node, "--input-type=module", "-e", script], cwd=str(tmp_path),
+        env={"HOME": str(tmp_path), "PATH": str(Path(node).parent),
+             "NODE_OPTIONS": "--max-old-space-size=512"},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(json.dumps({
+            "roots": package_roots, "config": captured[0], "protocol": protocol,
+        }), timeout=45)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    assert proc.returncode == 0, stderr
+    evidence = json.loads(stdout)
+    assert len(evidence["observations"]) == len(package_roots)
+    print("DSH_IMAGE_WIRE " + json.dumps(evidence, sort_keys=True))

@@ -173,6 +173,81 @@ def test_catalog_does_not_invent_unknown_modalities(case):
     assert "input" not in case.mr._load_models()["vision_understanding"]["candidates"][0]
 
 
+@pytest.mark.parametrize("server_inputs,request_inputs", [
+    (["text", "image"], ["text"]),
+    (["text"], ["text", "image"]),
+])
+@pytest.mark.parametrize("reference_kind", ["file", "directory", "tilde", "home"])
+def test_input_modalities_reads_request_catalog_not_server(
+        case, server_inputs, request_inputs, reference_kind):
+    server_data = catalog("same-model", inputs=server_inputs)
+    server_data["vision_understanding"]["candidates"].append(
+        {"model": "server-only", "input": ["text", "image"]})
+    server = write_catalog(case.root / "server/models.json", server_data)
+    request_home = case.root / "request-home"
+    relative = (".claude/skills/aigc-model-router/models.json"
+                if reference_kind == "home" else "catalog/models.json")
+    request = write_catalog(request_home / relative, catalog("same-model", inputs=request_inputs))
+    case.patch.setenv(ENV, str(server))
+    environment = {"HOME": str(request_home)}
+    if reference_kind != "home":
+        environment[ENV] = {
+            "file": str(request), "directory": str(request.parent), "tilde": "~/" + relative,
+        }[reference_kind]
+    before_env, before_files = dict(environment), (server.read_bytes(), request.read_bytes())
+    assert case.mr.input_modalities("same-model") == sorted(server_inputs)
+    assert case.mr.input_modalities("same-model", environment=environment) == sorted(request_inputs)
+    assert case.mr.input_modalities("server-only", environment=environment) is None
+    assert case.mr.input_modalities("same-model") == sorted(server_inputs)
+    assert environment == before_env
+    assert (server.read_bytes(), request.read_bytes()) == before_files
+    assert os.environ[ENV] == str(server)
+
+
+@pytest.mark.parametrize("bad", [
+    "missing", "empty", "whitespace", "malformed", "array", "null", "empty-directory",
+])
+def test_input_modalities_bad_request_catalog_does_not_fall_back_to_server(case, bad):
+    server = write_catalog(case.root / "server.json", catalog("same-model", inputs=["text", "image"]))
+    case.patch.setenv(ENV, str(server))
+    request = case.root / "request.json"
+    if bad == "malformed":
+        request.write_text('{"private_fixture": "never-echo-this", invalid')
+    elif bad == "array":
+        request.write_text("[]")
+    elif bad == "null":
+        request.write_text("null")
+    elif bad == "empty-directory":
+        request.mkdir()
+    environment = {ENV: "" if bad == "empty" else "  " if bad == "whitespace" else str(request)}
+    with pytest.raises(ValueError, match="^model_catalog_unavailable$"):
+        case.mr.input_modalities("same-model", environment=environment)
+    assert case.mr.input_modalities("same-model") == ["image", "text"]
+
+
+@pytest.mark.parametrize("reference", ["default-home", "tilde"])
+def test_input_modalities_missing_request_home_never_borrows_server_home(case, reference):
+    write_catalog(case.legacy, catalog("same-model", inputs=["text", "image"]))
+    assert case.mr.input_modalities("same-model") == ["image", "text"]
+    environment = {} if reference == "default-home" else {ENV: "~/.claude/skills/aigc-model-router/models.json"}
+    if reference == "default-home":
+        assert case.mr.input_modalities("same-model", environment=environment) is None
+    else:
+        with pytest.raises(ValueError, match="^model_catalog_unavailable$"):
+            case.mr.input_modalities("same-model", environment=environment)
+
+
+def test_input_modalities_request_directions_do_not_use_global_all_directions(case):
+    server = write_catalog(case.root / "server.json", {
+        "programming": {"candidates": [{"model": "same-model", "input": ["text"]}]}})
+    request = write_catalog(case.root / "request.json", catalog("same-model", inputs=["text", "image"]))
+    case.patch.setenv(ENV, str(server))
+    assert case.mr.all_directions() == ["programming"]
+    assert case.mr.input_modalities("same-model", environment={ENV: str(request)}) == ["image", "text"]
+    assert case.mr.all_directions() == ["programming"]
+    assert case.mr.input_modalities("same-model") == ["text"]
+
+
 def test_catalog_does_not_change_provider_binding_or_default_model(case):
     binding = json.dumps({"model": "operator-text-model",
                          "base_url": "https://provider.example.invalid/v1",
