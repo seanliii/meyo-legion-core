@@ -30,14 +30,16 @@ The embedded instruction, license and NOTICE bytes are preserved. Those
 third-party contents remain under their original terms; the root MIT license
 does not replace them.
 
-## Penguin native-source compatibility patch — MIT
+## Penguin native-source compatibility patch — Apache-2.0
 
 `release/legion-service/external_adapters/overlays/penguin-v0.2.4/`
 contains a narrow source patch for `Prism-Shadow/penguin-harness`,
 upstream revision `966af59018562657df0a9853671ff41e7b1ea027` (v0.2.4).
 It preserves explicit permanent-error facts through normal requests and native
 context compaction. The patch includes portions of the upstream source; its
-original MIT license is retained in that directory's `LICENSE`.
+original Apache License 2.0 is retained in that directory's `LICENSE`.
+The two modified upstream files are identified by the patch and its adjacent
+before/after hash manifest; the root MIT license does not relicense those contents.
 
 The included first-party hook only checks, applies or reverses that exact source
 patch in an exclusive staging checkout. It is not an installer and does not

@@ -33,9 +33,12 @@ jobs:
           cache-dependency-path: connectors/dsh-plugin-legion/package-lock.json
       - name: Install declared test dependencies, serially
         run: |
-          python -m pip install -r release/legion-service/requirements-core.txt pytest
-          npm ci --prefix connectors/dsh-plugin-legion
+          set -o pipefail
           mkdir -p "$RUNNER_TEMP/legion-pair/logs"
+          python -m pip install -r release/legion-service/requirements-core.txt pytest \
+            2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/python-dependencies.txt"
+          npm ci --prefix connectors/dsh-plugin-legion \
+            2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/connector-dependencies.txt"
       - name: Core isolated unit and protocol tests
         env:
           MEYO_LEGION_DIR: ${{ runner.temp }}/core-tests/meyo
@@ -94,6 +97,23 @@ jobs:
           LEGION_RELEASE_PAIR_RECEIPT="$RUNNER_TEMP/legion-pair/native-offline-receipt.json" \
             node --test --test-concurrency=1 test/release-pair-native.test.js \
             2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/paired-native-tests.txt"
+      - name: Collect the matching receipt with the original pair tool
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/legion-pair"
+          archive="$out/$(node -e \
+            'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[0].filename)' \
+            "$out/npm-pack.json")"
+          python -I -B connectors/dsh-plugin-legion/scripts/release_pair.py \
+            --core-packager "$GITHUB_WORKSPACE/scripts/package_core.py" \
+            --core-repo "$GITHUB_WORKSPACE" --core-commit "$GITHUB_SHA" \
+            --core-archive "$out/core.tar" --core-sha256 "$(cat "$out/core.tar.sha256")" \
+            --connector-repo "$RUNNER_TEMP/legion-connector" \
+            --connector-commit "$(cat "$out/connector-commit.txt")" \
+            --connector-source-path connectors/dsh-plugin-legion \
+            --connector-archive "$archive" --connector-sha256 "$(cat "$archive.sha256")" \
+            --connector-pack-report "$out/npm-pack.json" \
+            --evidence "$out/native-offline-receipt.json" --output "$out/pair.with-evidence.json"
       - name: Keep source, package and protocol evidence, not a Release
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

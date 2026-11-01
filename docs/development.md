@@ -62,6 +62,11 @@ test "$(git rev-parse "${CORE_COMMIT}:connectors/dsh-plugin-legion")" = \
 printf 'core=%s\nconnector=%s\n' "$CORE_COMMIT" "$CONNECTOR_COMMIT"
 ```
 
+最初导入的连接器历史需保持可达。本库使用标准 `git subtree split --rejoin`
+把已审查的连接器导出历史接回主库，根目录文件树不变；干净 clone 后也有 split 需要的对象。
+不要仅凭 squash 提交消息中的 SHA 就假设 CI 一定取得了那个对象，也不要借这个步骤
+接入任何未审查的私有分支。日常只读导出不需要每次 rejoin。
+
 在**已有发行镜像的干净功能分支**里，先从本机主库 fetch 这个导出提交，再以
 `git merge --ff-only` 更新。不能快进时，先检查是否存在镜像侧独立修改，不用 force
 抹掉它。不要将主库的核心 commit 误当成 DSH 连接器安装 commit。
