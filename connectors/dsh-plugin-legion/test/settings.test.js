@@ -358,8 +358,11 @@ test('team wiring: official settings atomically saves profile and candidates, re
     assert.ok(request.question.includes(args.context))
     assert.ok(request.question.includes(teamProfile.goal))
     assert.ok(request.question.includes(teamProfile.instructions))
-    assert.deepEqual(request.plan, { team_policy: { candidate_harnesses: ['member-b', 'member-a'] } })
-    assert.equal(request.mode, 'auto')
+    assert.deepEqual(request.plan, {
+      team_policy: { candidate_harnesses: ['member-b', 'member-a'] },
+      captain: 'member-a',
+    })
+    assert.equal(request.mode, 'orchestrate')
     assert.equal(Object.hasOwn(request, 'teamProfile'), false)
     assert.equal(catalogReads, 0)
     const same = await f.host.update({ teamProfile }, changed.revision)
