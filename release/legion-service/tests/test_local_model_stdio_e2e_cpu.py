@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -215,15 +216,22 @@ def test_real_shared_entry_reaps_before_terminal_result(local, real_host, stop):
     assert rpc.receive("during")["result"]["tools"]
     assert _alive(pids["wrapper"]) and _alive(pids["leaf"])
     assert not (rpc.cpu.root / "wrapper-cleaned").exists()
+    shutdown_deadline = time.monotonic() + 5 if stop in {"eof", "term"} else None
     if stop == "cancel":
         rpc.cancel("owned-call")
     elif stop == "eof":
         rpc.proc.stdin.close()
-        assert rpc.proc.wait(timeout=5) == 0
     elif stop == "term":
         os.kill(rpc.proc.pid, signal.SIGTERM)
-        assert rpc.proc.wait(timeout=5) == 0
-    result, payload = _payload(rpc.receive("owned-call", timeout=5))
+    # Drain the terminal reply before waiting: a full stdout pipe would otherwise
+    # block the worker's flush and the host's join even after its children are reaped.
+    # Reading and process exit share the original five-second shutdown budget.
+    reply_timeout = (max(0, shutdown_deadline - time.monotonic())
+                     if shutdown_deadline is not None else 5)
+    response = rpc.receive("owned-call", timeout=reply_timeout)
+    if shutdown_deadline is not None:
+        assert rpc.proc.wait(timeout=max(0, shutdown_deadline - time.monotonic())) == 0
+    result, payload = _payload(response)
     assert result["isError"] is True and payload["ok"] is False
     assert payload["status"] == ("timeout" if stop == "timeout" else "cancelled")
     assert "CPU_ONLY_WRAPPER_CLEANED" in payload["failure_context"]["stderr_tail"]
