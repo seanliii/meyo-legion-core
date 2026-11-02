@@ -5468,49 +5468,30 @@ _TOOL_HINT_CACHE: dict[str, Optional[str]] = {"txt": None}
 
 
 def _toolbox_hint() -> str:
-    """一句话告诉各家:军团有 N 件工具·用 legion_tool 按需检索(不塞全清单·hermes Footprint Ladder)。
+    """Stable, lazy capability pointers, not runtime discovery or a task recipe.
 
-    context not control:只告知"有什么、怎么查",各家(独立CLI进程)自己判断要不要查、查什么。
-    只加一条命令的 footprint,绝不把 800+ schema 常驻 prompt(那会撑爆上下文+破坏缓存)。
+    Rendering a prefix must not enumerate every tool or resolve an unused
+    retained runtime. Actual availability and source paths come from discovery
+    results when the native harness chooses to request them.
     """
     cached = _TOOL_HINT_CACHE["txt"]
     if cached is not None:
         return cached
     tool_cli = os.path.join(HERE, "legion_tool.py")
-    total = 0
-    try:
-        import toolbox
-        total = toolbox.scan_toolbox()["summary"]["total"]
-    except Exception:
-        pass
-    # auto 源码路径(让别家【读彼此代码·优先看 auto】找现成工具/方法——用户 2026-08-28 定:
-    # "不懂的就让他们查工具库 和 各自彼此的代码里面的工具和方法 优先看auto 这样更统一更自由")
-    from capstack_bridge import source_root as _retained_tool_source_root
-    auto_src = os.path.join(_retained_tool_source_root(), "qa_system", "agent")
-    # 分层精简(用户 2026-09-01·速度底线):此段曾 3582字·与 LEGION_PROTOCOL 段[1]工具入口+
-    # 段[3]源码自救严重【重复注入】(capability_catalog/research/skill_finder/mcp/func_search/读auto
-    # 全都两处各说一遍)→每单白吃一遍。协议已给全部入口+自救引导·prelude 这里只补【协议没有的
-    # 增量】:工具箱真实件数(动态)+ skill工厂固定顺序(纲领点名)+ 部署交付(做成系统别只交文档)+
-    # 一句"卡住读auto/func_search自救"指针。详情仍按需 capability_catalog 拉(分层·不丢能力)。
-    txt = (f"\n\n【军团共享工具箱·{total or '数百'}件·按需发现】capability_catalog 已在协议里给了入口·"
-           f"要能力时查它;工具名中英混合·中文没命中就用中英能力短语重搜(BM25字面初筛)。\n"
-           f"  媒体硬能力(做视频/图片任务先想到这些·别用静态图/运镜动画冒充):"
-           f" gen_video=真AI文生视频(Seedance方舟·约3-5分钟/段·限流自动重试·async任务式)·"
-           f" gen_image=文生图(gpt-image-2)· see_image=识图· trim_media=剪辑· video_frame=抽帧。"
-           f"做视频/短视频/宣传片/片头时优先 gen_video 出真AI动态画面,失败如实报告并重试,"
-           f"禁止拿 Ken Burns/静态图运镜当成品交付(与'沙丘假视频'同病)。\n"
-           f"  共享 Skill 发现：python3.12 {tool_cli!r} run runnable:skill_finder "
+    txt = (f"\n\n【军团共享能力·按需发现】\n"
+           f"  能力与实际状态：python3.12 {tool_cli!r} run runnable:capability_catalog '{{}}'。"
+           f"可按当前任务检索工具；中文未命中时可换中英能力短语。"
+           f"工具登记、安装、配置和当次可用性分开，以真实返回为准；"
+           f"这些资料不为只读或无工具接口增加执行权限。\n"
+           f"  共享 Skill：python3.12 {tool_cli!r} run runnable:skill_finder "
            f"'{{\"query\":\"所需能力\",\"scope\":\"local\"}}' 查各家源码和本包已安装的 Skill，"
-           f"按返回的 skill_md 路径读取用法。action:list 仅列个人已启用项，不是全部已安装；"
-           f"空个人列表不代表共享库没有能力。需要外部线索时可显式用 "
-           f"'{{\"query\":\"所需能力\",\"scope\":\"external\"}}' 或 scope:all；"
-           f"是否扩大搜索、安装或自己实现，由你依据本题现场判断，不是固定顺序。\n"
+           f"按返回的 skill_md 读取。action:list 仅列个人已启用项，空列表不代表共享库为空；"
+           f"外部线索可用 scope:external/all。func_search 可查询同伴源码与可借用函数；"
+           f"是否搜索、复用、安装或自行实现，由你按目标、证据、成本和授权判断，不是固定顺序。\n"
            f"  部署交付:run runnable:deploy_site "
            f"'{{\"path\":\"产物\",\"mode\":\"local\"}}' 仅做静态文件地址映射并返回URL；"
            f"未托管应用进程，HTTP/业务可用性尚未测试，访问仍遵循既有服务授权"
-           f"(公网发布需 mode:public+confirm)。\n"
-           f"  卡住自救(协议已详述·这里只提指针):读 auto 源码找现成工具 {auto_src!r};或 func_search 查跨家函数直接借用;"
-           f"缺库 pip_install;换工具/来源/搜索词别一条路走到黑;未试路径没耗尽前不收尾。")
+           f"(公网发布需 mode:public+confirm)。")
     _TOOL_HINT_CACHE["txt"] = txt
     return txt
 
