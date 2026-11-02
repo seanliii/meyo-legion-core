@@ -697,13 +697,16 @@
         "extensions"
       ],
       "local_source": "/Users/xuan/.meyo/legion/repos/candidate-agents/pi",
+      "session_env": [
+        "PI_CODING_AGENT_DIR"
+      ],
       "env": {
-        "PI_CODING_AGENT_DIR": "{session_dir}/pi-agent",
+        "PI_CODING_AGENT_DIR": "{session_dir}/pi-agent-sessions/{session_id}",
         "PI_SKIP_VERSION_CHECK": "1"
       },
       "config_template": [
         {
-          "path": "{session_dir}/pi-agent/models.json",
+          "path": "{session_dir}/pi-agent-sessions/{session_id}/models.json",
           "content": {
             "providers": {
               "meyo": {
@@ -726,7 +729,7 @@
           }
         },
         {
-          "path": "{session_dir}/pi-agent/auth.json",
+          "path": "{session_dir}/pi-agent-sessions/{session_id}/auth.json",
           "content": {
             "meyo": {
               "type": "api_key",
