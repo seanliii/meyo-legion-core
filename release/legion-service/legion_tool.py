@@ -617,6 +617,8 @@ def _search_defaults() -> dict:
 def _run_web_search(query: str = "", queries: list | None = None, limit: int = 8,
                     mode: str = "fast", source: str = "") -> dict:
     """全军团统一实时搜索；复用 SearchFabric/Friday，不复制某家的模型工具外壳。"""
+    from external_agent_transports import redact_native_diagnostic
+    diagnostic_environment = dict(os.environ)
     requested = [str(q).strip() for q in (queries or [query]) if str(q).strip()]
     if not requested:
         return {"ok": False, "error": "web_search 需要 query 或非空 queries"}
@@ -635,6 +637,7 @@ def _run_web_search(query: str = "", queries: list | None = None, limit: int = 8
     all_hits = []
     traces = []
     backends = []
+    source_errors = []
     for current in requested:
         try:
             # Both retained providers use the same published source resolver and
@@ -651,20 +654,32 @@ def _run_web_search(query: str = "", queries: list | None = None, limit: int = 8
             if not isinstance(result, dict):
                 raise TypeError("search_fabric worker response must be an object")
             if result.get("error_type"):
-                traces.append(f"{current}:{result['error_type']}:{str(result.get('error') or '')[:160]}")
+                diagnostic = redact_native_diagnostic(result.get("error"), diagnostic_environment)
+                source_errors.append({
+                    "query": current, "requested_source": source or None,
+                    "error_type": result["error_type"], "error": diagnostic,
+                })
+                traces.append(f"{current}:{result['error_type']}:{str(diagnostic or '')[:160]}")
                 continue
             if code:
                 raise RuntimeError(f"search_fabric worker exited {code} without an error reply")
             hits, trace = result["hits"], result["trace"]
+            # Failure markers describe the received batch, not the result limit.
+            # Keep native facts without deriving retry policy from error prose.
+            for hit in hits or []:
+                if isinstance(hit, dict) and (hit.get("_error") or hit.get("_source_health")):
+                    source_errors.append({
+                        "query": current, "requested_source": source or None,
+                        **{key: hit[key] for key in (
+                            "source", "_error", "_source_health", "_note", "_transient", "_errors",
+                        ) if key in hit},
+                    })
             if source in ("google", "google-search"):
                 if not hits:
                     # Google 是明确指定的首选源；空结果时不伪装成功，也不把整单卡死。
                     # 用同一共享搜索底座自动补一次公开多源，并在返回中如实标出降级。
-                    # GitHub repository search does not understand prose as well as web search;
-                    # preserve user terms but remove year/roadmap filler without a domain lexicon.
-                    repo_query = " ".join(token for token in current.split()
-                                          if not token.isdigit() and token.lower() != "roadmap")
-                    fallback = _run_search_github(repo_query or current, limit)
+                    # A provider fallback does not authorize rewriting the caller's query.
+                    fallback = _run_search_github(current, limit)
                     hits = [{"url": item.get("clone_url", "").removesuffix(".git"),
                              "title": item.get("full_name"), "content": item.get("desc"),
                              "source": "github"}
@@ -678,24 +693,48 @@ def _run_web_search(query: str = "", queries: list | None = None, limit: int = 8
                     continue
                 backend = hit.get("source") or source or "search_fabric"
                 backends.append(backend)
-                all_hits.append({
+                meta = hit.get("meta") if isinstance(hit.get("meta"), dict) else {}
+                published_at = meta.get("published_at")
+                if published_at is None:
+                    published_at = meta.get("publish_time")
+                item = {
                     "url": url, "title": hit.get("title") or url,
                     "snippet": hit.get("content") or hit.get("snippet") or "",
-                    "source": backend, "published_at": (hit.get("meta") or {}).get("published_at"),
+                    "source": backend, "published_at": published_at,
                     "query": current,
-                })
+                }
+                # These fields exist in the retained Friday/Tavily adapters.
+                # Keep the body once, in the legacy snippet field; do not claim
+                # full-body availability or a cache miss from missing metadata.
+                public_meta = {key: meta[key] for key in (
+                    "via", "friday_source", "publish_time", "published_at",
+                    "content_len", "has_snippet", "model_native_search", "score", "engine",
+                ) if key in meta}
+                if public_meta:
+                    item["meta"] = public_meta
+                if "completeness" in hit:
+                    item["provider_completeness"] = hit["completeness"]
+                all_hits.append(item)
                 if len(all_hits) >= limit:
                     break
             traces.extend(trace)
         except Exception as exc:
-            traces.append(f"{current}:{type(exc).__name__}:{str(exc)[:160]}")
+            diagnostic = redact_native_diagnostic(str(exc), diagnostic_environment)[:160]
+            source_errors.append({
+                "query": current, "requested_source": source or None,
+                "error_type": type(exc).__name__, "error": diagnostic,
+            })
+            traces.append(f"{current}:{type(exc).__name__}:{diagnostic}")
         if len(all_hits) >= limit:
             break
     return {
         "ok": bool(all_hits), "queries": requested, "count": len(all_hits),
         "results": all_hits[:limit], "backends": list(dict.fromkeys(backends)),
         "elapsed_s": round(__import__("time").time() - started, 2),
-        "trace": traces[-12:],
+        # Worker traces are operational source/cache facts, not model reasoning.
+        # A trailing-only slice silently removed earlier explicit cache hits.
+        "trace": redact_native_diagnostic(traces, diagnostic_environment),
+        "source_errors": redact_native_diagnostic(source_errors, diagnostic_environment),
         "degraded_from": ("google" if "google_empty:fallback_to_github" in traces else None),
         "error": None if all_hits else "所有已选搜索源均未返回有效结果；可换 source/查询或稍后重试。",
     }

@@ -197,6 +197,7 @@ def search(request):
 
 
 def main():
+    from external_agent_transports import redact_native_diagnostic
     try:
         request = json.load(sys.stdin)
         if (not isinstance(request, dict) or not isinstance(request.get("query"), str)
@@ -208,8 +209,19 @@ def main():
         # Legacy diagnostics belong on stderr; stdout is the one JSON reply.
         with contextlib.redirect_stdout(sys.stderr):
             result = search(request)
+        # The child knows its own invocation environment. Sanitize diagnostic
+        # views only, never the provider's document content or source metadata.
+        if "trace" in result:
+            result["trace"] = redact_native_diagnostic(result["trace"])
+        if isinstance(result.get("hits"), list):
+            result["hits"] = [
+                redact_native_diagnostic(hit)
+                if isinstance(hit, dict) and (hit.get("_error") or hit.get("_source_health"))
+                else hit for hit in result["hits"]
+            ]
     except Exception as exc:
-        result = {"hits": [], "trace": [], "error_type": type(exc).__name__, "error": str(exc)[:160]}
+        result = {"hits": [], "trace": [], "error_type": type(exc).__name__,
+                  "error": redact_native_diagnostic(str(exc))[:160]}
     print(json.dumps(result, ensure_ascii=False))
 
 
