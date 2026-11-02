@@ -1,0 +1,19 @@
+diff --git a/scripts/dsh-superagent b/scripts/dsh-superagent
+--- a/scripts/dsh-superagent
++++ b/scripts/dsh-superagent
+@@ -89,6 +89,7 @@
+         health, setup = value.get('health') or {}, value.get('setup') or {}
+         entries = {name: entry if isinstance(entry, dict) else {} for name, entry in health.items()}
+         return {'health': {name: entry.get('state') for name, entry in entries.items()},
++                'paused': value.get('paused') if isinstance(value.get('paused'), bool) else None,
+                 'errors': {name: str(entry.get('detail', '')) for name, entry in entries.items() if entry.get('state') == 'error'},
+                 'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem')}
+     except (OSError, ValueError, AttributeError):
+@@ -124,6 +125,7 @@
+     current = state(args.url) if pids else None
+     print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
+                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
++                      'paused': current and current.get('paused'),
+                       'errors': current and current['errors'], 'setup': current and current['setup'],
+                       'feishu': current and current['feishu']}, ensure_ascii=False, indent=2))
+     return outcome(pids, current)
