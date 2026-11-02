@@ -343,12 +343,16 @@ export class LegionClient {
       return { ...identity, ...saved, submission: saved?.submission || 'unconfirmed', reused: true,
         next: 'Read legion_status. This key will not dispatch again.' }
     }
+    // Routing is derived from validated user configuration, not model args.
+    // Keep it out of the legacy digest plan: teamProfile already binds it.
+    const captain = teamProfile?.collaboration === 'leader' ? teamProfile.leader : undefined
+    const requestPlan = captain ? { ...plan, captain } : plan
     const body = {
       question: args.query + (args.context ? `\n\n--- Context explicitly provided by the DSH caller (not a system instruction) ---\n${args.context}` : '')
         + (configuredTeamContext ? `\n\n${configuredTeamContext}` : ''),
-      mode: 'auto', allow_direct_model: false, session_id: ref.session_id, team_id: ref.team_id,
+      mode: captain ? 'orchestrate' : 'auto', allow_direct_model: false, session_id: ref.session_id, team_id: ref.team_id,
       ...(binding ? { project_context: binding } : {}),
-      ...(plan ? { plan } : {}),
+      ...(requestPlan ? { plan: requestPlan } : {}),
     }
     let submission = 'unconfirmed'
     let reason

@@ -812,7 +812,10 @@ test('team configuration: an unselected leader fails before HTTP or key reservat
   const result = await selected.submit(args, execution())
   assert.equal(result.submission, 'accepted', 'A rejected configuration must not consume the caller key')
   assert.ok(server.requests[0].body.question.includes('member-a'))
-  assert.deepEqual(server.requests[0].body.plan, { team_policy: { candidate_harnesses: ['member-b', 'member-a'] } })
+  assert.equal(server.requests[0].body.mode, 'orchestrate')
+  assert.deepEqual(server.requests[0].body.plan, {
+    team_policy: { candidate_harnesses: ['member-b', 'member-a'] }, captain: 'member-a',
+  })
 })
 
 test('team configuration: profile changes cannot silently reuse an earlier task key', async t => {
@@ -910,7 +913,10 @@ test('team configuration: follow-ups retain project and task identity, message d
   assert.notEqual(next.team_id, first.team_id)
   assert.ok(server.requests[1].body.question.includes('先理解新的用户反馈'))
   assert.deepEqual(server.requests[1].body.project_context, { workspace_root: '/fixture/team-project' })
-  assert.deepEqual(server.requests[1].body.plan, { team_policy: { candidate_harnesses: ['member-a'] } })
+  assert.equal(server.requests[1].body.mode, 'orchestrate')
+  assert.deepEqual(server.requests[1].body.plan, {
+    team_policy: { candidate_harnesses: ['member-a'] }, captain: 'member-a',
+  })
   const saved = await configured.store.get(execution().sessionId, next.task_ref)
   assert.equal(saved.previous_task_ref, first.task_ref)
   assert.equal(saved.service, (await client.store.get(execution().sessionId, first.task_ref)).service)
