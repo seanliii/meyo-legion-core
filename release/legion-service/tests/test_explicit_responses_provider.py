@@ -619,6 +619,22 @@ def test_old_checkpoint_missing_descriptor_remains_unknown_not_filled_from_curre
     assert task_memory.load("conv:codex:original-session", "codex")["native_checkpoint"] == checkpoint
 
 
+def test_legacy_memory_without_checkpoint_starts_a_clean_native_turn(explicit_run_one):
+    """A nonempty legacy memory is not a checkpoint and must not crash restoration."""
+    import task_memory
+
+    case = explicit_run_one
+    task_memory.update("conv:codex:original-session", "codex",
+                       native_conversation_id="original-session",
+                       native_session_scope="conversation")
+    result = case.core.run_one(
+        "codex", "continue after a native environment failure", qhash="__ut_missing_checkpoint",
+        user_id="owner-a", conversation_id="original-session", execution_depth="quick")
+    assert result["status"] == "done", result.get("error") or result
+    assert result["native_checkpoint"]["session_id"] == "fixture-original-native"
+    assert len(case.calls) == 1
+
+
 def test_corrected_binding_resumes_original_thread_and_updates_original_artifact(explicit_run_one):
     case, mp = explicit_run_one, explicit_run_one.monkeypatch
     work = case.root / "original-work"

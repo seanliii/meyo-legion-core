@@ -3855,8 +3855,13 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
     def scope_memory_matches(memory):
         if not memory:
             return
-        previous_binding = memory["native_checkpoint"].get("provider_binding")
-        previous_descriptor = memory["native_checkpoint"].get("provider_descriptor")
+        checkpoint = memory.get("native_checkpoint")
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        if not checkpoint.get("session_id"):
+            return  # 没有原生线程锚点：本轮不是 resume，不做 provider 恢复绑定判断。
+        previous_binding = checkpoint.get("provider_binding")
+        previous_descriptor = checkpoint.get("provider_descriptor")
         descriptor_known = (
             isinstance(previous_descriptor, dict)
             and set(previous_descriptor) == {"model", "base_url"}
