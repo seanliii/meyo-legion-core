@@ -12,6 +12,257 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+COLLABORATION_PROTOCOL = "meyo.legion.collaboration"
+COLLABORATION_VERSION = 1
+COLLABORATION_OPERATIONS = (
+    "coordinate", "handoff", "fork", "need_peer", "captain_bid",
+    "handoff_captain", "need_approval", "upgrade",
+)
+COORDINATION_ACTIONS = frozenset({"continue", "complete", "blocked", "user_decision"})
+_ENVELOPE_ENCODING = "collaboration-envelope/v1"
+_LEGACY_ENCODING = "legacy-operation-map"
+_MISSING = object()
+
+
+def _shape_error(field: str, expected: str, value: Any = _MISSING, *,
+                 code: str = "invalid_type") -> dict:
+    error = {
+        "field": field,
+        "expected": expected,
+        "actual": "missing" if value is _MISSING else type(value).__name__,
+        "code": code,
+    }
+    if isinstance(value, str) and value not in COLLABORATION_OPERATIONS:
+        error["actual"] = value[:160]
+    return error
+
+
+def _protocol_receipt(encoding: str, operations: list[str], *, team_id: str,
+                      task_id: str, correlation_id: str, harness: str,
+                      errors: list[dict] | None = None) -> dict:
+    correlation = str(correlation_id or f"{team_id}:{task_id}")
+    return {
+        "name": COLLABORATION_PROTOCOL,
+        "version": COLLABORATION_VERSION,
+        "encoding": encoding,
+        "team_id": str(team_id or ""),
+        "task_id": str(task_id or ""),
+        "harness": str(harness or ""),
+        "correlation_id": correlation,
+        "operations": [
+            {"operation": name, "operation_index": index,
+             "operation_id": f"{correlation}:{index + 1}:{name}"}
+            for index, name in enumerate(operations)
+        ],
+        "errors": list(errors or []),
+    }
+
+
+def rebind_protocol_receipt(receipt: dict, *, correlation_id: str) -> dict:
+    """Rebind decoded operations to the coordination correlation without double decoding."""
+    bound = copy.deepcopy(receipt)
+    correlation = str(correlation_id)
+    bound["correlation_id"] = correlation
+    for index, row in enumerate(bound.get("operations") or []):
+        operation = str(row.get("operation") or "")
+        operation_index = int(row.get("operation_index", index))
+        row["operation_index"] = operation_index
+        row["operation_id"] = f"{correlation}:{operation_index + 1}:{operation}"
+    return bound
+
+
+def _v1_operation_error(name: str, payload: Any) -> dict | None:
+    """Reject operations that would otherwise become empty approvals or silent no-ops."""
+    if name in {"handoff", "handoff_captain"}:
+        target = payload.get("to")
+        if not isinstance(target, str) or not target.strip():
+            return _shape_error(f"{name}.to", "non-empty str", target)
+    elif name == "need_peer":
+        for field in ("key", "ask"):
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return _shape_error(f"need_peer.{field}", "non-empty str", value)
+    elif name == "need_approval":
+        capability = payload.get("capability")
+        if not isinstance(capability, str) or not capability.strip():
+            return _shape_error("need_approval.capability", "non-empty str", capability)
+    elif name == "upgrade":
+        if payload.get("depth") != "standard":
+            return _shape_error("upgrade.depth", "standard", payload.get("depth"))
+    elif name == "fork":
+        if not payload:
+            return _shape_error("fork", "non-empty list[dict]", payload)
+        for index, row in enumerate(payload):
+            task = row.get("task") if isinstance(row, dict) else None
+            if not isinstance(task, str) or not task.strip():
+                return _shape_error(f"fork[{index}].task", "non-empty str", task)
+    return None
+
+
+def decode_orchestration_request(request: Any, *, team_id: str = "", task_id: str = "",
+                                 correlation_id: str = "", harness: str = "") -> tuple[dict, dict]:
+    """Decode the neutral v1 envelope into the existing operation-map consumer.
+
+    Legacy maps stay byte-equivalent in meaning. A v1 envelope is atomic: any framing,
+    version or operation error rejects all operations instead of executing a valid prefix.
+    Runtime identity comes from the caller, never from model-supplied envelope fields.
+    """
+    if not isinstance(request, dict):
+        errors = [_shape_error("request", "dict", request)]
+        return {}, _protocol_receipt(
+            _ENVELOPE_ENCODING, [], team_id=team_id, task_id=task_id,
+            correlation_id=correlation_id, harness=harness, errors=errors)
+    is_envelope = any(field in request for field in ("protocol", "version", "operations"))
+    if not is_envelope:
+        operations = [name for name in COLLABORATION_OPERATIONS if name in request]
+        return copy.deepcopy(request), _protocol_receipt(
+            _LEGACY_ENCODING, operations, team_id=team_id, task_id=task_id,
+            correlation_id=correlation_id, harness=harness)
+
+    errors: list[dict] = []
+    if request.get("protocol") != COLLABORATION_PROTOCOL:
+        errors.append(_shape_error("protocol", COLLABORATION_PROTOCOL,
+                                   request.get("protocol", _MISSING), code="invalid_protocol"))
+    version = request.get("version", _MISSING)
+    if isinstance(version, bool) or not isinstance(version, int) or version != COLLABORATION_VERSION:
+        errors.append(_shape_error("version", str(COLLABORATION_VERSION), version,
+                                   code="unsupported_version"))
+    if set(request) - {"protocol", "version", "operations"}:
+        errors.append(_shape_error("request", "envelope without legacy operation fields", request,
+                                   code="mixed_envelope_and_legacy_operations"))
+    raw_operations = request.get("operations", _MISSING)
+    if not isinstance(raw_operations, list):
+        errors.append(_shape_error("operations", "list", raw_operations))
+        raw_operations = []
+    elif len(raw_operations) > 16:
+        errors.append(_shape_error("operations", "at most 16 items", raw_operations,
+                                   code="operation_budget_exceeded"))
+
+    decoded: dict = {}
+    operation_names: list[str] = []
+    for index, operation in enumerate(raw_operations[:16]):
+        field = f"operations[{index}]"
+        if not isinstance(operation, dict) or set(operation) - {"type", "payload"}:
+            errors.append(_shape_error(field, "dict with only type/payload", operation))
+            continue
+        name = operation.get("type", _MISSING)
+        if not isinstance(name, str) or name not in COLLABORATION_OPERATIONS:
+            errors.append(_shape_error(f"{field}.type", "registered collaboration operation", name,
+                                       code="unknown_operation"))
+            continue
+        if name in decoded:
+            errors.append(_shape_error(f"{field}.type", "unique operation type", name,
+                                       code="duplicate_operation"))
+            continue
+        payload = operation.get("payload", _MISSING)
+        expected = "list" if name == "fork" else "dict"
+        if not isinstance(payload, list if name == "fork" else dict):
+            errors.append(_shape_error(f"{field}.payload", expected, payload))
+            continue
+        operation_error = _v1_operation_error(name, payload)
+        if operation_error:
+            operation_error["field"] = f"{field}.payload.{operation_error['field']}"
+            errors.append(operation_error)
+            continue
+        decoded[name] = copy.deepcopy(payload)
+        operation_names.append(name)
+    if errors:
+        decoded, operation_names = {}, []
+    return decoded, _protocol_receipt(
+        _ENVELOPE_ENCODING, operation_names, team_id=team_id, task_id=task_id,
+        correlation_id=correlation_id, harness=harness, errors=errors)
+
+
+def coordination_shape_errors(proposal: Any, *, require_action: bool = False,
+                              strict: bool = False) -> list[dict]:
+    """Validate control structure only; never infer tasks or translate member intent."""
+    if not isinstance(proposal, dict):
+        return [_shape_error("coordinate", "dict", proposal)]
+    errors: list[dict] = []
+    action = proposal.get("action", _MISSING)
+    if action is _MISSING:
+        if require_action:
+            errors.append(_shape_error("action", "|".join(sorted(COORDINATION_ACTIONS)), action))
+    else:
+        canonical = action.strip().lower() if isinstance(action, str) else ""
+        if strict and canonical not in COORDINATION_ACTIONS:
+            errors.append(_shape_error("action", "|".join(sorted(COORDINATION_ACTIONS)), action,
+                                       code="invalid_action"))
+    reason = proposal.get("reason")
+    if strict and reason is not None and not isinstance(reason, str):
+        errors.append(_shape_error("reason", "str", reason))
+
+    updates = proposal.get("task_updates")
+    if updates is not None and not isinstance(updates, dict):
+        errors.append(_shape_error("task_updates", "dict", updates))
+    elif isinstance(updates, dict):
+        for task_id, patch in updates.items():
+            if not isinstance(patch, dict):
+                errors.append(_shape_error(f"task_updates[{task_id!r}]", "dict", patch))
+    next_plan = proposal.get("next_plan")
+    if next_plan is not None and not isinstance(next_plan, dict):
+        errors.append(_shape_error("next_plan", "dict", next_plan))
+    elif isinstance(next_plan, dict):
+        tasks = next_plan.get("tasks")
+        if tasks is not None and not isinstance(tasks, dict):
+            errors.append(_shape_error("next_plan.tasks", "dict keyed by task ID", tasks))
+
+    messages = proposal.get("messages")
+    if messages is not None and not isinstance(messages, list):
+        errors.append(_shape_error("messages", "list", messages))
+    elif isinstance(messages, list):
+        if strict and len(messages) > 30:
+            errors.append(_shape_error("messages", "at most 30 items", messages,
+                                       code="message_budget_exceeded"))
+        for index, message in enumerate(messages[:30]):
+            if not isinstance(message, dict):
+                errors.append(_shape_error(f"messages[{index}]", "dict with to/text", message))
+                continue
+            recipient = message.get("to", _MISSING)
+            if not isinstance(recipient, str) or not recipient.strip():
+                errors.append(_shape_error(f"messages[{index}].to", "non-empty str", recipient))
+            if "text" not in message:
+                if not message.get("artifact_refs"):
+                    errors.append(_shape_error(f"messages[{index}].text", "str or artifact_refs"))
+            elif not isinstance(message["text"], str):
+                errors.append(_shape_error(f"messages[{index}].text", "str", message["text"]))
+            elif strict and not message["text"].strip() and not message.get("artifact_refs"):
+                errors.append(_shape_error(f"messages[{index}].text", "non-empty str or artifact_refs",
+                                           message["text"]))
+            refs = message.get("artifact_refs")
+            if refs is not None and not isinstance(refs, list):
+                errors.append(_shape_error(f"messages[{index}].artifact_refs", "list[dict]", refs))
+            elif isinstance(refs, list):
+                for ref_index, ref in enumerate(refs):
+                    if not isinstance(ref, dict):
+                        errors.append(_shape_error(
+                            f"messages[{index}].artifact_refs[{ref_index}]", "dict", ref))
+    return errors
+
+
+def normalize_coordination(proposal: Any, *, protocol: dict,
+                           require_action: bool = False, strict: bool | None = None) -> dict:
+    """Return an executable proposal or shape errors, with a durable protocol receipt."""
+    strict = require_action if strict is None else strict
+    errors = coordination_shape_errors(proposal, require_action=require_action, strict=strict)
+    if errors:
+        return {"ok": False, "shape_errors": errors}
+    action = proposal.get("action", "continue")
+    action = action.strip().lower() if isinstance(action, str) else "continue"
+    if not strict and action not in COORDINATION_ACTIONS:
+        action = "continue"
+    normalized = {
+        "ok": True,
+        "action": action,
+        "reason": str(proposal.get("reason") or "")[:4000],
+        "task_updates": copy.deepcopy(proposal.get("task_updates") or {}),
+        "messages": copy.deepcopy((proposal.get("messages") or [])[:30]),
+        "next_plan": copy.deepcopy(proposal.get("next_plan") or {}),
+        "collaboration_protocol": copy.deepcopy(protocol),
+    }
+    return normalized
+
+
 @dataclass(frozen=True)
 class AssignmentDecision:
     task_id: str

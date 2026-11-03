@@ -892,6 +892,9 @@ def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
         "continuation": _json_safe(continuation or {}),
         "recorded_at": time.time(),
     }
+    for field in ("orchestration_request", "raw_orchestration_request", "collaboration_protocol"):
+        if field in result:
+            row[field] = _json_safe(result[field])
     attempts = [item for item in (packet.get("attempts") or [])
                 if not (isinstance(item, dict) and item.get("task_id") == task_id
                         and item.get("harness") == owner and item.get("status") == status)]
@@ -944,7 +947,8 @@ def _record_coordination_unlocked(team_id: str, captain: str, proposal: dict) ->
            "recorded_at": time.time()}
     # 原提案和运行回执并列保留。不能只记“首脑要继续”，却丢掉它的提案
     # 未能进入执行图这一事实；旧记录缺失的字段也不补造为成功。
-    for field in ("ok", "error", "protocol_feedback", "protocol_recovery", "execution_result_ref"):
+    for field in ("ok", "error", "protocol_feedback", "protocol_recovery", "execution_result_ref",
+                  "collaboration_protocol", "message_receipts", "raw_orchestration_request"):
         if field in proposal:
             row[field] = _json_safe(proposal[field])
     decisions = [item for item in (packet.get("decisions") or []) if isinstance(item, dict)]

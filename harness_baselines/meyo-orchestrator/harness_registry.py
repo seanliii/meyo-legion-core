@@ -1037,7 +1037,8 @@ def _parse_orch_request(final: str):
         return rejected, None
     cleaned = (final[:m.start()] + final[frame_end:]).strip()
     safe = {k: req[k] for k in ("fork", "handoff", "need_peer", "captain_bid",
-                                 "handoff_captain", "coordinate", "need_approval", "upgrade")
+                                 "handoff_captain", "coordinate", "need_approval", "upgrade",
+                                 "protocol", "version", "operations")
             if k in req}
     if safe and recovery:
         safe["_protocol_recovery"] = recovery

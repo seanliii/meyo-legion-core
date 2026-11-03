@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import copy
 import json
 import base64
 import re
@@ -3664,10 +3665,102 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             except Exception:
                 pass
 
+    def collect_artifact_facts(out, previous_artifacts=None):
+        """Keep collection, runtime outcome and goal decisions independent."""
+        import legion_paths
+
+        workdir = str(out.get("workdir") or os.path.join(
+            legion_paths.under("outputs"), f"{key}_{qhash}"))
+        phase = "artifact_collection"
+        try:
+            import artifact_delivery as artifacts
+            extra_roots = []
+            try:
+                import harness_registry
+                if harness_registry._is_cloud_desktop_task(task):
+                    import desktop_fs
+                    extra_roots = [desktop_fs.user_meyo_root(user_id),
+                                   desktop_fs.user_meyo_root("default")]
+            except Exception:
+                pass
+            facts = artifacts.collect_run_artifacts(
+                since_ts=t0, workdir=workdir, project=project_context,
+                team_id=str(task_facts.get("team_id") or qhash),
+                task_id=str(task_facts.get("task_id") or key),
+                user_id=user_id, harness_key=key,
+                native_conversation_id=conversation_id, request_id=qhash,
+                final=str(out.get("final") or ""), extra_roots=extra_roots,
+                previous_artifacts=previous_artifacts,
+                require_project_authorization=_require_project_authorization)
+        except Exception as exc:
+            # The native result survives an exporter fault, but the fault must
+            # not vanish. Never expose exception text containing private paths.
+            notes = [{"name": "project", "reason": "artifact_export_unavailable",
+                      "phase": phase, "error_type": type(exc).__name__,
+                      "scan_status": "not_exported", "downloadable": False,
+                      "file_preserved": True,
+                      "message": "成果收集未完成，原文件未删除。"}]
+            facts = {"artifacts": [], "artifact_safety_observations": notes,
+                     "artifact_export": {"exported_files": 0, "observations": notes,
+                                         "workdir": workdir}}
+        out.update(facts)
+        out["workdir"] = workdir
+        arts = out["artifacts"]
+        # Keep the returned and persisted descriptors identical. Assigning
+        # versions after persistence left the next native request a stale view.
+        version_seen = {}
+        for artifact in arts:
+            stem = str(artifact.get("name") or "")
+            match = _VERSION_RE.search(stem)
+            version = int(match.group(1)) if match else version_seen.get(stem, 0) + 1
+            version_seen[stem] = version
+            artifact["version"] = version
+        try:
+            import artifact_provenance
+            artifact_provenance.attach_lineage(
+                arts, objective=task, task=task,
+                task_id=str(task_facts.get("task_id") or qhash),
+                agent=key, actions=out.get("tool_trace") or [])
+        except Exception as exc:
+            out["artifact_lineage_error"] = {
+                "phase": "artifact_lineage", "error_type": type(exc).__name__}
+            emit({"t": "artifact_lineage_error", **out["artifact_lineage_error"]})
+        for note in out.get("artifact_safety_observations") or []:
+            emit({"t": "artifact_not_exported", **note})
+        try:
+            write_memory_facts(
+                artifacts=arts,
+                artifact_export=out["artifact_export"],
+                artifact_safety_observations=out["artifact_safety_observations"],
+                completed_steps=out.get("tool_trace") or [], workdir=workdir,
+                error_envelope=out.get("error_envelope") or {},
+                native_facts=out.get("native_facts") or {},
+                phase="交付记录" if out.get("status") == "done" else "失败现场保留")
+        except Exception as exc:
+            out["artifact_state_error"] = {
+                "phase": "artifact_memory_persistence", "error_type": type(exc).__name__,
+                "message": "成果记录未写入任务记忆；当前响应保留文件与导出事实。"}
+            emit({"t": "artifact_state_error", **out["artifact_state_error"]})
+        return arts
+
     # 请求级隔离:直接调 run_one(如手动 fork 子 agent)时也给唯一 qhash,防串台。
     # dispatch 已生成唯一 qhash 传入,此处不会覆盖(仅兜住默认 "adhoc")。
     if not qhash or qhash == "adhoc":
         qhash = f"adhoc_{uuid.uuid4().hex[:12]}"
+
+    # Remember only that an operator declaration existed before native work.
+    # This is not cached permission: collection must reauthorize the project.
+    # A revoked/invalid declaration may never fall back to a default-root scan.
+    _require_project_authorization = False
+    _declared_project_root = str(project_context.get("repo_root")
+                                 or project_context.get("workspace_root") or "")
+    if _declared_project_root:
+        try:
+            import personal_identity as _identity
+            _require_project_authorization = bool(
+                _identity.project_grant_declared(user_id, _declared_project_root))
+        except Exception:
+            _require_project_authorization = True
 
     # 取消检查(军团自审 P0):没显式传就用注册表(qhash=整单·key=本成员·任一被喊停即真)。
     # 显式传(测试/特殊调用)优先。cancel_check 会向下传给 _run_harness_isolated 的监控循环。
@@ -3751,8 +3844,16 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             "workspace_validated": False,
         })
 
+    _owner_conversation = logical_session_id
+    if (_project_conversation and (
+            _may_bridge_lane
+            or logical_session_id.startswith(_project_conversation + ":task:")
+            or logical_session_id == _project_conversation + ":captain-control"
+            or logical_session_id.startswith(_project_conversation + ":contract-repair:"))):
+        _owner_conversation = _project_conversation
+
     def scope_memory_matches(memory):
-        if not (memory.get("native_checkpoint") or {}).get("session_id"):
+        if not memory:
             return
         previous_binding = memory["native_checkpoint"].get("provider_binding")
         previous_descriptor = memory["native_checkpoint"].get("provider_descriptor")
@@ -3787,6 +3888,51 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 raise ValueError("native request checkpoint belongs to another execution context")
         elif memory.get("native_session_scope") == "request":
             raise ValueError("request-scoped checkpoint cannot become conversation history")
+        elif memory.get("native_context_origin"):
+            origin = memory["native_context_origin"]
+            if not isinstance(origin, dict):
+                raise ValueError("native continuation origin is malformed")
+            import project_context as _memory_project
+            _memory_project.require_owner(
+                {"user_id": origin.get("user_id"),
+                 "conversation_id": origin.get("conversation_id")},
+                user_id, _owner_conversation)
+            if (origin.get("harness") != key
+                    or origin.get("conversation_id") != _owner_conversation):
+                raise ValueError("native continuation facts belong to another conversation")
+
+    def memory_context(memory_id):
+        # Same public fact fields as task_memory.context, but retain explicit
+        # empty values: a new empty list must clear, not resurrect, old files.
+        import task_memory
+        state = task_memory.load(memory_id, key)
+        if not isinstance(state, dict):
+            raise ValueError("native continuation storage is malformed")
+        scope_memory_matches(state)
+        return {name: state[name] for name in (
+            "phase", "completed_steps", "artifacts", "artifact_export",
+            "artifact_safety_observations", "error_envelope", "native_checkpoint",
+            "workdir", "native_facts", "native_resume_error", "checkpoint_writes",
+            "checkpoint_storage_error", "native_conversation_id", "native_session_scope",
+            "native_context_origin", "native_request_memory_id")
+            if name in state and state[name] is not None}
+
+    def write_memory_facts(*, writes=None, **facts):
+        """Mirror current facts, not permissions, to the two existing slots."""
+        import task_memory
+        writes = writes if writes is not None else {}
+        targets = {"request": _memory_request_id, "conversation": f"conv:{session_id}"}
+        failures = []
+        for slot, memory_id in targets.items():
+            try:
+                scope_memory_matches(task_memory.load(memory_id, key))
+                task_memory.update(memory_id, key, **{**facts, **_memory_scope_metadata})
+                writes[slot] = True
+            except Exception as exc:
+                failures.append(exc)
+        if failures:
+            raise failures[0]
+        return writes
 
     def unavailable_native_context(exc, *, executed=0, phase="native_resume_selection",
                                    execution_result=None, depth_upgrade=False):
@@ -3840,13 +3986,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             raise ValueError("native_session_scope must be conversation or request")
         if _native_scope == "request":
             import project_context as _scope_project
-            caller_conversation = logical_session_id
-            if (_project_conversation and (
-                    logical_session_id.startswith(_project_conversation + ":task:")
-                    or logical_session_id == _project_conversation + ":captain-control"
-                    or logical_session_id.startswith(_project_conversation + ":contract-repair:"))):
-                caller_conversation = _project_conversation
-            _scope_project.require_owner(project_context, user_id, caller_conversation)
+            _scope_project.require_owner(project_context, user_id, _owner_conversation)
             import hashlib
             origin = {"user_id": str(project_context.get("user_id") or user_id), "harness": key,
                       "request_id": str(task_facts.get("native_session_request_id")
@@ -3916,6 +4056,16 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             preferred_model = _resume_assignment["model"]
             preferred_appid = _resume_assignment["appid"]
     session_id = f"{key}:{logical_session_id}"
+    _memory_scope_metadata = {
+        "native_conversation_id": logical_session_id,
+        **(_scope_metadata or {
+            "native_session_scope": "conversation",
+            "native_context_origin": {
+                "user_id": str(user_id or "default"), "harness": key,
+                "conversation_id": _owner_conversation,
+                "logical_session_id": logical_session_id},
+        }),
+    }
     # cache_key 由下游 HarnessCtx/环境按同一函数生成；这里保留会话锚点，不在 task 文本泄漏身份。
     # user 单元记忆目录:归一到 legion_paths(~/.meyo/legion/memory/<uid>/)·harness 自管读写。
     # 记忆下放依据 hermes run_agent.py:464,492(AIAgent 接 session_id/user_id 自续长期记忆)。
@@ -4202,17 +4352,13 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 _iso_kw["provider_binding"] = dict(provider_binding)
             if "task_memory" in _iso_params:
                 try:
-                    import task_memory as _tm
-                    _ctx_tm = _tm.context(_memory_request_id, key)
-                    scope_memory_matches(_ctx_tm)
+                    _ctx_tm = memory_context(_memory_request_id)
                     # ★checkpoint 读回兜底(双键的另一端):本轮 qhash 无记录时·退逻辑会话键
                     # (conv:<session_id>)——第一轮的 native_checkpoint 在那(Goose/OpenClaw
                     # 原生 --resume 由此真触发)。
                     if not ((_ctx_tm or {}).get("native_checkpoint") or {}).get("session_id") and session_id:
-                        _alt = _tm.context(f"conv:{session_id}", key)
-                        scope_memory_matches(_alt)
-                        if ((_alt or {}).get("native_checkpoint") or {}).get("session_id"):
-                            _ctx_tm = {**(_alt or {}), **({k: v for k, v in (_ctx_tm or {}).items() if v})}
+                        _alt = memory_context(f"conv:{session_id}")
+                        _ctx_tm = {**_alt, **_ctx_tm}
                     _iso_kw["task_memory"] = _ctx_tm
                 except (ValueError, PermissionError) as exc:
                     return unavailable_native_context(exc)
@@ -4255,9 +4401,9 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                     _last_phase["value"] = phase
                     emit({"t": "phase", "phase": phase, "x": phase})
                     try:
-                        import task_memory as _tm
-                        _tm.update(_memory_request_id, key, phase=phase, completed_steps=list(_acts),
-                                   workdir=str((_iso_kw.get("task_memory") or {}).get("workdir") or ""))
+                        write_memory_facts(
+                            phase=phase, completed_steps=list(_acts),
+                            workdir=(_iso_kw.get("task_memory") or {}).get("workdir") or None)
                     except Exception:
                         pass
                 emit({k2: v2 for k2, v2 in ev.items() if k2 != "agent"})
@@ -4321,10 +4467,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                               "workdir": str((_iso_kw.get("task_memory") or {}).get("workdir") or "")}
                     _last_native["error_envelope"] = held
                     try:
-                        import task_memory as _tm
-                        _tm.update(_memory_request_id, key,
-                                   phase="等待管理员确认授权",
-                                   error_envelope=held)
+                        write_memory_facts(phase="等待管理员确认授权", error_envelope=held)
                     except Exception:
                         pass
                     break
@@ -4448,32 +4591,20 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         if result.get("native_checkpoint"):
             _last_native["native_conversation_id"] = logical_session_id
             try:
-                import task_memory as _tm
-                _tm.update(_memory_request_id, key, native_checkpoint=result["native_checkpoint"],
-                           workdir=str(result.get("workdir") or ""),
-                           native_conversation_id=logical_session_id, **_scope_metadata)
-                checkpoint_writes["request"] = True
-                # ★checkpoint 双键(2026-09-02 Goose 续跑负结果根修):qhash 每轮带时间戳,
-                # 第二轮新 qhash 读不回第一轮 checkpoint(Goose --resume 永远没被触发·md 里
-                # "qhash 与 conversation_id 键错位"的落地)。把【逻辑会话键】也写一份·
-                # run_one 同 conversation_id 下轮可读回·原生续跑真接上(与 OpenClaw/Pi 同款)。
-                if session_id and session_id != qhash:
-                    _tm.update(f"conv:{session_id}", key,
-                               native_checkpoint=result["native_checkpoint"],
-                               workdir=str(result.get("workdir") or ""),
-                               native_conversation_id=logical_session_id, **_scope_metadata)
-                    checkpoint_writes["conversation"] = True
-                checkpoint_saved = True
+                write_memory_facts(writes=checkpoint_writes,
+                                   native_checkpoint=result["native_checkpoint"],
+                                   workdir=str(result.get("workdir") or ""))
+                checkpoint_saved = all(checkpoint_writes.values())
             except Exception as exc:
                 _last_native["checkpoint_storage_error"] = str(exc)
         _last_native["checkpoint_writes"] = dict(checkpoint_writes)
         if native_facts or result.get("native_resume_error"):
             try:
-                import task_memory as _tm
-                _tm.update(_memory_request_id, key, native_facts=native_facts,
-                           native_resume_error=result.get("native_resume_error") or {},
-                           checkpoint_writes=checkpoint_writes,
-                           checkpoint_storage_error=_last_native.get("checkpoint_storage_error") or "")
+                write_memory_facts(
+                    native_facts=native_facts,
+                    native_resume_error=result.get("native_resume_error") or {},
+                    checkpoint_writes=checkpoint_writes,
+                    checkpoint_storage_error=_last_native.get("checkpoint_storage_error") or "")
             except Exception:
                 pass
         if result.get("resumed_native") and native_facts:
@@ -4696,8 +4827,8 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 "usage": result.get("usage"), "actions": _actions,
                 "workdir": str(result.get("workdir") or "")})
             try:
-                _tm.update(_memory_request_id, key, error_envelope=envelope,
-                           phase="准备续作" if can_resume else "本轮预算已用完")
+                write_memory_facts(error_envelope=envelope,
+                                   phase="准备续作" if can_resume else "本轮预算已用完")
             except Exception:
                 pass
             if can_resume:
@@ -4807,11 +4938,16 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                     _usage_text = "该 Harness 未提供原生 Token 数据"
                 emit({"t": "usage", "phase": "资源用量", "usage": _ret.get("usage"),
                       "x": _usage_text})
-            # 产物一生成就推给用户(军团6家点名的 artifact_ready·不等整任务结束):
-            # 这家成功交付后,主动扫本次任务窗口(t0 后)新产的真文件(不靠 harness 在 final
-            # 写路径·治 codex 171字摘要但真建了文件夹的坑),每个立刻发一条 artifact_ready
-            # step → SSE → 前端渲染卡片+预览。同时把产物挂进 _ret 供最终交付渲染。
-            # 整体兜底:产物扫描是【增强】,任何异常绝不影响交付主流程(上游断链铁律)。
+            # 成功与失败共用正规出口。导出失败是并列事实，不改写原生运行结果，
+            # 也不能因 final 非空吞掉错误、退回共享扫描或把源文件当导出快照。
+            arts = collect_artifact_facts(_ret)
+            for a in arts:
+                emit({"t": "artifact_ready", "phase": "产出文件", "url": a.get("url"),
+                      "name": a.get("name"), "ext": a.get("kind"),
+                      "bytes": a.get("bytes"), "provenance": a.get("provenance"),
+                      "lineage": a.get("lineage"), "version": a.get("version"),
+                      "sha256": a.get("sha256"),
+                      "export_snapshot_id": a.get("export_snapshot_id")})
             try:
                 import artifact_delivery as _artd
                 # 先扫本家专属 workdir，避免共享历史根达到遍历上限后漏掉本轮文件。
@@ -4931,10 +5067,23 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                     pass
             except Exception:
                 pass
-            # 透传成员编排请求(handoff/fork/need_peer):harness 自主填的·dispatch 据此执行
-            # (成员对编排的发言权·context not control)。没有则不带·零回归。
+            # 所有 Harness 共用同一协作协议解码；旧 operation-map 继续兼容。
+            # v1 envelope 由运行层绑定任务身份，任何结构错误都原子拒绝而非执行部分操作。
             if isinstance(result.get("orchestration_request"), dict):
-                _ret["orchestration_request"] = result["orchestration_request"]
+                import collaboration_runtime as _collaboration_protocol
+                _request, _protocol = _collaboration_protocol.decode_orchestration_request(
+                    result["orchestration_request"],
+                    team_id=str(task_facts.get("team_id") or qhash),
+                    task_id=str(task_facts.get("task_id") or key),
+                    correlation_id=qhash, harness=key)
+                _ret["orchestration_request"] = _request
+                _ret["collaboration_protocol"] = _protocol
+                if _protocol.get("encoding") == "collaboration-envelope/v1" and _protocol.get("errors"):
+                    # A native answer may be useful evidence, but an invalid atomic envelope is not
+                    # a completed collaboration. Preserve the raw request for same-session repair.
+                    _ret["raw_orchestration_request"] = copy.deepcopy(result["orchestration_request"])
+                    _ret.update(status="error", error="collaboration_protocol_invalid",
+                                protocol_code="collaboration_protocol_invalid")
             # This outlet also carries a completed native turn with no final
             # message (partial). Observe a newly arrived budget after export;
             # the shared helper leaves genuinely successful results unchanged.
@@ -4952,10 +5101,9 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 _actions.append({"t": "transport_failure_evidence",
                                  "records": result["transport_failures"]})
             try:
-                import task_memory as _tm
-                _tm.update(_memory_request_id, key, phase=("等待管理员处理授权" if _authorization_denied
-                                             else "等待提供方退避"), error_envelope=boundary_envelope,
-                           completed_steps=_actions)
+                write_memory_facts(phase=("等待管理员处理授权" if _authorization_denied
+                                         else "等待提供方退避"), error_envelope=boundary_envelope,
+                                   completed_steps=_actions)
             except Exception:
                 pass
             prior_attempts.append({
@@ -5047,9 +5195,8 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             _actions.append({"t": "transport_failure_evidence",
                              "records": result["transport_failures"]})
         try:
-            import task_memory as _tm
-            _tm.update(_memory_request_id, key, phase="自救处理中", error_envelope=_envelope,
-                       completed_steps=_actions)
+            write_memory_facts(phase="自救处理中", error_envelope=_envelope,
+                               completed_steps=_actions)
         except Exception:
             pass
         prior_attempts.append({
@@ -5251,21 +5398,10 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         saved_artifacts.extend((saved or {}).get("artifacts") or [])
     except Exception:
         pass
-    # 与成功出口对称：成员可能先写成品、再在最终回复或 provider 收尾时 rc1。失败不应抹掉
-    # 已落盘文件；只扫本单 workdir + 本轮 mtime，仍保持 error/partial，交给接力家和契约复验。
-    try:
-        import artifact_delivery as _artd
-        import artifact_provenance as _artifact_provenance
-        _failed_workdir = str(result.get("workdir") or os.path.join(
-            os.path.expanduser("~/.meyo/legion/outputs"), f"{key}_{qhash}"))
-        scanned_artifacts = _artd.scan_new_files(t0, workdir=_failed_workdir)
-        saved_artifacts = _artifact_provenance.merge_artifacts(saved_artifacts, scanned_artifacts)
-        _artifact_provenance.attach_lineage(
-            saved_artifacts, objective=task, task=task,
-            task_id=str((task_facts or {}).get("task_id") or qhash),
-            agent=key, actions=failed_result.get("tool_trace") or [])
-    except Exception:
-        pass
+    # A native failure can still leave useful files. Apply the same project
+    # authority and refusal semantics as success, never revive stale sources
+    # from task memory after an export was denied.
+    saved_artifacts = collect_artifact_facts(failed_result, saved_artifacts)
     if saved_artifacts:
         failed_result["artifacts"] = saved_artifacts
         failed_result["partial"] = True
@@ -5275,7 +5411,8 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                   "status": "recovered", "name": artifact.get("name"), "url": artifact.get("url"),
                   "path": artifact.get("path"), "ext": artifact.get("kind"),
                   "bytes": artifact.get("bytes"), "provenance": artifact.get("provenance"),
-                  "lineage": artifact.get("lineage"),
+                  "lineage": artifact.get("lineage"), "sha256": artifact.get("sha256"),
+                  "export_snapshot_id": artifact.get("export_snapshot_id"),
                   "x": f"{key} 遇阻，但已保留产物 {artifact.get('name') or artifact.get('path')} 供接力复验"})
     if pause_for_budget(failed_result):
         return result
@@ -6873,36 +7010,9 @@ def _coordination_unavailable(proposal: dict) -> bool:
 
 
 def _coordination_protocol_shape_errors(proposal: dict) -> list[dict]:
-    """Only protocol shape: do not translate fields or infer a member's work."""
-    errors = []
-
-    def expect(field, value, expected, *, missing=False):
-        errors.append({"field": field, "expected": expected,
-                       "actual": "missing" if missing else type(value).__name__})
-
-    updates = proposal.get("task_updates")
-    if updates is not None and not isinstance(updates, dict):
-        expect("task_updates", updates, "dict")
-    next_plan = proposal.get("next_plan")
-    if next_plan is not None and not isinstance(next_plan, dict):
-        expect("next_plan", next_plan, "dict")
-    elif isinstance(next_plan, dict):
-        tasks = next_plan.get("tasks")
-        if tasks is not None and not isinstance(tasks, dict):
-            expect("next_plan.tasks", tasks, "dict keyed by task ID")
-    messages = proposal.get("messages")
-    if messages is not None and not isinstance(messages, list):
-        expect("messages", messages, "list")
-    elif isinstance(messages, list):
-        # Reuse the existing message budget, before normalization drops fields.
-        for index, message in enumerate(messages[:30]):
-            if not isinstance(message, dict):
-                expect(f"messages[{index}]", message, "dict with to/text")
-            elif "text" not in message:
-                expect(f"messages[{index}].text", None, "str", missing=True)
-            elif not isinstance(message["text"], str):
-                expect(f"messages[{index}].text", message["text"], "str")
-    return errors
+    """Compatibility wrapper; the shared protocol module owns validation semantics."""
+    from collaboration_runtime import coordination_shape_errors
+    return coordination_shape_errors(proposal)
 
 
 def _run_captain_coordination(question: str, plan: dict, team_id: str,
@@ -7067,6 +7177,12 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
         native_result = response.get("result")
         artifacts = []
         if isinstance(native_result, dict):
+            if isinstance(native_result.get("collaboration_protocol"), dict):
+                receipt.setdefault("collaboration_protocol",
+                                   copy.deepcopy(native_result["collaboration_protocol"]))
+            if isinstance(native_result.get("raw_orchestration_request"), dict):
+                receipt["raw_orchestration_request"] = copy.deepcopy(
+                    native_result["raw_orchestration_request"])
             import task_memory as _coordination_memory
             import project_context as _coordination_context
             _coordination_context.require_owner(
@@ -7226,7 +7342,8 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
                 "ok": False, "error": "captain_cancelled", "cancelled": True,
                 "captain": captain, "sequence": sequence, "result": result})
         response = result if isinstance(result, dict) else {}
-        native_succeeded = response.get("status") in {"done", "ok", "completed", "success"}
+        native_succeeded = (response.get("status") in {"done", "ok", "completed", "success"}
+                            or response.get("error") == "collaboration_protocol_invalid")
         if not native_succeeded:
             failure = {"ok": False, "action": None, "error": "captain_execution_failed",
                        "captain": captain, "sequence": sequence, "result": result,
@@ -7235,16 +7352,45 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
                                              "native_response_complete": False}}
             record_response(failure)
             return failure
-        request = result.get("orchestration_request") if isinstance(result, dict) else {}
+        request = (result.get("orchestration_request") or {}) if isinstance(result, dict) else {}
+        raw_request = ((result.get("raw_orchestration_request") or request)
+                       if isinstance(result, dict) else {})
         if not request and isinstance(result, dict) and "<<LEGION_ORCH>>" in str(result.get("final") or ""):
             try:
                 import harness_registry as harness_registry_module
                 _, request = harness_registry_module._parse_orch_request(str(result.get("final") or ""))
+                raw_request = request
             except Exception:
-                request = {}
+                request = raw_request = {}
+        import collaboration_runtime as _collaboration_protocol
+        coordination_correlation = f"{team_id}:coordinate:{sequence}"
+        existing_protocol: dict = (result.get("collaboration_protocol")
+                                   if isinstance(result.get("collaboration_protocol"), dict) else {})
+        if existing_protocol.get("encoding") == "collaboration-envelope/v1":
+            # run_one already decoded the envelope. Reuse its atomic result and rebind every
+            # operation ID instead of decoding the operation-map a second time as legacy.
+            decoded_protocol = _collaboration_protocol.rebind_protocol_receipt(
+                existing_protocol, correlation_id=coordination_correlation)
+        else:
+            request, decoded_protocol = _collaboration_protocol.decode_orchestration_request(
+                request, team_id=team_id, task_id="commander",
+                correlation_id=coordination_correlation, harness=captain)
+        protocol = {**decoded_protocol,
+                    "team_id": team_id, "task_id": "commander", "harness": captain,
+                    "correlation_id": coordination_correlation}
         proposal = request.get("coordinate") if isinstance(request, dict) else None
-        shape_errors = (_coordination_protocol_shape_errors(proposal)
-                        if isinstance(proposal, dict) else [])
+        is_v1 = protocol.get("encoding") == "collaboration-envelope/v1"
+        normalized_proposal = _collaboration_protocol.normalize_coordination(
+            proposal, protocol=protocol, require_action=is_v1, strict=is_v1)
+        shape_errors = [*list(protocol.get("errors") or []),
+                        *(list(normalized_proposal.get("shape_errors") or [])
+                          if isinstance(proposal, dict) or protocol.get("errors") else [])]
+        if is_v1 and not protocol.get("errors") and set(request) != {"coordinate"}:
+            # This endpoint has no executor for member operations. Reject the whole envelope
+            # rather than reporting coordinate success while silently dropping handoff/fork/etc.
+            shape_errors.append({"field": "operations", "code": "coordinate_requires_single_operation",
+                                 "expected": "exactly one coordinate operation",
+                                 "actual": sorted(request)})
         if isinstance(proposal, dict) and not shape_errors:
             break
         native_facts = response.get("native_facts") or {}
@@ -7255,7 +7401,7 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
             if shape_errors:
                 # Adapters may already have stripped the protocol from final.
                 # Preserve the received object, not a guessed task translation.
-                raw_response = json.dumps(request, ensure_ascii=False)
+                raw_response = json.dumps(raw_request, ensure_ascii=False)
                 raw_field = "orchestration_request"
             else:
                 raw_response, raw_field = str(response.get("final") or ""), "final"
@@ -7277,7 +7423,8 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
                    # Keep the member's intent as evidence, not in the dispatch field.
                    "action": None,
                    "reported_action": reported_action if isinstance(reported_action, str) else None,
-                   "error": ("captain_invalid_coordinate_shape" if shape_errors
+                   "error": ("captain_invalid_coordinate_shape"
+                             if shape_errors and (protocol.get("errors") or isinstance(proposal, dict))
                              else "captain_missing_coordinate"),
                    "captain": captain, "sequence": sequence,
                    "protocol_feedback": feedback, "result": result}
@@ -7301,20 +7448,14 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
             + "\n只返回一次完整协议："
               "<<LEGION_ORCH>>{\"coordinate\":{\"action\":\"continue|complete|blocked|user_decision\","
               "\"reason\":\"保留你的判断\",\"task_updates\":{},\"messages\":[],\"next_plan\":{}}}<<END>>")
-    action = str(proposal.get("action") or "continue").strip().lower()
-    if action not in _COORDINATION_ACTIONS:
-        action = "continue"
     normalized = {
-        "ok": True, "action": action,
-        "reason": str(proposal.get("reason") or "")[:4000],
-        "task_updates": proposal.get("task_updates") if isinstance(proposal.get("task_updates"), dict) else {},
-        "messages": [row for row in (proposal.get("messages") or []) if isinstance(row, dict)][:30],
-        "next_plan": proposal.get("next_plan") if isinstance(proposal.get("next_plan"), dict) else {},
+        **normalized_proposal,
         "captain": captain, "sequence": sequence,
         "result": result,
         "model_used": str(result.get("model_used") or result.get("model") or ""),
         "usage": result.get("usage") or {},
     }
+    action = normalized["action"]
     if isinstance(request.get("_protocol_recovery"), dict):
         normalized["protocol_recovery"] = dict(request["_protocol_recovery"])
     if format_attempt:
@@ -7376,21 +7517,48 @@ def _run_captain_coordination(question: str, plan: dict, team_id: str,
             error = ("captain_continue_without_applicable_plan" if updates
                      or normalized["next_plan"] else "captain_continue_without_plan")
             normalized.update({"ok": False, "error": error})
+    if not normalized.get("ok"):
+        # Plan preview failed: report recipient facts but produce no mailbox side effects.
+        try:
+            import team_state as team_state_module
+            known_tasks = set((team_state_module.load(team_id) or {}).get("tasks") or {})
+            unknown_recipients = {str(message.get("to") or "") for message in normalized["messages"]
+                                  if str(message.get("to") or "") not in known_tasks}
+            if unknown_recipients:
+                protocol_feedback["unknown_message_recipients"] = sorted(unknown_recipients)
+        except Exception as exc:
+            protocol_feedback["message_delivery_error"] = type(exc).__name__
+        if protocol_feedback:
+            normalized["protocol_feedback"] = protocol_feedback
+        record_response(normalized)
+        return normalized
     try:
         import team_state as team_state_module
         known_tasks = set((team_state_module.load(team_id) or {}).get("tasks") or {})
-        unknown_recipients = set()
-        for message in normalized["messages"]:
-            recipient = str(message.get("to") or "")
-            text = str(message.get("text") or "").strip()
-            if recipient in known_tasks and text:
-                team_state_module.send_message(team_id, f"captain:{captain}", recipient, text)
-            elif recipient not in known_tasks:
-                unknown_recipients.add(recipient)
+        unknown_recipients = {str(message.get("to") or "") for message in normalized["messages"]
+                              if str(message.get("to") or "") not in known_tasks}
         if unknown_recipients:
             protocol_feedback["unknown_message_recipients"] = sorted(unknown_recipients)
+            if is_v1:
+                normalized.update(ok=False, error="captain_unknown_message_recipient")
+                normalized["protocol_feedback"] = protocol_feedback
+                record_response(normalized)
+                return normalized
+        outbound = [{"to": str(message.get("to") or ""),
+                     "text": str(message.get("text") or ""),
+                     "artifact_refs": list(message.get("artifact_refs") or [])}
+                    for message in normalized["messages"]]
+        delivered_rows = (team_state_module.send_messages(
+            team_id, f"captain:{captain}", outbound) if outbound else [])
+        normalized["message_receipts"] = [{
+            "message_id": delivered.get("id"), "to": delivered.get("to"),
+            "artifact_ref_count": len(delivered.get("artifact_refs") or []),
+            "correlation_id": normalized["collaboration_protocol"]["correlation_id"],
+        } for delivered in delivered_rows]
     except Exception as exc:
         protocol_feedback["message_delivery_error"] = type(exc).__name__
+        if is_v1:
+            normalized.update(ok=False, error="captain_message_delivery_failed")
     if protocol_feedback:
         normalized["protocol_feedback"] = protocol_feedback
     record_response(normalized)
@@ -10446,6 +10614,20 @@ def _pilot_run_state(r: dict) -> dict:
     absent = _native_terminal_message_absent(r)
     if absent:
         state["native_terminal_message_absent"] = absent
+    # 默认短答可完成；已有明确目标事实不能被本轮 done 覆盖。
+    for field in ("scope_goal_met", "scope_progressed"):
+        if isinstance(r.get(field), bool):
+            state[field] = r[field]
+    if r.get("coordination_incomplete") is True:
+        state["scope_goal_met"] = False
+    status = str(r.get("status") or "")
+    boundary = None
+    if status == "cancelled" or r.get("cancelled") is True:
+        boundary = {"kind": "user_cancelled", "source": "run_result.cancelled"}
+    elif r.get("persistent_capped") is True or r.get("budget_exhausted") is True:
+        boundary = {"kind": "budget_exhausted", "source": "run_result.budget"}
+    elif status in {"waiting", "blocked", "user_decision"}:
+        boundary = {"kind": status, "source": "run_result.status"}
     request = r.get("orchestration_request")
     coordinate = request.get("coordinate") if isinstance(request, dict) else None
     if isinstance(coordinate, dict) and coordinate.get("action") == "continue":
@@ -10456,6 +10638,14 @@ def _pilot_run_state(r: dict) -> dict:
         }
         if isinstance(coordinate.get("reason"), str):
             state["native_continuation"]["reason"] = coordinate["reason"]
+    elif isinstance(coordinate, dict) and coordinate.get("action") in {"blocked", "user_decision"}:
+        if boundary is None:
+            boundary = {"kind": coordinate["action"], "source": "orchestration_request.coordinate"}
+            if isinstance(coordinate.get("reason"), str):
+                boundary["reason"] = coordinate["reason"]
+    if boundary:
+        state["scope_goal_met"] = False
+        state["continuation_stop"] = boundary
     return state
 
 

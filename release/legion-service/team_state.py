@@ -1217,6 +1217,39 @@ _MAILBOX_TEXT_CAP = 200000   # 持久 mailbox 单条上限(军团自审 #3:8000 
                              # (legion_core 已改)·这里只保证持久层重启回放不腰斩。
 
 
+def send_messages(team_id: str, sender: str, messages: list[dict]) -> list[dict]:
+    """Atomically append one protocol's messages and commit the mailbox once."""
+    with _state_lock(team_id):
+        state = load(team_id)
+        if not state:
+            raise KeyError(f"unknown team: {team_id}")
+        delivered = []
+        for message in messages:
+            recipient = str(message.get("to") or "")
+            if recipient not in (state.get("tasks") or {}):
+                raise KeyError(f"unknown recipient: {recipient}")
+            state["message_seq"] = int(state.get("message_seq", 0)) + 1
+            body = str(message.get("text") or "")
+            refs = list(message.get("artifact_refs") or [])
+            if len(body) > 4000:
+                try:
+                    import artifact_store
+                    refs.append(artifact_store.put_text(team_id, recipient, body,
+                                                         name=f"mail-{state['message_seq']}.txt"))
+                    inline = body[:1000]
+                except Exception:
+                    inline = body[:_MAILBOX_TEXT_CAP]
+            else:
+                inline = body
+            msg = {"id": state["message_seq"], "from": sender, "to": recipient,
+                   "text": inline, "artifact_refs": refs, "ts": time.time(), "read_at": None}
+            state["mailboxes"].setdefault(recipient, []).append(msg)
+            delivered.append(msg)
+        if delivered:
+            _write(state)
+        return delivered
+
+
 def send_message(team_id: str, sender: str, recipient: str, text: str,
                  artifact_refs: list[dict] | None = None, *,
                  execution_request_id: str = "", user_id: str = "") -> dict:
