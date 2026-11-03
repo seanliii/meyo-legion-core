@@ -27,6 +27,18 @@
       },
       "versions": [
         {
+          "version": "0.6.0",
+          "publishTimestamp": 1793727925,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/seanliii/dsh-plugin-legion.git",
+            "commit": "ccbc026162244b3ba68bb0c20008b266a4f2d8b2"
+          },
+          "engines": {
+            "dsh": "0.2.1-rc.2"
+          }
+        },
+        {
           "version": "0.5.1",
           "publishTimestamp": 1793371862,
           "source": {
