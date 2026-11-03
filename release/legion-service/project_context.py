@@ -873,6 +873,16 @@ def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
         "error_envelope": _json_safe(result.get("error_envelope") or {}),
         "native_facts": _json_safe(result.get("native_facts") or {}),
         "native_checkpoint": _json_safe(result.get("native_checkpoint") or {}),
+        # A member's terminal reply is only one part of its handoff.  Keep the
+        # exact delivery observations beside the attempt so the commander can
+        # give the next owner the same version after a restart.  These are
+        # parallel facts, never an acceptance verdict or a new authority.
+        "artifacts": _json_safe(result.get("artifacts") or result.get("discovered_artifacts") or []),
+        "artifact_export": _json_safe(result.get("artifact_export") or {}),
+        "artifact_safety_observations": _json_safe(result.get("artifact_safety_observations") or []),
+        "tool_trace": _json_safe(result.get("tool_trace") or []),
+        "workdir": str(result.get("workdir") or ""),
+        "version_identity": _json_safe(result.get("version_identity") or {}),
         "continuation": _json_safe(continuation or {}),
         "recorded_at": time.time(),
     }
