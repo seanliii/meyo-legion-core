@@ -306,6 +306,12 @@ def _artifact_row(value: object, owner: str, task_id: str) -> dict | None:
         "verified": bool(provenance.get("verified") or value.get("verified")),
         "owner": str(owner),
         "task_id": str(task_id),
+        # Preserve the producer's explicit version when present.  A later
+        # owner must consume this exact snapshot identity, rather than infer a
+        # new version from the filename or a mutable working-directory path.
+        **({"version": _json_safe(value["version"])} if "version" in value else {}),
+        **({"export_snapshot_id": _json_safe(value["export_snapshot_id"])}
+           if value.get("export_snapshot_id") else {}),
         "lineage": _json_safe(value.get("lineage") or {}),
     }
 
