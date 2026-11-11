@@ -1,0 +1,31 @@
+/* Scoped to the optional native game view; no changes to the host layout. */
+.game-workbench { color: var(--fg, #252824); max-width: 760px; margin: 0 auto; padding: 8px 4px 28px; overflow-wrap: anywhere; }
+.game-workbench h2 { font-size: 24px; line-height: 1.4; margin: 4px 0 10px; }
+.game-workbench h3 { font-size: 17px; margin: 0; }
+.game-workbench p { line-height: 1.65; }
+.game-workbench .gw-muted, .game-workbench small { color: var(--fg-muted, #62675e); }
+.game-workbench .gw-field { display: grid; gap: 8px; margin-top: 20px; font-weight: 600; }
+.game-workbench select, .game-workbench textarea, .game-workbench input { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; font-weight: 400; }
+.game-workbench select, .game-workbench textarea { padding: 12px; border: 1px solid var(--border, #cdd2c8); border-radius: 10px; background: var(--surface, #fff); color: inherit; }
+.game-workbench textarea { resize: vertical; min-height: 112px; max-height: 40dvh; }
+.game-workbench button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--border, #cdd2c8); border-radius: 10px; background: var(--surface, #fff); color: inherit; font: inherit; cursor: pointer; white-space: normal; }
+.game-workbench button:disabled { opacity: .55; cursor: default; }
+.game-workbench button:focus-visible, .game-workbench input:focus-visible, .game-workbench textarea:focus-visible, .game-workbench select:focus-visible { outline: 2px solid var(--accent, #3b6b4a); outline-offset: 3px; }
+.game-workbench .gw-primary { background: var(--accent, #365e43); color: #fff; border-color: transparent; font-weight: 600; }
+.game-workbench .gw-actions, .game-workbench .gw-records-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.game-workbench .gw-records-head { justify-content: space-between; }
+.game-workbench .gw-message { min-height: 1.65em; }
+.game-workbench .gw-records { margin-top: 28px; border-top: 1px solid var(--border, #cdd2c8); padding-top: 20px; }
+.game-workbench ul { list-style: none; padding: 0; margin: 12px 0; }
+.game-workbench li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 0; border-bottom: 1px solid var(--border, #cdd2c8); }
+.game-workbench li > span { flex: 1 1 180px; min-width: 0; }
+.game-workbench li > small { flex: 1 1 150px; }
+.game-workbench li > button { flex: 0 0 auto; }
+.game-workbench [hidden] { display: none !important; }
+@media (max-width: 560px) {
+  .game-workbench { padding-bottom: max(28px, env(safe-area-inset-bottom)); }
+  .game-workbench h2 { font-size: 22px; }
+  .game-workbench select, .game-workbench textarea, .game-workbench input, .game-workbench button { font-size: 16px; }
+  .game-workbench .gw-actions > button { flex: 1 1 100%; }
+  .game-workbench .gw-records-head { align-items: flex-start; }
+}
