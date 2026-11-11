@@ -110,6 +110,62 @@ test('多视频可分次选择，选择本身不上传；全部上传后只发�
   assert.ok(s.calls.findIndex(x => x[0] === 'send') > s.calls.findLastIndex(x => x[0] === 'upload'));
 });
 
+test('素材按钮打开原文件选择器，追加、取消、去重与移除都保持数量一致', async () => {
+  const s = await screen(); let opened = 0;
+  s.node('files').click = () => { opened++; };
+  assert.equal(s.node('files').hidden, true);
+  assert.equal(s.node('add-files').textContent, '添加参考素材');
+  assert.equal(s.node('file-count').textContent, '尚未添加 · 可多选');
+  s.node('add-files').onclick(); assert.equal(opened, 1);
+  s.choose(file('a.mp4'), file('b.mp4'), file('c.mp4'));
+  assert.equal(s.node('file-count').textContent, '已选 3 份参考');
+  assert.equal(s.node('add-files').textContent, '继续添加素材');
+  assert.equal(s.node('files').value, '');
+  assert.match(s.node('file-list').children[0].children[0].textContent, /2 KiB/);
+  s.node('add-files').onclick(); assert.equal(opened, 2);
+  s.choose(); // Canceling a later picker must keep the earlier selections.
+  s.choose(file('a.mp4'));
+  assert.equal(s.node('file-list').childElementCount, 3);
+  assert.equal(s.node('file-count').textContent, '已选 3 份参考');
+  s.node('remove').onclick();
+  assert.equal(s.node('file-count').textContent, '已选 2 份参考');
+  s.node('remove').onclick(); s.node('remove').onclick();
+  assert.equal(s.node('file-count').textContent, '尚未添加 · 可多选');
+  assert.equal(s.node('add-files').textContent, '添加参考素材');
+  assert.deepEqual(s.calls, [['list']]);
+});
+
+test('素材与记录在滚动区内，主操作在独立占位栏且追加素材不会重建按钮', async () => {
+  const s = await screen(), submit = s.node('submit');
+  assert.deepEqual(s.root.children, [s.node('scroll'), s.node('footer')]);
+  assert.ok(s.node('scroll').all().includes(s.node('file-list')));
+  assert.ok(s.node('scroll').all().includes(s.node('candidates')));
+  assert.ok(!s.node('scroll').all().includes(submit));
+  assert.ok(s.node('footer').all().includes(submit));
+  assert.ok(s.node('footer').all().includes(s.node('message')));
+  for (let i = 0; i < 20; i++) s.choose(file(`reference-${i}.mp4`));
+  assert.equal(s.node('file-count').textContent, '已选 20 份参考');
+  assert.equal(s.node('submit'), submit);
+  s.node('note').value = '三只猫探索小镇';
+  await submit.onclick();
+  assert.equal(s.calls.filter(x => x[0] === 'send').length, 1);
+});
+
+test('上传期间禁用素材入口，上传失败后恢复追加能力并保留已选数量', async () => {
+  const wait = deferred(), s = await screen(); let opened = 0;
+  s.node('files').click = () => { opened++; };
+  s.host.upload = async () => { await wait.promise; s.state.uploads.push({error: 'offline'}); };
+  s.choose(file()); s.node('note').value = '猫咪游戏';
+  const pending = s.node('submit').onclick();
+  assert.equal(s.node('add-files').disabled, true);
+  s.node('add-files').onclick(); assert.equal(opened, 0);
+  wait.resolve(); await pending;
+  assert.equal(s.node('add-files').disabled, false);
+  assert.equal(s.node('file-count').textContent, '已选 1 份参考');
+  s.node('add-files').onclick(); assert.equal(opened, 1);
+  assert.ok(!s.calls.some(x => x[0] === 'send'));
+});
+
 test('空想法、大文件和非媒体文件不进入上传链', async () => {
   const s = await screen();
   s.choose(file('ok.mp4'), file('too-big.mp4', 25 * 1048576));

@@ -83,13 +83,15 @@
     function option(value, title) { const item = el('option', title); item.value = value; target.append(item); }
     option('', '制作新作品'); if (selected) option(selected, '继续当前对话的作品'); target.value = selected;
     const noteLabel = el('label', '想做什么', 'gw-field');
-    const note = el('textarea'); note.rows = 4; note.maxLength = 6000; note.dataset.game = 'note';
+    const note = el('textarea'); note.rows = 3; note.maxLength = 6000; note.dataset.game = 'note';
     note.placeholder = '例如：把这几段视频里的猫做成可以探索小镇的游戏，保留它的动作和声音。';
     note.value = expectedDraft; noteLabel.append(note);
-    const fileLabel = el('label', '参考视频或图片（可选多份）', 'gw-field');
-    const input = el('input'); input.type = 'file'; input.multiple = true; input.accept = ACCEPT; input.dataset.game = 'files';
-    fileLabel.append(input);
-    const fileHint = el('p', '每份最多 24 MiB，可分次选择。点击制作才上传；只选素材不会开始制作。', 'gw-muted');
+    const fileLabel = el('div', '', 'gw-field'); fileLabel.append(el('span', '参考视频或图片'));
+    const input = el('input'); input.type = 'file'; input.multiple = true; input.accept = ACCEPT; input.dataset.game = 'files'; input.hidden = true;
+    const addFiles = button('添加参考素材', () => { if (!busy && current()) input.click(); }, 'add-files');
+    const fileCount = el('span', '尚未添加 · 可多选', 'gw-muted'); fileCount.dataset.game = 'file-count'; fileCount.setAttribute('role', 'status');
+    const filePicker = el('div', '', 'gw-file-picker'); filePicker.append(addFiles, fileCount, input); fileLabel.append(filePicker);
+    const fileHint = el('p', '每份最多 24 MiB；可继续追加。点击制作后才上传并发起任务。', 'gw-muted gw-file-hint');
     const fileList = el('ul', '', 'gw-files'); fileList.dataset.game = 'file-list';
     const message = el('p', '', 'gw-message'); message.setAttribute('role', 'status'); message.dataset.game = 'message';
     const submit = button('开始制作', start, 'submit'); submit.className = 'gw-primary';
@@ -104,7 +106,10 @@
     const detail = el('p', '', 'gw-muted'); detail.dataset.game = 'detail';
     const candidates = el('ul', '', 'gw-candidates'); candidates.dataset.game = 'candidates';
     records.append(recordsHead, status, detail, candidates);
-    root.append(heading, intro, targetLabel, noteLabel, fileLabel, fileHint, fileList, message, actions, records);
+    const scroll = el('div', '', 'gw-scroll'); scroll.dataset.game = 'scroll';
+    scroll.append(heading, intro, targetLabel, noteLabel, fileLabel, fileHint, fileList, records);
+    const footer = el('div', '', 'gw-footer'); footer.dataset.game = 'footer'; footer.append(message, actions);
+    root.append(scroll, footer);
 
     function current() {
       const state = host.state();
@@ -131,17 +136,20 @@
       const state = host.state();
       submit.textContent = busy ? '正在交给军团…' : selected ? '继续制作这份作品' : '开始制作';
       submit.disabled = busy || !state.subject || !state.canExecute;
-      target.disabled = input.disabled = note.disabled = busy;
+      target.disabled = input.disabled = addFiles.disabled = note.disabled = busy;
       conversation.disabled = busy || !selected;
       refreshButton.disabled = busy || reading || !state.subject;
       login.hidden = !!state.subject;
     }
     function renderFiles() {
       fileList.replaceChildren();
+      addFiles.textContent = files.length ? '继续添加素材' : '添加参考素材';
+      fileCount.textContent = files.length ? `已选 ${files.length} 份参考` : '尚未添加 · 可多选';
       files.forEach(entry => {
         const row = el('li');
         const label = entry.attachment?.error ? '上传失败，可点击制作重试' : entry.attachment?.uploading ? '正在上传' : entry.attachment?.path ? '已上传' : '待上传';
-        row.append(el('span', `${entry.file.name} · ${(entry.file.size / 1048576).toFixed(1)} MiB · ${label}`));
+        const size = entry.file.size < 1048576 ? `${Math.max(1, Math.ceil(entry.file.size / 1024))} KiB` : `${(entry.file.size / 1048576).toFixed(1)} MiB`;
+        row.append(el('span', `${entry.file.name} · ${size} · ${label}`));
         const remove = button('移除', () => {
           if (busy || !current()) return;
           if (entry.attachment && host.state().sid !== boundSid) { message.textContent = '原对话已切换，请回到上传时的对话处理附件。'; return; }
