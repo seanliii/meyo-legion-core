@@ -28,7 +28,7 @@ class Element {
   focus() { this.focused = true; }
   all() { return [this, ...this.children.flatMap(node => node.all())]; }
 }
-function environment(search = '') {
+function environment(search = '', load = true) {
   const callbacks = [];
   const document = {readyState: 'loading', createElement(tag) { return new Element(tag, this); },
     addEventListener(type, fn) { if (type === 'DOMContentLoaded') callbacks.push(fn); }};
@@ -39,10 +39,13 @@ function environment(search = '') {
     observe() {}
     disconnect() { this.disconnected = true; }
   }
-  const context = vm.createContext({document, URL, URLSearchParams, console, MutationObserver,
+  const listeners = new Map();
+  const context = vm.createContext({document, URL, URLSearchParams, console, MutationObserver, Event,
+    addEventListener(type, callback) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(callback); },
+    dispatchEvent(event) { for (const callback of listeners.get(event.type) || []) callback(event); return true; },
     location: {search, href: 'https://play.example.test/' + search, origin: 'https://play.example.test'}});
   context.window = context;
-  vm.runInContext(script, context);
+  if (load) vm.runInContext(script, context);
   return {context, document, observers, callbacks, api: context.MeyoGameWorkbench};
 }
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => {resolve = a; reject = b;}); return {promise, resolve, reject}; }
@@ -227,10 +230,11 @@ test('候选名称按文本展示；预览委托原画布，携带确切原会�
   assert.ok(!s.calls.some(x => x[0] === 'send'));
 });
 
-function nativeEnvironment() {
-  const e = environment(); const calls = [];
+function nativeEnvironment({load = true, search = ''} = {}) {
+  const e = environment(search, load); const calls = [];
   Object.assign(e.context, {
     _personalSubject: 'alice', _personalEpoch: 1, _personalSwitchPending: false,
+    _accountMutationPending: false, _personalRestoring: false, legionPersonalUiReady: false,
     _personalCanExecute: () => true, _openPersonalAuth: () => calls.push(['login']),
     curSession: 'old', running: false, qEl: {value: ''}, uploads: [],
     uploadFile: async f => calls.push(['uploadFile', f.name]), send: async () => calls.push(['send']),
@@ -243,7 +247,7 @@ function nativeEnvironment() {
   for (const name of ['_finalDeliveryData', '_deliveryDisplay', '_artifactPresentationRole', '_chooseVisibleDeliveries', '_sessionDeliveryOverview', '_canvasArtifactUrl', '_artifactCanvasKind']) {
     vm.runInContext(nativeFunction(name), e.context);
   }
-  return {...e, calls, host: e.api.nativeHost()};
+  return {...e, calls, host: load ? e.api.nativeHost() : null};
 }
 
 test('真实两UI归一化：单家final不会变成空候选，turn_returned不会显示已完成', () => {
@@ -308,17 +312,90 @@ test('使用真实uploadFile的multipart响应后再交原send；错误响应绝
   }
 });
 
-test('脚本加载无副作用；主入口身份恢复后才调用boot，studio=game只开视图不发单', async () => {
-  const e = environment(); let opens = 0;
-  e.context.showAdvDetail = () => { opens++; };
-  assert.equal(e.callbacks.length, 0);
-  e.api.boot(); assert.equal(opens, 0);
-  // Real native dependencies are required before the explicit studio entry opens.
-  const n = nativeEnvironment(); n.context.location.search = '?studio=game';
-  n.context.showAdvDetail = () => { opens++; };
-  const root = n.document.createElement('div'); n.document.getElementById = () => root;
-  assert.equal(n.callbacks.length, 0);
-  n.api.boot(); await Promise.resolve(); await Promise.resolve();
-  assert.equal(opens, 1);
+function startupCall() {
+  const start = html.indexOf('_afterFirstPaint(()=>{');
+  assert.ok(start >= 0, 'The actual page must call its startup hook');
+  for (let end = html.indexOf('});', start); end >= 0; end = html.indexOf('});', end + 3)) {
+    const source = html.slice(start, end + 3);
+    try { new vm.Script(source); return source; } catch {}
+  }
+  throw Error('Incomplete page startup hook');
+}
+const settle = () => new Promise(resolve => setImmediate(resolve));
+function hookedPage(options = {}) {
+  const n = nativeEnvironment({search: '?studio=game', ...options});
+  let paint, opens = 0;
+  const root = n.document.createElement('div'); n.document.body.append(root);
+  const entry = n.document.createElement('button');
+  n.document.getElementById = id => id === 'gameWorkbench' ? root : null;
+  Object.assign(n.context, {
+    _afterFirstPaint(fn) { paint = fn; }, renderExamples() {}, _personalLabel() {},
+    async _readPersonalStatus() { return 'alice'; }, async _applyPersonalSubject() {},
+    _losePersonalIdentity() { n.context._personalSubject = ''; n.context._personalEpoch++; },
+    showAdvDetail() { opens++; }, setMobileSidebar() {}, toast(message) { n.calls.push(['toast', message]); },
+    $: selector => selector === '#openGameWorkbench' ? entry : null,
+  });
+  for (const name of ['_publishPersonalUiReady', '_restorePersonalUiAtStartup', '_openGameWorkbench']) vm.runInContext(nativeFunction(name), n.context);
+  const binding = html.match(/^\$\('#openGameWorkbench'\).*;$/m)?.[0];
+  assert.ok(binding, 'The real page must bind its visible entry button');
+  assert.match(html, /<button[^>]+id="openGameWorkbench"[^>]*>[\s\S]*?<b>游戏制作<\/b>/);
+  vm.runInContext(binding, n.context);
+  vm.runInContext(startupCall(), n.context);
+  return {...n, entry, root, paint: () => paint(), opens: () => opens};
+}
+
+test('真实HTML首次恢复hook：身份与草稿恢复都完成后才发ready，早加载模块自动打开一次', async () => {
+  const n = hookedPage(), identity = deferred(), restore = deferred();
+  n.context._readPersonalStatus = () => identity.promise;
+  n.context._applyPersonalSubject = async () => { n.context._personalRestoring = true; await restore.promise; n.context._personalRestoring = false; };
+  n.paint(); assert.equal(n.opens(), 0); assert.equal(n.context.legionPersonalUiReady, false);
+  identity.resolve('alice'); await settle(); assert.equal(n.opens(), 0);
+  restore.resolve(); await settle();
+  assert.equal(n.context.legionPersonalUiReady, true); assert.equal(n.opens(), 1);
+  n.context._publishPersonalUiReady(); await settle(); assert.equal(n.opens(), 1, 'A repeated ready must not steal the view again');
   assert.ok(!n.calls.some(x => ['send', 'uploadFile', 'newChat'].includes(x[0])));
+});
+
+test('真实HTML先完成恢复、模块后加载：读取ready标志打开游戏视图，不依赖手工boot', async () => {
+  const n = hookedPage({load: false}); n.paint(); await settle();
+  assert.equal(n.context.legionPersonalUiReady, true); assert.equal(n.opens(), 0);
+  vm.runInContext(script, n.context); await settle();
+  assert.equal(n.opens(), 1); assert.ok(!n.calls.some(x => x[0] === 'send'));
+});
+
+test('真实HTML身份读取或草稿恢复失败仍发ready；不会伪造身份或发任务', async () => {
+  for (const fail of ['read', 'restore']) {
+    const n = hookedPage();
+    if (fail === 'read') n.context._readPersonalStatus = async () => {throw Error('offline');};
+    else n.context._applyPersonalSubject = async () => {throw Error('restore failed');};
+    n.paint(); await settle();
+    assert.equal(n.context.legionPersonalUiReady, true); assert.equal(n.context._personalSubject, '');
+    assert.equal(n.opens(), 1); assert.ok(!n.calls.some(x => x[0] === 'send'));
+    assert.match(n.root.all().find(x => x.dataset.game === 'status').textContent, /登录/);
+  }
+});
+
+test('真实页面hook与普通入口按钮：无studio参数不自动打开，点击才进入，不发任务', async () => {
+  const n = hookedPage({search: ''}); n.paint(); await settle();
+  assert.equal(n.opens(), 0); await n.entry.onclick(); await settle();
+  assert.equal(n.opens(), 1); assert.ok(!n.calls.some(x => ['send', 'uploadFile', 'newChat'].includes(x[0])));
+});
+
+test('真实ready与入口按钮均不抢登录、草稿恢复、账号操作或正在执行的任务', async () => {
+  for (const flag of ['_personalSwitchPending', '_personalRestoring', '_accountMutationPending', 'running']) {
+    const n = hookedPage(); n.context[flag] = true; n.paint(); await settle();
+    assert.equal(n.opens(), 0, flag); await n.entry.onclick(); assert.equal(n.opens(), 0, flag);
+    assert.ok(!n.calls.some(x => x[0] === 'send'));
+    n.context[flag] = false;
+    await n.entry.onclick(); await settle(); assert.equal(n.opens(), 1, 'Explicit later click is allowed');
+  }
+});
+
+test('真实ready事件在新身份就绪后重新挂载，不沿用旧账号的候选和草稿', async () => {
+  const n = hookedPage(); n.paint(); await settle(); assert.equal(n.opens(), 1);
+  n.context._personalEpoch++; n.context._personalSubject = 'bob'; n.context.qEl.value = 'bob的草稿';
+  n.context._publishPersonalUiReady(); await settle();
+  assert.equal(n.opens(), 2);
+  assert.equal(n.root.all().find(x => x.dataset.game === 'note').value, 'bob的草稿');
+  assert.ok(!n.calls.some(x => x[0] === 'send'));
 });

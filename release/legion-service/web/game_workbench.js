@@ -1,6 +1,6 @@
 /* Optional view for index_v2 / the private split overlay. Load after the native UI.
- * Call MeyoGameWorkbench.boot() AFTER native identity/draft restoration; it opens
- * ?studio=game. A normal entry button calls open(). Loading this file is inert.
+ * Native identity/draft restoration publishes legion:personal-ready. The flag
+ * also handles late script loading. Only ?studio=game opens automatically.
  * Serving this JS/CSS and adding the script/link are the entry owner's responsibility.
  */
 (function (global) {
@@ -23,7 +23,8 @@
     }
     return {
       state: () => ({subject: _personalSubject, epoch: _personalEpoch,
-        switching: _personalSwitchPending, canExecute: _personalCanExecute(),
+        switching: _personalSwitchPending, accountBusy: _accountMutationPending, restoring: _personalRestoring,
+        canExecute: _personalCanExecute(),
         sid: curSession || '', running, draft: qEl.value, uploads}),
       login: () => _openPersonalAuth(),
       list: async () => (await read('/api/legion/session-index?limit=50')).sessions || [],
@@ -120,6 +121,7 @@
       if (!current()) return false;
       const state = host.state();
       if (!state.subject) { message.textContent = '请先使用军团账号登录。'; host.login(); return false; }
+      if (state.restoring || state.accountBusy) { message.textContent = '账号仍在恢复或保存设置，请稍后制作。'; return false; }
       if (!state.canExecute) { message.textContent = '此账号尚未接通制作能力，请在原账号页面查看。'; return false; }
       if (state.running) { message.textContent = '当前作品仍在执行，请先到原对话查看进展。'; return false; }
       return true;
@@ -237,7 +239,7 @@
         if (before.sid !== selected) await host.select(selected);
         if (!current() || host.state().sid !== selected) throw new Error('原作品未能打开，未发送制作请求。');
         boundSid = selected;
-        const stillBound = () => current() && host.state().sid === boundSid && !host.state().running;
+        const stillBound = () => current() && host.state().sid === boundSid && !host.state().running && !host.state().restoring && !host.state().accountBusy;
         for (const entry of files) {
           if (!stillBound()) throw new Error('对话状态已变化，未继续上传或发送。');
           if (entry.attachment && !host.state().uploads.includes(entry.attachment)) entry.attachment = null;
@@ -274,16 +276,25 @@
     return {ready, refresh, dispose};
   }
 
-  let active;
+  let active, autoEpoch = null;
   function open() {
     if (typeof showAdvDetail !== 'function') return false;
     const host = nativeHost();
+    const state = host.state();
+    if (!global.legionPersonalUiReady || state.switching || state.restoring || state.accountBusy || state.running) return false;
     active?.dispose();
     showAdvDetail('游戏制作', '<div id="gameWorkbench"></div>', '');
     const root = document.getElementById('gameWorkbench');
     if (!root) return false;
     active = mount(root, {host}); return active;
   }
-  function boot() { if (new URLSearchParams(location.search).get('studio') === 'game') return open(); return false; }
+  function boot() {
+    if (!global.legionPersonalUiReady || new URLSearchParams(location.search).get('studio') !== 'game') return false;
+    const state = nativeHost().state();
+    if (state.switching || state.restoring || state.accountBusy || state.running || autoEpoch === state.epoch) return false;
+    const result = open(); if (result) autoEpoch = state.epoch; return result;
+  }
   global.MeyoGameWorkbench = Object.freeze({open, boot, mount, nativeHost});
+  global.addEventListener('legion:personal-ready', boot);
+  if (global.legionPersonalUiReady) boot();
 })(window);

@@ -787,6 +787,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
     <details class="sb-hubs" aria-label="更多能力" open>
       <summary class="sb-caps-t">更多能力</summary>
       <button class="sb-hub-entry" id="openCapabilityHub" type="button"><span class="he-icon">🧰</span><span class="he-main"><b>能力入口</b><small>研究、网页、图片、代码、PPT…</small></span><span class="he-arr">›</span></button>
+      <button class="sb-hub-entry" id="openGameWorkbench" type="button"><span class="he-icon">🎮</span><span class="he-main"><b>游戏制作</b><small>参考视频与图片，制作或继续原作品</small></span><span class="he-arr">›</span></button>
       <button class="sb-hub-entry" id="openMobileHub" type="button"><span class="he-icon">📱</span><span class="he-main"><b>云手机</b><small>操作手机、玩 App、安装软件、完成生活任务</small></span><span class="he-arr">›</span></button>
       <button class="sb-hub-entry" id="openCloudFilesHub" type="button"><span class="he-icon">🖥️</span><span class="he-main"><b>云电脑</b><small>管理文件、开发软件、制作并交付项目</small></span><span class="he-arr">›</span></button>
       <button class="sb-hub-entry" id="openVerificationCenter" type="button" hidden><span class="he-icon">🔬</span><span class="he-main"><b>开发验收中心</b><small>历史、过程、产物、质量与版本升级统一验收</small></span><span class="he-arr">›</span></button>
@@ -1047,6 +1048,7 @@ function setClientUid(){_openPersonalAuth();}
 window.setClientUid=setClientUid;
 let curSession=null, uploads=[], liveTeamId='', workspaceData=null;
 let _personalSubject='',_personalEpoch=0,_personalSwitchPending=false,_personalRestoring=false;
+window.legionPersonalUiReady=false;
 let _personalStatus=null,_personalStatusRead=0,_personalAuthMode='login',_accountMutationPending=false;
 let _myModelsView=0,_myModelsBusy=false;
 const _personalExecutionNote='账号和Key设置可用；独立执行环境尚未接通，不会调用站长模型额度';
@@ -1323,6 +1325,7 @@ async function _exchangePersonalAccount(path,payload=null,token=''){
   }finally{
     token='';payload=null;clearTimeout(timer);_personalSwitchPending=false;
     _clearPersonalSecrets();$('#personalAuthCancel').disabled=false;_personalAuthTransportReady();_personalLabel();
+    if(window.legionPersonalUiReady)_publishPersonalUiReady();
   }
 }
 $('#personalAuthCancel').onclick=()=>{_clearPersonalSecrets();$('#personalUsername').value='';$('#personalAuthDialog').close();};
@@ -1390,7 +1393,7 @@ $('#personalLogout').onclick=async()=>{
   }catch(e){
     if(accepted||e.name==='AbortError')_losePersonalIdentity();
     $('#personalAuthError').textContent=e.name==='AbortError'?'退出请求超时，请重新确认登录状态。':e.message;
-  }finally{clearTimeout(timer);_personalSwitchPending=false;_personalLabel();_personalAuthTransportReady();_refreshPersonalAccountSettings();}
+  }finally{clearTimeout(timer);_personalSwitchPending=false;_personalLabel();_personalAuthTransportReady();_refreshPersonalAccountSettings();if(window.legionPersonalUiReady)_publishPersonalUiReady();}
 };
 
 function _resetMyModelForm(){
@@ -2655,6 +2658,12 @@ async function _loadVerificationArtifactPage(row,target,index,offset=0,q=''){con
 function _renderVerificationArtifact(d,target,row,index,fileQuery=''){if(d.error)throw new Error(d.error);const files=(d.items||[]).map(_verifyArtHtml).join('')||'<div class="muted">目录内暂未发现匹配文件</div>',offset=Number(d.offset||0),limit=Number(d.limit||100);const links=(row.session_ids||[]).map(sid=>`<button class="mini-btn" type="button" data-vsid="${esc(sid)}">会话 ${esc(sid)}</button>`).join('');$('#verifyDetail').innerHTML=`<div class="verify-section"><h3>${row.is_dir?'📁 ':'📄 '}${esc(row.name)}</h3><div class="verify-row-meta">${_verifyPill(row.state==='orphan'?'孤儿产物':row.association==='inferred'?'按工作目录名关联':'结构化关联',row.state==='orphan'?'issue':'pass')} ${_verifyPill((row.session_ids||[]).length+' sessions')} ${d.scanned?_verifyPill(d.scanned+' files scanned'):''} ${d.truncated?_verifyPill('有界扫描 · 显示最新文件','issue'):''}</div>${links?`<div class="adv-actions">${links}</div>`:''}</div><div class="verify-section"><div class="as-t">文件清单 · 可直接安全预览</div>${row.is_dir?`<div class="verify-file-filter"><input class="adv-search" id="verifyFileQ" aria-label="在目录内搜索文件" placeholder="在这个目录里按文件名搜索" value="${esc(fileQuery)}"><button class="mini-btn" type="button" id="verifyFileSearch">查找</button></div>`:''}<div class="adv-scroll-list">${files}</div>${d.total>limit?`<div class="verify-pager"><button class="mini-btn" type="button" id="verifyFilePrev"${offset<=0?' disabled':''}>← 前 100 个</button><span>${offset+1}–${Math.min(offset+limit,d.total)} / ${d.total}</span><button class="mini-btn" type="button" id="verifyFileNext"${offset+limit>=d.total?' disabled':''}>后 100 个 →</button></div>`:''}</div>${_reviewHtml(target,row.review,index)}`;_bindVerificationArtifacts();document.querySelectorAll('[data-vsid]').forEach(el=>el.onclick=()=>{VERIFY.tab='sessions';VERIFY.offset=0;VERIFY.selected=el.dataset.vsid;$('#verifyQ').value='';_syncVerificationFilterVisibility();_loadVerificationList();});const search=()=>_loadVerificationArtifactPage(row,target,index,0,$('#verifyFileQ')?.value||'');if($('#verifyFileSearch'))$('#verifyFileSearch').onclick=search;if($('#verifyFileQ'))$('#verifyFileQ').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();search();}};if($('#verifyFilePrev'))$('#verifyFilePrev').onclick=()=>_loadVerificationArtifactPage(row,target,index,Math.max(0,offset-limit),fileQuery);if($('#verifyFileNext'))$('#verifyFileNext').onclick=()=>_loadVerificationArtifactPage(row,target,index,offset+limit,fileQuery);_bindVerifyReview(target,row.review,index);$('#verifyDetail').scrollTop=0;}
 function _renderVerificationNative(d,target,index,review){if(d.error)throw new Error(d.error);review=review||{};const arts=(d.artifacts||[]).map(_verifyArtHtml).join('')||'<div class="muted">这段原生历史里没有可安全映射的显式产物路径</div>';$('#verifyDetail').innerHTML=`<div class="verify-section"><h3>${esc(d.title||d.name)}</h3><div class="verify-row-meta">${_verifyPill(d.harness)} ${_verifyPill(Math.max(1,Math.round((d.bytes||0)/1024))+'KB')} ${d.messages!=null?_verifyPill(d.messages+' messages'):''} ${d.tools!=null?_verifyPill(d.tools+' tools'):''} ${d.model?_verifyPill(d.model):''} ${d.excerpt_truncated?_verifyPill('仅显示有界预览'):''}</div></div><div class="verify-section"><div class="as-t">原生历史有界预览</div><div class="verify-final">${_verifyLinkedText(d.excerpt||'无可读正文')}</div></div><div class="verify-section"><div class="as-t">从原生记录提取的安全产物</div><div class="adv-scroll-list">${arts}</div></div>${_reviewHtml(target,review,index)}`;_bindVerificationArtifacts();_bindVerifyReview(target,review,index);$('#verifyDetail').scrollTop=0;}
 $('#openCapabilityHub')&&($('#openCapabilityHub').onclick=openCapabilityHub);
+function _openGameWorkbench(){
+  if(!window.legionPersonalUiReady||_personalSwitchPending||_personalRestoring||_accountMutationPending||running){toast('当前还在恢复账号或执行任务，请稍后打开游戏制作。');return false;}
+  if(!window.MeyoGameWorkbench){toast('游戏制作页面尚未加载，请刷新后重试。');return false;}
+  setMobileSidebar(false);return window.MeyoGameWorkbench.open();
+}
+$('#openGameWorkbench')&&($('#openGameWorkbench').onclick=_openGameWorkbench);
 $('#openMobileHub')&&($('#openMobileHub').onclick=()=>{setMobileSidebar(false);openMobilePanel();});
 $('#openLegionHub')&&($('#openLegionHub').onclick=openLegionHub);
 $('#openCloudFilesHub')&&($('#openCloudFilesHub').onclick=openCloudFilesHub);
@@ -5395,11 +5404,19 @@ function _afterFirstPaint(fn){
   const timer=setTimeout(run,150);
   requestAnimationFrame(()=>requestAnimationFrame(run));
 }
+function _publishPersonalUiReady(){
+  window.legionPersonalUiReady=true;
+  window.dispatchEvent(new Event('legion:personal-ready'));
+}
+async function _restorePersonalUiAtStartup(){
+  const epoch=_personalEpoch;
+  try{const subject=await _readPersonalStatus();if(epoch===_personalEpoch&&!_personalSwitchPending)await _applyPersonalSubject(subject);}
+  catch(e){if(epoch===_personalEpoch&&!_personalSwitchPending)_losePersonalIdentity('身份服务暂不可用，请从个人授权入口重试。');}
+  finally{_publishPersonalUiReady();}
+}
 _afterFirstPaint(()=>{
   renderExamples();_personalLabel();
-  const epoch=_personalEpoch;
-  _readPersonalStatus().then(subject=>{if(epoch===_personalEpoch&&!_personalSwitchPending)return _applyPersonalSubject(subject);})
-    .catch(()=>{if(epoch===_personalEpoch&&!_personalSwitchPending)_losePersonalIdentity('身份服务暂不可用，请从个人授权入口重试。');});
+  _restorePersonalUiAtStartup();
   fetch('/api/verification/access').then(r=>{if(!r.ok)throw new Error('disabled');return r.json();}).then(d=>{if(!d.ok)return;window._verificationLocal=true;window._sharedTestUid=d.shared_test_uid||clientUid;const entry=$('#openVerificationCenter');if(entry){entry.hidden=false;entry.title='开发期共享测试账号 · '+(d.account_label||'测试账号');}}).catch(()=>{window._verificationLocal=false;});
 });
 </script>
