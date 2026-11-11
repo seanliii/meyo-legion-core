@@ -505,3 +505,54 @@ def test_cli_legacy_three_fields_named_profiles_and_redacted_errors(runtime, roo
     assert rc == 2 and not out and "本地配置不可用" in err
     assert (root / LIBRARY).read_bytes() == library
     assert (root / "secrets/model.json").read_bytes() == active
+
+
+def test_context_options_survive_profile_activation_and_rollback(runtime, root, tmp_path):
+    original = legacy(runtime, root, tmp_path)
+    result = runtime.save_model_profile(
+        root, "capacity", "capacity-fixture", "https://context.example.invalid/v1",
+        key_file(tmp_path, "capacity"), context_window=1048576,
+        model_auto_compact_token_limit=900000,
+    )
+    assert not result["provider_verified"]
+    assert (root / "secrets/model.json").read_bytes() == original
+    activation = runtime.activate_model_profile(root, "capacity")
+    env, _ = runtime.environment(root, inherited={})
+    binding = json.loads(env["LEGION_CODEX_RESPONSES_BINDING"])
+    assert binding["context_window"] == 1048576
+    assert binding["model_auto_compact_token_limit"] == 900000
+    assert "api_key" not in binding
+    runtime.activate_model_profile(root, activation["rollback_profile"])
+    assert (root / "secrets/model.json").read_bytes() == original
+
+
+@pytest.mark.parametrize("option", ["context_window", "model_auto_compact_token_limit"])
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5, "1000000", 2**63])
+def test_invalid_context_option_does_not_replace_active_profile(
+        runtime, root, tmp_path, option, invalid):
+    original = legacy(runtime, root, tmp_path)
+    with pytest.raises(ValueError):
+        runtime.configure_model(
+            root, "invalid-fixture", "https://context.example.invalid/v1",
+            key_file(tmp_path, "invalid"), **{option: invalid},
+        )
+    assert (root / "secrets/model.json").read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["configure-model", "save-model-profile"])
+def test_context_options_work_through_real_cli(runtime, root, tmp_path, command):
+    args = [command, "--state-dir", root, "--model", "context-cli",
+            "--base-url", "https://context.example.invalid/v1", "--api-key-file",
+            key_file(tmp_path, "context-cli"), "--context-window", "1048576",
+            "--model-auto-compact-token-limit", "900000"]
+    if command == "save-model-profile":
+        args += ["--id", "capacity-cli"]
+    rc, out, err = cli(tmp_path, *args)
+    assert rc == 0, err
+    if command == "save-model-profile":
+        runtime.activate_model_profile(root, "capacity-cli")
+    env, _ = runtime.environment(root, inherited={})
+    binding = json.loads(env["LEGION_CODEX_RESPONSES_BINDING"])
+    assert binding["context_window"] == 1048576
+    assert binding["model_auto_compact_token_limit"] == 900000
+    assert "fake-profile-key-context-cli" not in out + err

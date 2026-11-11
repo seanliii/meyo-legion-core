@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -40,6 +41,33 @@ ORCH = next((p for p in _CANDIDATES if p and os.path.isfile(os.path.join(p, "orc
             _CANDIDATES[-1])
 if ORCH not in sys.path:
     sys.path.insert(0, ORCH)
+
+
+@contextlib.contextmanager
+def _cooperative_native_stop():
+    """Let the adapter drain its owned CLI before the parent's kill deadline."""
+    try:
+        import harness_registry as registry
+    except ImportError:
+        yield  # Legacy external workers retain the normal SIGTERM behavior.
+        return
+    cancel_state = getattr(registry, "_INPROC_CANCEL_CHECK", None)
+    set_check = getattr(registry, "set_inproc_cancel_check", None)
+    if (cancel_state is None or not callable(set_check) or os.name == "nt"
+            or threading.current_thread() is not threading.main_thread()):
+        yield
+        return
+    stopped = threading.Event()
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    previous_check = getattr(cancel_state, "check", None)
+    set_check(
+        lambda: stopped.is_set() or (callable(previous_check) and previous_check()))
+    signal.signal(signal.SIGTERM, lambda *_: stopped.set())
+    try:
+        yield
+    finally:
+        set_check(previous_check)
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def main() -> int:
@@ -288,7 +316,8 @@ def main() -> int:
                     ctx = HarnessCtx.from_env()
                 except Exception:
                     ctx = None
-                result = orchestrator.run_harness(key, task, qhash=qhash, ctx=ctx)
+                with _cooperative_native_stop():
+                    result = orchestrator.run_harness(key, task, qhash=qhash, ctx=ctx)
         finally:
             _stop.set()
             # 最后同步扫一次：极短任务可能在 0.5s 首轮 watcher tick 前已经完成，若先 stop

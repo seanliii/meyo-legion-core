@@ -972,7 +972,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "public, max-age=604800")
             self.end_headers()
             return
-        if parsed.path in ("/desktop_production.js", "/desktop_production.css"):
+        if parsed.path in ("/desktop_production.js", "/desktop_production.css",
+                           "/game_workbench.js", "/game_workbench.css"):
             name = os.path.basename(parsed.path)
             target = os.path.join(WEB_DIR, name)
             try:
@@ -2121,6 +2122,11 @@ class Handler(BaseHTTPRequestHandler):
         if "desktop_production.js" not in html:
             html = html.replace("</head>", '<link rel="stylesheet" href="/desktop_production.css"></head>')
             html = html.replace("</body>", '<script src="/desktop_production.js"></script></body>')
+        # The game studio is another view of this same authenticated session,
+        # upload, native execution and artifact pipeline; it has no second runner.
+        if "game_workbench.js" not in html:
+            html = html.replace("</head>", '<link rel="stylesheet" href="/game_workbench.css"></head>')
+            html = html.replace("</body>", '<script src="/game_workbench.js"></script></body>')
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3308,6 +3314,12 @@ class Handler(BaseHTTPRequestHandler):
             _t0 = time.time()
             _append_plan = dict(payload.get("plan") or {})
             _append_plan["_user_selected_mode"] = True
+            import personal_identity
+            try:
+                personal_identity.bind_plan_attachments(_append_plan, _uid, sid)
+            except PermissionError:
+                self._send_json({"error": "attachment_not_authorized"}, 403)
+                return
             out = LEGION.dispatch(question, plan=_append_plan,
                                   cb=None, mode=mode if mode in ("pk", "relay") else "pk",
                                   user_id=_uid, conversation_id=sid)
@@ -3473,6 +3485,18 @@ class Handler(BaseHTTPRequestHandler):
                                "model_overrides", "directions", "capability_policy"):
             if payload.get(_context_field) not in (None, "", [], {}):
                 _single_plan[_context_field] = payload[_context_field]
+        if "attachments" in payload:
+            _single_plan["attachments"] = payload["attachments"]
+        import personal_identity
+        try:
+            personal_identity.bind_plan_attachments(_single_plan, _uid, _single_sid)
+        except PermissionError:
+            self._send_json({"error": "attachment_not_authorized"}, 403)
+            return
+        _single_plan["input_snapshot"] = {
+            **dict(_single_plan.get("input_snapshot") or {}),
+            "attachments": deepcopy(_single_plan.get("attachments") or []),
+        }
         _single_source_ref = _query_source_ref(payload.get("source_ref"))
         _single_role = str(payload.get("execution_role") or "champion").strip().lower()
         _single_role = _single_role if _single_role in {"champion", "challenger"} else "champion"
@@ -3534,6 +3558,7 @@ class Handler(BaseHTTPRequestHandler):
             if _single_cancel() or TEAMS._cancel_request_for(state, key, node):
                 TEAMS.cancel_queued(_single_qhash, key, "用户停止")
                 return None
+            personal_identity.bind_plan_attachments(_single_plan, _uid, _single_sid)
             if (node.get("active_attempt") is None and node.get("result")
                     and node.get("status") in
                     {"done", "partial", "error", "timeout", "interrupted", "incomplete"}):
@@ -3963,6 +3988,12 @@ class Handler(BaseHTTPRequestHandler):
             plan["project_context"] = SESSIONS.continuation_project_context(sid, user_id=_uid)
         if not self._project_access_allowed(plan.get("project_context") or {}, _uid, str(sid)):
             return
+        import personal_identity
+        try:
+            personal_identity.bind_plan_attachments(plan, _uid, str(sid))
+        except PermissionError:
+            self._send_json({"error": "attachment_not_authorized"}, 403)
+            return
         plan["_user_selected_mode"] = _user_selected_mode
         history_ctx = SESSIONS.conversation_context(sid, user_id=_uid)
         if history_ctx:
@@ -3984,6 +4015,7 @@ class Handler(BaseHTTPRequestHandler):
         plan["input_snapshot"] = {
             "team_id": _team_id, "question_sha256": hashlib.sha256(question.encode()).hexdigest(),
             "initial_plan_sha256": _canonical_sha256(plan), "captured_at": time.time(),
+            "attachments": deepcopy(plan.get("attachments") or []),
             "request_team_policy": {
                 key: deepcopy(_request_team_policy[key])
                 for key in ("min_agents", "max_agents", "candidate_harnesses", "max_parallel",
@@ -4561,6 +4593,14 @@ class Handler(BaseHTTPRequestHandler):
                         if (isinstance(_pt, dict) and len(_pt) == 1 and _solo_bound.get("ok")
                                 and _solo_bound.get("use_solo_fastpath")):
                             _plan = dict(_solo_bound.get("plan") or _plan)
+                            try:
+                                personal_identity.bind_plan_attachments(_plan, _uid, str(sid))
+                            except PermissionError:
+                                _finish_planning_failure({
+                                    "ok": False, "error": "attachment_not_authorized",
+                                    "blocked_before_native": True, "execution_calls": 0,
+                                }, _plan, mode)
+                                return
                             # solo 快答路补发 tasklist（2026-09-18）：多成员路径走
                             # legion_core 的 tasklist 播报，快答路此前不发——前端成员
                             # 未注册、过程事件被丢、执行动态空白。字段对齐 legion_core
@@ -4593,6 +4633,8 @@ class Handler(BaseHTTPRequestHandler):
                             _solo_task_id = str(_solo_bound["task_id"])
                             _solo_key = str(_solo_bound["harness"])
                             _solo_task = str(_solo_bound.get("task") or question)
+                            _solo_task += LEGION._media_prelude(
+                                question, _plan.get("attachments") or [], cb)
                             _solo_dir = str(_solo_bound.get("direction") or "programming")
                             # ★solo 也要多轮上下文(2026-09-02 d30 三连问真跑揪出):run_one 不走
                             #   _build_prelude(那是 dispatch 多家路径的)·solo 只看到裸问题→
@@ -4718,6 +4760,7 @@ class Handler(BaseHTTPRequestHandler):
                                                         _node.get("dependencies") or [])},
                                     delivery_contract=dict(_plan.get("delivery_contract") or {}),
                                     user_id=_uid_s, conversation_id=str(sid))
+                                personal_identity.bind_plan_attachments(_plan, _uid_s, str(sid))
                                 _attempt = TEAMS.begin_attempt(_team_id, _solo_task_id,
                                                                owner=f"server:{os.getpid()}")
                                 try:
@@ -5113,6 +5156,14 @@ class Handler(BaseHTTPRequestHandler):
                 # user_id 贯穿(军团自审 codex/deepseek P0):有真实 uid 用 uid;匿名用稳定
                 # session_id 作 uid→同一会话的长期记忆连续、又不与别人共用 memory/default。
                 _eff_uid = _uid if _uid != "default" else f"sess:{sid}"
+                try:
+                    personal_identity.bind_plan_attachments(_plan, _uid, str(sid))
+                except PermissionError:
+                    _finish_planning_failure({
+                        "ok": False, "error": "attachment_not_authorized",
+                        "blocked_before_native": True, "execution_calls": 0,
+                    }, _plan, mode)
+                    return
                 _dispatch_t0 = time.time()   # 记派活起点·enrich 据此扫本次窗口新增文件产物
                 _continuous_team = bool(mode == "orchestrate" and _plan.get("captain")
                                         and len(_plan.get("tasks") or {}) > 1)
@@ -5488,9 +5539,11 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
         stored_policy["continuation_parent_team_id"] = team_id
         plan.update(team_id=child, project_context=packet, model_overrides=overrides,
                     team_policy=stored_policy, conversation_context=question)
+        require_project_access(packet)  # Grants may be revoked while the request is queued.
+        import personal_identity
+        personal_identity.bind_plan_attachments(plan, user_id, conversation_id)
         TEAMS.record_continuation(
             team_id, request_id, owner=owner, status="running", started_at=time.time())
-        require_project_access(packet)  # Grants may be revoked while the request is queued.
         SESSIONS.save_turn(
             conversation_id, feedback, {"team_id": child, "status": "running", "results": []},
             mode=mode, user_id=user_id)
@@ -5578,6 +5631,8 @@ def _resume_saved_team(team_id: str, *, explicit: bool, user_id: str,
         return {"ok": True, "status": "unchanged", "team_id": team_id,
                 "reason": reason, "recovered": recovered or []}
 
+    personal_identity.bind_plan_attachments(
+        {**state, "project_context": packet}, user_id, conversation_id)
     facts = resume_facts_from_state(state, explicit=explicit)
     if not facts["eligible"] and facts["reason"] != "no recoverable tasks":
         return unchanged(facts["reason"])
@@ -5634,6 +5689,7 @@ def _resume_saved_team(team_id: str, *, explicit: bool, user_id: str,
         # Existing meta starts a new stream even when every business task is
         # already done. Only admitted recovery reaches this point.
         require_project_access(packet)  # Re-read revocable grants after admission too.
+        personal_identity.bind_plan_attachments(plan, user_id, conversation_id)
         TEAMS.append_event(team_id, {"team_id": team_id, "sid": conversation_id}, "meta")
         stream_started = True
         out = runner(question, plan=plan, cb=progress, qhash=team_id,

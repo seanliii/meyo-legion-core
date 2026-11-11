@@ -8,6 +8,7 @@ legacy default is ~/.meyo/agent_web_tokens.json. Never ship it in a release bund
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import hmac
 from http.cookies import SimpleCookie
 import ipaddress
@@ -456,6 +457,76 @@ def normalize_resource_aliases(values: dict, route: str = '') -> bool:
     return True
 
 
+_ATTACHMENT_PATH_KEYS = ("path", "file_path", "filepath", "local_path", "abspath")
+
+
+def attachment_path(attachment) -> str | None:
+    """One path interpretation for request checks, planners and author context."""
+    if isinstance(attachment, str):
+        return attachment
+    if isinstance(attachment, dict):
+        for key in _ATTACHMENT_PATH_KEYS:
+            value = attachment.get(key)
+            if value:
+                return value if isinstance(value, str) else None
+    return None
+
+
+def authorized_attachments(attachments, user: str, conversation_id: str = "") -> list[dict]:
+    """Validate the whole batch with existing file grants; never mint authority.
+
+    Descriptions are caller context, not ownership evidence. Preserve their
+    fields across round trips while canonicalizing the single readable path.
+    """
+    if not user or not isinstance(attachments, list):
+        raise PermissionError("attachment_not_authorized")
+    result = []
+    for item in attachments:
+        try:
+            path = attachment_path(item)
+            if isinstance(item, dict) and any(
+                    item.get(key) and item[key] != path for key in _ATTACHMENT_PATH_KEYS):
+                raise ValueError("conflicting attachment paths")
+            path = str(_absolute_unlinked_path(path, directory=False))
+            if not file_allowed(path, user, conversation_id):
+                raise ValueError("unregistered attachment")
+        except (OSError, ValueError, TypeError, RuntimeError):
+            raise PermissionError("attachment_not_authorized") from None
+        row = attachment_descriptor(item)
+        row["path"] = path
+        result.append(row)
+    return result
+
+
+def attachment_descriptor(item) -> dict:
+    """Preserve user labels/source descriptions without treating them as grants."""
+    path = attachment_path(item)
+    if not path:
+        raise ValueError("attachment_path_invalid")
+    row = deepcopy(item) if isinstance(item, dict) else {}
+    row["path"] = path
+    row["name"] = next((row[key] for key in ("name", "orig_name", "filename")
+                       if isinstance(row.get(key), str) and row[key]), os.path.basename(path))
+    return row
+
+
+def bind_plan_attachments(plan: dict, user: str, conversation_id: str = "") -> list[dict]:
+    """Recheck files on a new turn or persisted recovery using its input snapshot.
+
+    Explicit [] clears references. No source is recovered from model prose and
+    no previous successful read is treated as a current file grant.
+    """
+    project = plan.get("project_context")
+    sources = [plan, plan.get("input_snapshot"),
+               project.get("input_snapshot") if isinstance(project, dict) else None]
+    for source in sources:
+        if isinstance(source, dict) and "attachments" in source:
+            rows = authorized_attachments(source["attachments"], user, conversation_id)
+            plan["attachments"] = rows
+            return rows
+    return []
+
+
 def check_request(values: dict, user: str, *, allow_new: bool = False,
                   _conversation_id: str = "") -> bool:
     """Check identity and explicit filesystem grants before request persistence."""
@@ -521,7 +592,12 @@ def check_request(values: dict, user: str, *, allow_new: bool = False,
         requested.append(grant["root"])
     if len(set(requested)) > 1:
         return False
-    for name in ('project_context', 'plan', 'params'):
+    if "attachments" in values:
+        try:
+            authorized_attachments(values["attachments"], user, conversation)
+        except PermissionError:
+            return False
+    for name in ('project_context', 'plan', 'params', 'input_snapshot'):
         nested = values.get(name)
         if isinstance(nested, dict) and not check_request(
                 nested, user, allow_new=allow_new, _conversation_id=conversation):

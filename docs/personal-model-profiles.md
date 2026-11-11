@@ -32,7 +32,8 @@ MEYO="/绝对路径/个人版源码/meyo.py"
   ID 为1–64位 ASCII 字母、数字、`_`、`.`、`-`，以字母或数字开头。
   已有 ID 拒绝覆盖；换密钥时另起名称（例如 `kimi-next`）。
 - 候选库位于实例的 `secrets/model-profiles.json`，每项保留
-  `model/base_url/api_key` 三个必需字段，可选保存 `input_modalities`，文件权限0600。
+  `model/base_url/api_key` 三个必需字段，可选保存 `input_modalities`、
+  `context_window`、`model_auto_compact_token_limit`，文件权限0600。
   候选库没有 active 指针。
 - **`secrets/model.json` 仍是唯一实际运行绑定。** 列表只输出 ID、model、
   base_url、current；current 根据该文件的完整绑定（含密钥）比较得出，
@@ -72,3 +73,15 @@ MEYO="/绝对路径/个人版源码/meyo.py"
 它不会读取另一个并发请求的声明，也不会把公司目录的能力借给个人模型。
 配置与页面状态中的 `verified` 仍为 false；保存声明不是一次模型实测。
 供应方切换后的设备验证应使用明确的新会话，不能悄悄把旧供应方的原生历史发送给另一家。
+
+## 已确认的上下文容量
+
+同一个保存入口支持 `--context-window` 与 `--model-auto-compact-token-limit`。
+前者声明该提供方、该模型实际支持的 token 容量；后者是操作员明确选择的原生整理阈值。
+两项只接受 1 到 9223372036854775807 的整数，省略时保持原来未知／未覆盖的行为，
+不按模型名字猜值，也不在保存时发起模型或网络请求。
+
+容量仅从与本次模型、地址和授权一致的绑定写进 Codex 原生目录，正常启动与原断点续作
+共用此入口。阈值沿原生 `model_auto_compact_token_limit` 配置传递；不另造摘要器，
+不改变原会话身份或擅自切换到传输桥。声明容量不证明当前请求一定能成功，整理本身也可能
+产生模型请求；仍须查看原执行器的实际回执。命名候选、激活、原子保存和回退均保留这两项。

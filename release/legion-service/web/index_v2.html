@@ -4422,7 +4422,7 @@ if($('#personalExecutionNotice')&&!_personalCanExecute()){_personalLabel();toast
   prog.style.display='flex';
   document.title='⏳ 军团运行中…';
   const plan={};const sourceRef=currentQuerySource();
-const att=uploads.filter(u=>u.path).map(u=>u.path);if(att.length)plan.attachments=att;
+const att=uploads.filter(u=>u.path).map(u=>({path:u.path,name:u.orig_name||u.name||'',kind:u.kind||''}));if(att.length)plan.attachments=att;
   // 协作接力:用户在链路编辑器排好的顺序(谁交给谁)→ plan.pipeline,后端 _dispatch_relay 按此串行接力。
   // 不排也能跑(后端自选顺序);排了就尊重用户意图(context not control:给后端用户的编排选择)。
   if(_mode==='relay' && _relayChain.length>=2){plan.pipeline=[..._relayChain];}

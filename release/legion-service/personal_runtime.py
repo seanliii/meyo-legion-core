@@ -16,6 +16,8 @@ HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
 KEY_ENV = "MEYO_PERSONAL_PROVIDER_KEY"
 MODEL_PROFILE_ENV = ("MEYO_PERSONAL_STATE_DIR", "LEGION_PERSONAL_OWNER")
+_MODEL_CONTEXT_OPTIONS = ("context_window", "model_auto_compact_token_limit")
+_MODEL_PROFILE_OPTIONS = ("input_modalities", *_MODEL_CONTEXT_OPTIONS)
 _STATE_DIRS = ("secrets", "home", "codex-home", "data", "legion-home",
                "registry", "repos", "runtimes", "tmp")
 _PASSTHROUGH = {
@@ -354,8 +356,7 @@ def environment(state_dir: Path | str, inherited: dict | None = None) -> tuple[d
         env[KEY_ENV] = provider["api_key"]
         env["LEGION_CODEX_RESPONSES_BINDING"] = json.dumps({
             "model": provider["model"], "base_url": provider["base_url"], "api_key_env": KEY_ENV,
-            **({"input_modalities": provider["input_modalities"]}
-               if "input_modalities" in provider else {}),
+            **{name: provider[name] for name in _MODEL_PROFILE_OPTIONS if name in provider},
         })
     return env, config
 
@@ -398,7 +399,9 @@ def configure_mobile(state_dir: Path | str, key_file: Path | str, *,
 
 
 def configure_model(state_dir: Path | str, model: str, base_url: str, key_file: Path | str,
-                    *, input_modalities: list[str] | None = None) -> dict:
+                    *, input_modalities: list[str] | None = None,
+                    context_window: int | None = None,
+                    model_auto_compact_token_limit: int | None = None) -> dict:
     root = _root(state_dir)
     _configuration(root)
     key = _private(Path(key_file).expanduser().absolute(), limit=4096).decode().strip()
@@ -408,6 +411,9 @@ def configure_model(state_dir: Path | str, model: str, base_url: str, key_file: 
         "LEGION_CODEX_RESPONSES_BINDING": json.dumps({
             "model": model, "base_url": base_url, "api_key_env": KEY_ENV,
             **({"input_modalities": input_modalities} if input_modalities is not None else {}),
+            **({"context_window": context_window} if context_window is not None else {}),
+            **({"model_auto_compact_token_limit": model_auto_compact_token_limit}
+               if model_auto_compact_token_limit is not None else {}),
         }), KEY_ENV: key,
     })
     with _locked(root):
@@ -427,15 +433,14 @@ def _profile_binding(value: dict) -> dict:
     """Preserve optional input facts in the same private candidate/active binding."""
     required = {"model", "base_url", "api_key"}
     if (not isinstance(value, dict)
-            or not required <= set(value) <= required | {"input_modalities"}):
+            or not required <= set(value) <= required | set(_MODEL_PROFILE_OPTIONS)):
         raise ValueError("模型配置格式无效")
     from model_registry import explicit_responses_binding
 
     return explicit_responses_binding({
         "LEGION_CODEX_RESPONSES_BINDING": json.dumps({
             "model": value["model"], "base_url": value["base_url"], "api_key_env": KEY_ENV,
-            **({"input_modalities": value["input_modalities"]}
-               if "input_modalities" in value else {}),
+            **{name: value[name] for name in _MODEL_PROFILE_OPTIONS if name in value},
         }), KEY_ENV: value["api_key"],
     })
 
@@ -544,7 +549,9 @@ def _current_model(root: Path) -> dict | None:
 
 def save_model_profile(state_dir: Path | str, profile_id: str, model: str,
                        base_url: str, key_file: Path | str,
-                       *, input_modalities: list[str] | None = None) -> dict:
+                       *, input_modalities: list[str] | None = None,
+                       context_window: int | None = None,
+                       model_auto_compact_token_limit: int | None = None) -> dict:
     """Append one private candidate; never change the actual runtime binding."""
     root = _root(state_dir)
     profile_id = _profile_id(profile_id)
@@ -557,6 +564,9 @@ def save_model_profile(state_dir: Path | str, profile_id: str, model: str,
         binding = _profile_binding({
             "model": model, "base_url": base_url, "api_key": key,
             **({"input_modalities": input_modalities} if input_modalities is not None else {}),
+            **({"context_window": context_window} if context_window is not None else {}),
+            **({"model_auto_compact_token_limit": model_auto_compact_token_limit}
+               if model_auto_compact_token_limit is not None else {}),
         })
         profiles[profile_id] = binding
         _write_model_profiles(root, profiles)
@@ -677,6 +687,10 @@ def main(argv=None) -> int:
             command.add_argument("--input-modality", action="append", choices=("text", "image"),
                                  help="已确认的模型输入能力，可重复；省略则保持未知，不推断视觉能力")
             command.add_argument("--api-key-file", type=Path, required=True)
+            command.add_argument("--context-window", type=int,
+                                 help="该绑定已确认的模型容量；省略则保持未知")
+            command.add_argument("--model-auto-compact-token-limit", type=int,
+                                 help="明确选择的原生上下文整理阈值；未指定不替用户决定")
         elif name == "activate-model-profile":
             command.add_argument("--id", required=True, help="明确选择已保存的候选")
         elif name == "configure-capabilities":
@@ -726,7 +740,9 @@ def main(argv=None) -> int:
         elif args.command == "save-model-profile":
             result = save_model_profile(args.state_dir, args.id, args.model,
                                         args.base_url, args.api_key_file,
-                                        input_modalities=args.input_modality)
+                                        input_modalities=args.input_modality,
+                                        context_window=args.context_window,
+                                        model_auto_compact_token_limit=args.model_auto_compact_token_limit)
         elif args.command == "list-model-profiles":
             result = list_model_profiles(args.state_dir)
         elif args.command == "activate-model-profile":
@@ -744,7 +760,9 @@ def main(argv=None) -> int:
                     result = {"ok": True, "configured": False}
             elif args.command == "configure-model":
                 result = configure_model(args.state_dir, args.model, args.base_url,
-                                         args.api_key_file, input_modalities=args.input_modality)
+                                         args.api_key_file, input_modalities=args.input_modality,
+                                         context_window=args.context_window,
+                                         model_auto_compact_token_limit=args.model_auto_compact_token_limit)
             elif args.command == "configure-capabilities":
                 result = configure_capabilities(args.state_dir, args.tool)
             else:

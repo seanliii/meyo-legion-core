@@ -475,3 +475,59 @@ def test_modality_snapshot_older_registry_is_not_retried_without_environment(ada
     row, = adapter.hr._codex_bound_model_catalog(
         "fixture-personal-model", environment=snapshot)["models"]
     assert row["input_modalities"] == ["text"] and calls == []
+
+
+@pytest.mark.parametrize("is_managed", [False, True])
+@pytest.mark.parametrize("resume", [False, True])
+def test_declared_context_reaches_native_catalog_without_changing_identity(
+        adapter, monkeypatch, is_managed, resume):
+    if is_managed:
+        managed(adapter, monkeypatch)
+    ctx = context(adapter, resume=resume)
+    env = declared_environment(ctx, ["text", "image"])
+    binding = json.loads(env["LEGION_CODEX_RESPONSES_BINDING"])
+    binding.update(context_window=1048576, model_auto_compact_token_limit=900000)
+    env["LEGION_CODEX_RESPONSES_BINDING"] = json.dumps(binding)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result = adapter.hr._codex_adapter("__ut_context_capacity", "continue original", ctx=ctx)
+    assert result["status"] == "ok", result
+    call, = adapter.calls
+    row, = call["catalog"]["models"]
+    assert row["context_window"] == row["max_context_window"] == 1048576
+    assert call["config"]["model_auto_compact_token_limit"] == 900000
+    assert row["input_modalities"] == ["text", "image"]
+    assert result["native_checkpoint"]["session_id"] == "fixture-native-thread"
+    assert ("resume" in call["command"]) is resume
+    assert ctx.appid not in json.dumps(call["catalog"])
+
+
+def test_context_capacity_is_not_borrowed_from_another_binding(adapter, monkeypatch):
+    ctx = context(adapter)
+    env = declared_environment(ctx, ["text", "image"])
+    binding = json.loads(env["LEGION_CODEX_RESPONSES_BINDING"])
+    binding.update(model="different-fixture", context_window=1048576)
+    env["LEGION_CODEX_RESPONSES_BINDING"] = json.dumps(binding)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result = adapter.hr._codex_adapter("__ut_mismatched_capacity", "original", ctx=ctx)
+    assert result["status"] == "ok", result
+    row, = adapter.calls[0]["catalog"]["models"]
+    assert "context_window" not in row and "max_context_window" not in row
+    row, = adapter.hr._codex_bound_model_catalog(ctx.model, environment=env)["models"]
+    assert "context_window" not in row
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5, "1000000", 2**63])
+def test_invalid_declared_context_never_starts_native(adapter, monkeypatch, invalid):
+    ctx = context(adapter)
+    env = declared_environment(ctx, ["text"])
+    binding = json.loads(env["LEGION_CODEX_RESPONSES_BINDING"])
+    binding["context_window"] = invalid
+    env["LEGION_CODEX_RESPONSES_BINDING"] = json.dumps(binding)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result = adapter.hr._codex_adapter("__ut_invalid_capacity", "original", ctx=ctx)
+    assert result["status"] == "unavailable"
+    assert result["error_envelope"]["category"] == "model_config"
+    assert adapter.calls == []

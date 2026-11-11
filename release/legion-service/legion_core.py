@@ -1220,12 +1220,7 @@ def plan_request_with_model(question: str, attachments: list | None = None,
     except Exception:
         profiles = [{"key": k} for k in sorted(_harness_keys())]
     # 归一附件(前端传 dict·旧调用传字符串),规划器才能看到真实路径/类型判断该派谁
-    _paths = [pp for pp in (_attachment_path(a) for a in (attachments or [])) if pp]
-    try:
-        import file_hub
-        att = [{"path": p, "kind": file_hub.kind_of(p)} for p in _paths]
-    except Exception:
-        att = [{"path": p} for p in _paths]
+    att = _attachment_context_rows(attachments or [])
     # 源码/发布包优先使用同一受版本管理实现，不误用个人目录的不兼容 CLI。
     cm = "" if _personal_native else next((p for p in (
         os.path.join(HERE, "..", "..", "scripts", "export-model-tool.py"),
@@ -3126,7 +3121,7 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
     except Exception:
         pass
 
-    from harness_registry import RuntimeLease
+    from harness_registry import RuntimeLease, runtime_observation_facts
     idle_limit = _IDLE_TIMEOUT
     lease = RuntimeLease(idle_limit, deadline)
 
@@ -3134,6 +3129,18 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
     err_buf: list[str] = []
     state = {"last": time.time()}
     lock = threading.Lock()
+    runtime_observations = {}
+
+    def _with_runtime_observations(result):
+        with lock:
+            observations = sorted(runtime_observations.values(),
+                                  key=lambda item: item.get("observed_at", 0))
+        if isinstance(result, dict) and observations:
+            facts = result.get("native_facts")
+            result["native_facts"] = {
+                **(facts if isinstance(facts, dict) else {}),
+                "runtime_observations": observations}
+        return result
     # 事件回流:worker 透传上来的过程事件带此前缀(和 harness_registry._LEGION_EV_PREFIX 一致)。
     _EV_PREFIX = "\x1e[legion-ev]"
 
@@ -3153,7 +3160,13 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
                             with lock:
                                 state["last"] = time.time()
                             continue  # 私有活动通道，禁止透传 UI/公开 tool_trace。
-                        if not ev.get("hb"):
+                        observation = runtime_observation_facts(ev.get("runtime_observation"))
+                        if observation:
+                            with lock:
+                                # Finite source/phase pairs keep the latest retry/error even
+                                # when a long call later produces many CPU/output observations.
+                                runtime_observations[(observation["source"], observation["phase"])] = observation
+                        if not ev.get("hb") and ev.get("meaningful") is not False:
                             lease.observe()
                             with lock:
                                 state["last"] = time.time()
@@ -3364,6 +3377,7 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
         # 用户取消 vs 卡死超时:状态分开(军团自审 P0)。取消是用户意图·不是失败·绝不触发换模型
         # 自愈/接力(run_one/dispatch 会据 status==cancelled 停手·不把"用户喊停"当"该重试的故障")。
         _parent_error = ("用户停止" if cancelled else f"已切进程:{kill_reason}")
+        _with_runtime_observations(_partial_result)
         _parent_error += "(保留了部分产出)" if _partial else ""
         if _partial_result.get("error"):
             _parent_error += "\n" + str(_partial_result["error"])
@@ -3398,11 +3412,12 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
         ln = ln.strip()
         if ln.startswith("{"):
             try:
-                return json.loads(ln)
+                return _with_runtime_observations(json.loads(ln))
             except Exception:
                 continue
-    return {"status": f"err:worker_no_json:rc{proc.returncode}", "final": "",
-            "error": (errout or "")[-300:]}
+    return _with_runtime_observations({
+        "status": f"err:worker_no_json:rc{proc.returncode}", "final": "",
+        "error": (errout or "")[-300:]})
 
 
 def _appid_for_model(model: str) -> Optional[str]:
@@ -5490,14 +5505,26 @@ def _dispatch_relay(question, plan, cb, qhash, user_id: str = "default",
 #   mode="relay" 军团协作(串行):一条流水线,A 干完把产出交给 B 接着干,顺序传递
 def _attachment_path(attachment) -> Optional[str]:
     """归一前端上传对象与旧纯路径格式,供规划器/派活prelude共用(单一事实源)。"""
-    if isinstance(attachment, str):
-        return attachment
-    if isinstance(attachment, dict):
-        for key in ("path", "file_path", "filepath", "local_path", "abspath"):
-            value = attachment.get(key)
-            if value:
-                return str(value)
-    return None
+    from personal_identity import attachment_path
+    return attachment_path(attachment)
+
+
+def _attachment_context_rows(attachments: list) -> list[dict]:
+    """规划器和作者共用来源描述；存在性与读过内容是两件事。"""
+    import file_hub
+    from personal_identity import attachment_descriptor
+    rows = []
+    for attachment in attachments:
+        try:
+            row = attachment_descriptor(attachment)
+        except ValueError:
+            rows.append({"availability": "invalid_path", "content_read": "not_performed"})
+            continue
+        row.update(kind=file_hub.kind_of(row["path"]),
+                   availability="file_present" if os.path.isfile(row["path"]) else "missing",
+                   content_read="not_performed")
+        rows.append(row)
+    return rows
 
 
 def _media_prelude(question: str, attachments: list, cb=None) -> str:
@@ -5506,29 +5533,22 @@ def _media_prelude(question: str, attachments: list, cb=None) -> str:
     以前按后缀自动 read_pdf/see_image/video_frame=父进程替模型选路,已删除。
     现在告诉模型:有什么文件、类型、可用命令;模型读完自己决定调哪个、调几次。
     """
-    import file_hub
-    # 归一附件格式(修上游断链):前端 /api/legion/upload 返回的是 dict {path,url,kind,...},
-    # 用户对话时原样把这些 dict 数组当 attachments 传回。旧代码直接 os.path.isfile(dict) → 崩
-    # TypeError,任何带附件的 query 还没进军团就 500。用 _attachment_path 归一,取不出的静默跳过。
-    atts = []
-    for a in (attachments or []):
-        p = _attachment_path(a)
-        if p and os.path.isfile(p):
-            atts.append(p)
+    atts = _attachment_context_rows(attachments or [])
     if not atts:
         return ""
     media_cli = os.path.join(HERE, "media_tools.py")
     file_cli = os.path.join(HERE, "file_hub.py")
     lines = ["\n\n【用户上传的文件·请根据任务自主选择工具读取/分析】"]
-    for p in atts[:10]:
-        kind = file_hub.kind_of(p)
-        lines.append(f"- {p}  (类型:{kind})")
+    for row in atts:
+        lines.append("- " + json.dumps(row, ensure_ascii=False))
     lines += [
         "工具入口不是授权或可用性证明；配置与可用性以本次工具结果为准:",
         f"  PDF: python3.12 {media_cli!r} read_pdf 'PATH'",
-        f"  图片: python3.12 {media_cli!r} --json see_image 'PATH' 'QUESTION'",
+        "  图片/已抽帧：优先使用本家原生看图工具（Codex 为 view_image），以本次模型的图片输入声明和实际工具结果为准。",
+        "  没有原生图片输入时，先查现有工具目录中已获授权且绑定可用的视觉工具；see_image 不自动复用本次原生模型，不默认调用未绑定的识图通路。",
         f"  图片转视频: python3.12 {media_cli!r} gen_video 'PROMPT' 'PATH' '5' '16:9'  # 文生视频(无PATH)走Seedance方舟真AI通道约3-5分钟;带PATH图生视频云不可用回退本地运镜(degraded=true,交付须如实说明)",
         f"  查看视频某帧: python3.12 {media_cli!r} video_frame 'PATH' 'SECONDS'",
+        "  抽帧返回当前任务工作区的图片路径、来源路径、请求时刻与是否回退首帧；seek 值不是已测量的帧 PTS。按参考内容自主选取时刻/连续动作区间，再实际看图。文件存在或抽帧成功不代表已理解画面。",
         f"  Excel/代码/其它: python3.12 {file_cli!r} 'PATH'",
         "你自己判断是否需要读取、读哪个、如何结合用户目标;父进程没有替你做判断。",
     ]

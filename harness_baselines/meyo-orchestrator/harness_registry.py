@@ -970,7 +970,62 @@ class _RunEventContext:
         self.state = {"count": 0, "last": ""}
         self.artifact_seen = set()
         self.thinking_depth = {}
+        self.runtime_status = {}
         self.lock = _threading.RLock()
+
+
+def runtime_observation_facts(value):
+    """Content-free observations; never copy provider text, headers or tool bodies."""
+    if not isinstance(value, dict):
+        return None
+    if (value.get("source") not in {"native_output", "native_cpu", "responses_transport", "native_error"}
+            or value.get("phase") not in {"activity", "start", "bytes", "end", "error", "retry"}):
+        return None
+    facts = {key: value[key] for key in ("source", "phase")}
+    for key in ("observed_at", "budget_s"):
+        number = value.get(key)
+        if type(number) in (int, float) and 0 < number < float("inf"):
+            facts[key] = number
+    for key in ("retry_number", "retry_total"):
+        if type(value.get(key)) is int and 0 < value[key] <= 1000000:
+            facts[key] = value[key]
+    if type(value.get("http_status")) is int and 400 <= value["http_status"] <= 599:
+        facts["http_status"] = value["http_status"]
+    for key in ("stream_disconnected", "request_send_error", "retry_limit_exceeded"):
+        if value.get(key) is True:
+            facts[key] = True
+    return facts
+
+
+def _emit_runtime_status(tag, facts, event_context=None):
+    facts = runtime_observation_facts(facts)
+    if facts is None:
+        return
+    signature = _json.dumps({k: v for k, v in facts.items() if k != "observed_at"}, sort_keys=True)
+    now = _t.monotonic()
+    if event_context is not None:
+        with event_context.lock:
+            previous = event_context.runtime_status.get(facts["source"])
+            if previous and previous[0] == signature and now - previous[1] < 15:
+                return
+            event_context.runtime_status[facts["source"]] = (signature, now)
+    facts["observed_at"] = _t.time()
+    labels = {"native_output": "原生进程有输出；尚不能据此判断提供方进度",
+              "native_cpu": "原生进程有 CPU 活动；不代表工具完成",
+              "responses_transport": "已观测到模型连接状态变化",
+              "native_error": "原生调用报告错误"}
+    text = (f"原生连接正在重试（{facts['retry_number']}/{facts['retry_total']}）"
+            if facts["phase"] == "retry" and "retry_number" in facts and "retry_total" in facts
+            else labels[facts["source"]])
+    event = {"t": "task_status", "agent": tag, "status": "running",
+             "heartbeat": False, "meaningful": False,
+             "runtime_observation": facts, "x": text}
+    try:
+        if not _emit_inproc(event, event_context):
+            _sys.stderr.write(_LEGION_EV_PREFIX + _json.dumps(event, ensure_ascii=False) + "\n")
+            _sys.stderr.flush()
+    except (OSError, ValueError):
+        pass  # A closed observation sink must not interrupt the native call.
 
 
 def set_inproc_event_sink(cb):
@@ -1353,6 +1408,23 @@ def _emit_harness_event_unlocked(tag: str, stream: str, line: str, event_context
     if structured:
         try:
             obj = _json.loads(raw)
+            if tag == "codex" and isinstance(obj, dict) and obj.get("type") == "error":
+                message = obj.get("message")
+                facts = {"source": "native_error", "phase": "error"}
+                if isinstance(message, str):
+                    retry = _re.match(r"Reconnecting\s+(\d+)/(\d+)\b", message, _re.I)
+                    if retry:
+                        facts.update(phase="retry", retry_number=int(retry[1]), retry_total=int(retry[2]))
+                    status = _re.match(r"(?:unexpected status:?\s+|exceeded retry limit,\s*last status:\s+)([45]\d\d)\b", message, _re.I)
+                    if status:
+                        facts["http_status"] = int(status[1])
+                    for marker, key in (("stream disconnected", "stream_disconnected"),
+                                        ("error sending request", "request_send_error"),
+                                        ("exceeded retry limit", "retry_limit_exceeded")):
+                        if marker in message.lower():
+                            facts[key] = True
+                _emit_runtime_status(tag, facts, event_context)
+                return
             friendly = _friendly_stream_event(obj)
             native_tool = _native_tool_event(obj, tag)
             if friendly is None and native_tool is None:
@@ -1693,6 +1765,10 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
     env.update(getattr(_INPROC_RUNTIME_ENV, "values", {}) or {})
     env = _gateway_no_proxy(env)
     event_context = _RunEventContext(getattr(_INPROC_EVENT_SINK, "cb", None))
+    check = getattr(_INPROC_CANCEL_CHECK, "check", None)
+    if callable(check) and check():
+        _INPROC_CANCEL_CHECK.cancelled = True
+        return _NS(returncode=130, stdout="", stderr="", cancelled=True)
     _popen_kw = {"start_new_session": True} if os.name != "nt" else {}
     proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE, text=True, bufsize=1,
                      env=env, cwd=cwd, stdin=_stdin, **_popen_kw)
@@ -1767,7 +1843,7 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
         _t.monotonic() + float(timeout) if timeout and timeout > 0 else 0)
     lease = RuntimeLease(_TASK_IDLE_S, deadline)
 
-    def activity(event=None):
+    def activity(event=None, *, source=None):
         lease.observe(event)
         # 不经过 UI sink；worker 保留此协议，父层消费后不对外广播。
         # 无内容的活动事实也必须有换行，不能让旧的 '.' 心跳卡在 readline 缓冲里。
@@ -1775,6 +1851,10 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             value = {"t": "runtime_activity", **(event or {})}
             _sys.stderr.write(_LEGION_EV_PREFIX + _json.dumps(value) + "\n")
             _sys.stderr.flush()
+        if source:
+            _emit_runtime_status(tag, {"source": source,
+                "phase": (event or {}).get("phase", "activity"),
+                **({"budget_s": event["budget_s"]} if event and "budget_s" in event else {})}, event_context)
 
     transport_buffer = b""
     transport_open = runtime_activity_fd is not None
@@ -1805,7 +1885,7 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
                         or type(event["budget_s"]) not in (int, float)
                         or not 0 < event["budget_s"] < float("inf")):
                     continue
-                activity(event)  # Same inner lease + existing private outer-worker channel.
+                activity(event, source="responses_transport")  # Owned pipe, never native text.
             except (ValueError, TypeError, UnicodeError):
                 pass
         if len(transport_buffer) > 4096:
@@ -1824,7 +1904,7 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             if text:
                 buf.append(text)
                 if task_run:
-                    activity()
+                    activity(source="native_output")
                 pending += text
                 while "\n" in pending:
                     line, pending = pending.split("\n", 1)
@@ -1893,6 +1973,36 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
         return _pgroup_cpu_seconds(proc.pid)
 
     cpu_last = _owned_cpu_seconds() if task_run and os.name != "nt" else -1
+
+    def _stop_owned_native():
+        # Cancellation and a native deadline can race. Both must drain the same
+        # owned process before the parent's existing 15-second hard deadline.
+        if _process_scope is not None:
+            _process_scope.observe(force=True)
+        try:
+            if os.name != "nt":
+                os.killpg(proc.pid, _signal.SIGTERM)
+            else:
+                proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                if os.name != "nt":
+                    os.killpg(proc.pid, _signal.SIGKILL)
+                else:
+                    proc.kill()
+            except Exception:
+                pass
+            proc.wait()
+        if os.name != "nt":
+            try:
+                os.killpg(proc.pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if _process_scope is not None:
+            _process_scope.cleanup()
+        to.join(timeout=2); te.join(timeout=2)
+
     try:
         while proc.poll() is None:
             if _process_scope is not None:
@@ -1910,7 +2020,7 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             if task_run and os.name != "nt" and _t.monotonic() - cpu_at >= cpu_interval:
                 cpu_now = _owned_cpu_seconds()
                 if cpu_now >= 0 and cpu_last >= 0 and cpu_now - cpu_last >= 0.02:
-                    activity()
+                    activity(source="native_cpu")
                 cpu_last, cpu_at = cpu_now, _t.monotonic()
             reason = lease.expired() if task_run else (
                 "command_timeout" if deadline and _t.monotonic() >= deadline else None)
@@ -1922,48 +2032,12 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             _t.sleep(0.1)
         if cancelled:
             _INPROC_CANCEL_CHECK.cancelled = True
-            if _process_scope is not None:
-                _process_scope.observe(force=True)
-            try:
-                if os.name != "nt":
-                    os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
-                else:
-                    proc.terminate()
-                proc.wait(timeout=3)
-            except Exception:
-                try:
-                    if os.name != "nt":
-                        os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
-                    else:
-                        proc.kill()
-                except Exception:
-                    pass
-                proc.wait()
-            if os.name != "nt":
-                try:
-                    os.killpg(proc.pid, _signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            if _process_scope is not None:
-                _process_scope.cleanup()
-            to.join(timeout=2); te.join(timeout=2)
+            _stop_owned_native()
             return _NS(returncode=130, stdout="".join(out_buf), stderr="".join(err_buf),
                        cancelled=True,
                        **({"native_stdin_error": stdin_error} if native_stdin is not None else {}))
     except _sp.TimeoutExpired as _te:
-        if _process_scope is not None:
-            _process_scope.observe(force=True)
-        try:
-            if os.name != "nt":
-                os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
-            else:
-                proc.kill()
-        except Exception:
-            pass
-        proc.wait()
-        if _process_scope is not None:
-            _process_scope.cleanup()
-        to.join(timeout=2); te.join(timeout=2)
+        _stop_owned_native()
         # P0-2(codex dogfood 梳理揪出·CC 亲核):timeout 时进程被 kill 前 out_buf 常已含
         # `thread.started`(原生会话 id)。旧版直接 raise 丢弃 → 有原生 resume 能力的家
         # (codex/deepseek)下一轮无法 resume、从零重开。把已收集输出【附到异常对象】再 raise:
@@ -3092,7 +3166,8 @@ def _codex_bound_model_catalog(model, *, environment=None, apply_patch_tool_type
     The executor and output truncation match native fallback defaults; unknown
     context windows and reasoning levels are not invented. Input modalities come
     only from the registry declaration for this exact bound model.
-    Patch support comes only from the validated, matched operator binding.
+    Patch support and context capacity come only from the validated, matched
+    operator binding; an undeclared capacity stays unknown.
     """
     import hashlib
 
@@ -3133,6 +3208,16 @@ def _codex_bound_model_catalog(model, *, environment=None, apply_patch_tool_type
     }]}
     if apply_patch_tool_type == "freeform":
         catalog["models"][0]["apply_patch_tool_type"] = apply_patch_tool_type
+    if (isinstance(environment, dict)
+            and environment.get("LEGION_CODEX_TRANSPORT", "").strip().lower() == "responses"):
+        try:
+            from model_registry import explicit_responses_binding
+            binding = explicit_responses_binding(environment)
+        except (ImportError, TypeError, ValueError):
+            binding = None
+        if binding and binding["model"] == model and "context_window" in binding:
+            catalog["models"][0]["context_window"] = binding["context_window"]
+            catalog["models"][0]["max_context_window"] = binding["context_window"]
     return catalog
 
 
@@ -3406,7 +3491,8 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                 except (AttributeError, TypeError, ValueError) as binding_error:
                     if getattr(binding_error, "binding_option", None) in (
                             "stream_idle_timeout_ms", "apply_patch_tool_type",
-                            "model_auto_compact_token_limit", "error_compatibility_profile"):
+                            "model_auto_compact_token_limit", "context_window",
+                            "error_compatibility_profile"):
                         raise
                     try:
                         declared = _json.loads(operator_env.get("LEGION_CODEX_RESPONSES_BINDING") or "{}")
@@ -3809,6 +3895,8 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
             r.stdout, r.returncode)
         final = _reconcile_last_message(final, _native_facts)
         _runtime_facts(_native_facts)
+        if getattr(r, "cancelled", False):
+            _native_facts.update(cancelled=True, interrupted=True)
         # Native fatal events describe this turn's failure. Tool output may
         # contain permission/credential documentation and is not that failure.
         # The full tool observations remain in native_facts; old CLIs without a
@@ -3851,6 +3939,8 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                     except ImportError:
                         pass  # Standalone legacy orchestrators may not ship the service module.
                 break
+            if not err and getattr(r, "cancelled", False):
+                err = "原生调用已停止"
             if not err:
                 parts = []
                 if (r.stderr or "").strip():
@@ -3858,7 +3948,9 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                 if (r.stdout or "").strip():
                     parts.append("stdout:\n" + r.stdout.strip())
                 err = "\n".join(parts)[-_FINAL_CAP:] or "codex 无输出"
-        return {"final": final[:_FINAL_CAP], "status": "ok" if r.returncode == 0 else f"rc{r.returncode}",
+        return {"final": final[:_FINAL_CAP],
+                "status": "cancelled" if getattr(r, "cancelled", False) else "ok" if r.returncode == 0 else f"rc{r.returncode}",
+                **({"cancelled": True, "ok": False} if getattr(r, "cancelled", False) else {}),
                 "elapsed": round(_t.time() - t0, 1), "error": err,
                 **({"error_envelope": _error_envelope} if _error_envelope else {}),
                 "responses_transport": _provider_id,

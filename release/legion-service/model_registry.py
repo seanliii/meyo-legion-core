@@ -806,6 +806,13 @@ def explicit_responses_binding(environment: dict | None = None) -> dict:
         if type(limit) is not int or limit <= 0:
             raise ValueError("显式 Responses 的 max_output_tokens 须为正整数")
         extra["max_output_tokens"] = limit
+    if "context_window" in config:
+        limit = config["context_window"]
+        if type(limit) is not int or not 1 <= limit <= 2**63 - 1:
+            error = ValueError("显式 Responses 的 context_window 须为 1..9223372036854775807 的整数")
+            error.binding_option = "context_window"
+            raise error from None
+        extra["context_window"] = limit
     if "model_auto_compact_token_limit" in config:
         limit = config["model_auto_compact_token_limit"]
         if type(limit) is not int or not 1 <= limit <= 2**63 - 1:

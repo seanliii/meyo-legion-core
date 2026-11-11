@@ -636,12 +636,25 @@ def extract_audio(video_path: str, timeout_s: int = 300) -> dict:
 
 
 def video_frame(video_path: str, at_s: float = 1.0, timeout_s: int = 120) -> dict:
-    """抽视频某一帧成图片(→ png),可再喂 see_image 让军团"看视频"。返回 {ok,path,url}。"""
+    """按作者选择抽一帧；任务帧留在本工作区，供原生 view_image 等读取。"""
     if not _has_ffmpeg():
         return {"ok": False, "error": "本机无 ffmpeg"}
+    env, scoped = _model_tool_env()
+    workspace = None
+    if scoped or "MEYO_WORKDIR" in env:
+        from personal_runtime import model_tool_workspace
+        try:
+            workspace = model_tool_workspace(env, require_bound=True)
+        except (OSError, ValueError, TypeError):
+            return {"ok": False, "error": "media_image_workspace_invalid"}
+        if not os.path.isabs(video_path):
+            video_path = str(workspace / video_path)
     if not os.path.isfile(video_path):
         return {"ok": False, "error": f"视频不存在: {video_path}"}
-    out = _new_path("png")
+    # No shared-directory URL exists for task files. Unbound operator calls keep
+    # the legacy /media mapping; a broken task binding never falls back to it.
+    out = (str(workspace / f"video-frame-{uuid.uuid4().hex}.png")
+           if workspace is not None else _new_path("png"))
     fallback = False
     try:
         r = subprocess.run(["ffmpeg", "-y", "-ss", str(at_s), "-i", video_path,
@@ -655,7 +668,10 @@ def video_frame(video_path: str, at_s: float = 1.0, timeout_s: int = 120) -> dic
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"抽帧超时({timeout_s}s)"}
     if os.path.isfile(out) and os.path.getsize(out) > 100:
-        return {"ok": True, "path": out, "url": _rel_url(out), "bytes": os.path.getsize(out),
+        return {"ok": True, "path": out, "url": "" if workspace is not None else _rel_url(out),
+                "bytes": os.path.getsize(out), "source_path": os.path.abspath(video_path),
+                "requested_at_s": at_s, "fallback_to_first_frame": fallback,
+                # Backward-compatible seek value, not a measured frame PTS.
                 "at_s": 0 if fallback else at_s,
                 "note": "指定时间无帧·已透明回退首帧" if fallback else ""}
     return {"ok": False, "error": (r.stderr or "抽帧失败")[-300:]}

@@ -237,7 +237,20 @@ test("附件尚无 path 时，send 不得悄悄派发无附件任务", { timeout
       sentBeforeUpload.map((call) => JSON.parse(call.body).plan)));
   // 允许窄修选择“阻止发送”或“等待上传”；若最终发送，必须携带真实返回的 path。
   for (const call of dispatchCalls(ui))
-    assert.deepEqual(JSON.parse(call.body).plan.attachments, [ENTRY.path]);
+    assert.deepEqual(JSON.parse(call.body).plan.attachments,
+      [{path: ENTRY.path, name: "input.csv", kind: ENTRY.kind}]);
+});
+
+test("上传后派发保留原文件名与类型，路径仍来自服务器", async () => {
+  const ui = fixture();
+  await ui.upload(new File([TEXT], "原始参考.csv", {type: "text/csv"}));
+  ui.get("q").value = "使用我的参考继续";
+  await ui.context.send();
+  const [call] = dispatchCalls(ui);
+  assert.ok(call, "必须实际调用原 send 的派发入口");
+  assert.equal(dispatchCalls(ui).length, 1);
+  assert.deepEqual(JSON.parse(call.body).plan.attachments,
+    [{path: ENTRY.path, name: "原始参考.csv", kind: ENTRY.kind}]);
 });
 
 test("原身份重新授权期间返回的上传应明确失败而非永久上传中", { timeout: 3000 }, async () => {
