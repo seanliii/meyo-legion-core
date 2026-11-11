@@ -529,6 +529,10 @@ def elect_captain(question: str, plan: dict | None = None,
     if budget_pause:
         return {**budget_pause, "bids": bids, "provider_results": _provider_facts()}
     valid = _harness_keys()
+    policy = plan.get("team_policy") if isinstance(plan.get("team_policy"), dict) else {}
+    scope = policy.get("candidate_harnesses")
+    if isinstance(scope, (list, tuple, set)):
+        valid &= {str(key) for key in scope if str(key)}
     explicit = str(plan.get("captain") or "").strip()
     try:
         import captain_preferences as _cp
@@ -543,6 +547,9 @@ def elect_captain(question: str, plan: dict | None = None,
     _elect_dir = str((plan.get("directions") or {}).get(str(plan.get("captain") or ""))
                      or plan.get("direction") or "")
     candidates = [explicit] if explicit in valid else _captain_candidates(_elect_dir)
+    # Election, execution and fallback share the caller's candidate scope.
+    # An empty explicit scope must not become an unrestricted audition.
+    candidates = [key for key in candidates if key in valid]
     if not explicit and _pref.get("candidates"):
         allowed_pref = set(_pref["candidates"])
         candidates = [key for key in candidates if key in allowed_pref]
@@ -3703,6 +3710,10 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             facts = {"artifacts": [], "artifact_safety_observations": notes,
                      "artifact_export": {"exported_files": 0, "observations": notes,
                                          "workdir": workdir}}
+        return record_artifact_facts(out, facts, workdir)
+
+    def record_artifact_facts(out, facts, workdir):
+        """Keep the same export/version facts in responses and both memory slots."""
         out.update(facts)
         out["workdir"] = workdir
         arts = out["artifacts"]
@@ -4081,7 +4092,8 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         memory_dir = ""
     prior_attempts: list[dict] = []
     _attempt_usages: list[dict] = []
-    _last_native: dict = dict(_scope_metadata)
+    task_facts.update(_memory_scope_metadata)
+    _last_native: dict = dict(_memory_scope_metadata)
 
     # A cancelled attempt may never reach the native process. Keep only the
     # already-selected/actually-returned resume reference, not old execution facts.
@@ -4173,6 +4185,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         return True
 
     preserve_native_state = False
+    native_reported_artifacts: list[dict] = []
     # 学 codex history 回流(mcp_tool_call.rs:875 失败也进 history)+ deepseek timeout-policy
     # (失败结果原样喂回模型):重试不再拿原 task 重跑(那样每轮失忆·永远重复同样失败),
     # 而是把"上一轮我怎么干、失败成什么样"作为 context 拼进新 task,让新进程的模型看到自己
@@ -4201,6 +4214,10 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
     attempt = 0
     executed_attempts = 0
     native_attempts = []
+    # Actual executions own their action lists. Failure-history rows are not
+    # exhaustive: cancellation and native depth upgrades need not append one.
+    # Keeping the lists here retains those facts without counting retries twice.
+    action_batches: list[list[dict]] = []
     # 动态重试上限(用户 2026-08-29):失败率高(网关限流)→自动多试几个 appid/模型·不再死守
     # LEGION_GATEWAY_RETRIES=2(2个恰好都限流就误判失败);失败率低→精简省成本。永远 ≤ 模型池
     # (exclude_models 天然收敛)。每轮循环内重算(失败率是滑动窗口·实时反映当下限流态)。
@@ -4513,6 +4530,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             if model_override and model_override not in tried_models:
                 tried_models.append(model_override)
             executed_attempts += 1
+            action_batches.append(_actions)
             if _is_external:
                 result = _run_external_inprocess(
                     key, task_this, qhash, model_override, appid_override,
@@ -4544,6 +4562,11 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                 result = _run_harness_isolated(key, task_this, qhash,
                                                float(_ATTEMPT_TIMEOUT if attempt_timeout is None else attempt_timeout),
                                                model_override, appid_override, **_iso_kw)
+        # Capture this native invocation before any legacy memory recovery can
+        # replace result.artifacts with an older export snapshot.
+        native_reported_artifacts = [dict(item) for item in
+            [*(result.get("artifacts") or []), *(result.get("discovered_artifacts") or [])]
+            if isinstance(item, dict)]
         # The external transport redacts its launch environment. Cover legacy
         # adapters too, using this invocation's actual binding before recording
         # native attempts or exposing a diagnostic through a result/event.
@@ -4586,7 +4609,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                         ("native_checkpoint", "resumed_native", "native_events", "transport_failures",
                          "responses_transport", "workdir", "cwd")
                         if result.get(name) is not None}
-        _last_native.update(_scope_metadata)
+        _last_native.update(_memory_scope_metadata)
         if result.get("native_resume_error"):
             _last_native["native_resume_error"] = result["native_resume_error"]
         _last_native["native_facts"] = native_facts
@@ -4799,17 +4822,12 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         # 故障"重试(那会变成用户喊停却偷偷换家再跑)。直接返回 cancelled·保留宽限期 partial。
         if status == "cancelled":
             emit({"t": "task_status", "status": "cancelled", "x": "用户停止·已切进程"})
-            cancelled_result = {"key": key, "harness": key, "status": "cancelled",
-                                "final": final, "elapsed": elapsed,
-                                "error": str(result.get("error") or "用户停止"),
-                                "attempts": max(0, executed_attempts - int(depth_upgraded)),
-                                "execution_calls": executed_attempts, "cancelled": True,
-                                "partial": bool(result.get("partial")),
-                                "execution_depth": execution_depth,
-                                "execution_depth_history": list(execution_depth_history),
-                                 "execution_depth_upgraded": depth_upgraded,
-                                 "usage": result.get("usage"), **_last_native}
-            return _with_cancel_native_reference(cancelled_result)
+            # Return to the shared terminal collector instead of bypassing it.
+            # Only an attempt that actually ran can report artifact selections;
+            # cancellation itself remains authoritative and never retries.
+            last = {"status": "cancelled", "final": final,
+                    "error": str(result.get("error") or "用户停止")}
+            break
         if (not result.get("error_envelope") and native_facts
                 and _native_budget_exit(result) and status == "incomplete"):
             checkpoint = result.get("native_checkpoint")
@@ -4918,8 +4936,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
             _model = str(result.get("model_used") or "") or (tried_models[-1] if tried_models else "默认")
             # 用户中心:交付里带上"哪家干的·什么模型"·让用户能判断可信度/决定换最强家再试
             # (CLAUDE.md 过程透明可感)。harness/model 是前端友好别名·保留 key/model_used 兼容。
-            _tool_trace = [action for row in prior_attempts for action in (row.get("actions") or [])]
-            _tool_trace.extend(_actions)
+            _tool_trace = [action for batch in action_batches for action in batch]
             _ret = {"key": key, "harness": key,
                     "status": "partial" if terminal_message_absent else "done", "final": final,
                     "elapsed": elapsed, "error": "",
@@ -4954,110 +4971,8 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                       "sha256": a.get("sha256"),
                       "export_snapshot_id": a.get("export_snapshot_id")})
             try:
-                import artifact_delivery as _artd
-                # 先扫本家专属 workdir，避免共享历史根达到遍历上限后漏掉本轮文件。
-                _workdir = str(result.get("workdir") or os.path.join(
-                    os.path.expanduser("~/.meyo/legion/outputs"), f"{key}_{qhash}"))
-                # 云真机产物跨域收集(2026-09-02 根修):任务明说云真机时,harness 常把产物写进
-                # 容器 /root/Meyo(宿主=users/<uid>/desktop/Meyo)而非本单 workdir→旧扫描收不到
-                # (用户网站看不到云真机交付物)。把该用户 meyo 根并进扫描(scan_new_files
-                # extra_roots·过放行根校验+mtime 窗口过滤·非云真机零变化)。给现场事实不强制。
-                _extra_roots = []
-                try:
-                    import harness_registry as _hr_artifact
-                    if _hr_artifact._is_cloud_desktop_task(task):
-                        import desktop_fs as _dfs
-                        # 双根并扫(uid 错位根修·2026-09-02 端到端揪出):云真机当前是共享
-                        # default 单容器·agent 调 desktop_exec 不传 uid→产物落 users/default;
-                        # 而 dispatch uid 可能是任意会话 uid→只扫 user_id 根会扑空(真跑实锤:
-                        # trending_e2e.json 在 default 根·扫描去 qa_crawl_e2e 根)。两个根都扫
-                        # (未来 per-uid 专属容器天然覆盖)·去重交给 scan_new_files 的 roots 判重。
-                        _extra_roots = [_dfs.user_meyo_root(user_id), _dfs.user_meyo_root("default")]
-                except Exception:
-                    _extra_roots = []
-                _export = {}
-                if project_context.get("repo_root") or project_context.get("workspace_root"):
-                    # The native :task: lane is not the project conversation.
-                    # Revalidate canonical identity after native work, without
-                    # changing the checkpoint/lane or weakening export checks.
-                    import personal_identity as _project_identity
-                    _project_root = str(project_context.get("repo_root")
-                                        or project_context.get("workspace_root"))
-                    _export_team = str(task_facts.get("team_id") or qhash)
-                    _export_task = str(task_facts.get("task_id") or key)
-                    try:
-                        _export_conversation = _artd.project_export_conversation(
-                            project_context, team_id=_export_team, task_id=_export_task,
-                            user_id=user_id, harness_key=key,
-                            native_conversation_id=conversation_id, workdir=_workdir)
-                    except _artd._content_safety.ArtifactUnsafe as exc:
-                        _export = {"artifacts": [], "artifact_safety_observations": [
-                            _artd._not_exported(str(exc))]}
-                    else:
-                        _grant = _project_identity.authorized_project_path(
-                            user_id, _project_root, conversation_id=_export_conversation) or {}
-                        import legion_paths as _export_paths
-                        import legion_sandbox as _export_sandbox
-                        _allocated = os.path.realpath(os.path.join(
-                            _export_paths.under("outputs"), f"{key}_{qhash}"))
-                        _owned_allocation = any(
-                            row["task_id"] == _export_task and row["harness_key"] == key
-                            and row["root"] == _project_root
-                            for row in _export_sandbox.owned_workdir_allocations(
-                                _export_team, user_id, _export_conversation))
-                        # A bound default must keep a revoked/invalid grant's
-                        # refusal, not fall back to publishing its source URL.
-                        if _grant or _owned_allocation or os.path.realpath(_workdir) != _allocated:
-                            _export = _artd.export_project_artifacts(
-                                list(_grant.get("export_paths") or []),
-                                team_id=_export_team, task_id=_export_task,
-                                user_id=user_id, conversation_id=_export_conversation,
-                                requires_operator_grant=_grant.get("source") == "operator_project_grant")
-                    # Only legacy unbound calls retain the old exact scan path.
-                    # Real first allocations already have an owned task receipt;
-                    # an unproven old path must never acquire a fabricated grant.
-                _artifact_notes = list(_export.get("artifact_safety_observations") or [])
-                arts = list(_export.get("artifacts") or [])
-                if not _export:
-                    arts = _artd.scan_new_files(
-                        t0, workdir=_workdir, extra_roots=_extra_roots,
-                        safety_observations=_artifact_notes)
-                    # Explicit paths do not grant access outside this task.
-                    _from_final = _artd.extract(final, roots=[_workdir, *_extra_roots])
-                    _seen = {a["path"] for a in arts}
-                    arts.extend(a for a in _from_final if a["path"] not in _seen)
-                if _artifact_notes:
-                    _ret["artifact_safety_observations"] = _artifact_notes
-                    for observation in _artifact_notes:
-                        emit({"t": "artifact_not_exported", **observation})
-                if _export:
-                    _ret["artifact_export"] = {
-                        "exported_files": len(arts), "observations": _artifact_notes,
-                        "workdir": _workdir}
-                if arts:
-                    try:
-                        import artifact_provenance as _artifact_provenance
-                        _artifact_provenance.attach_lineage(
-                            arts, objective=task, task=task,
-                            task_id=str((task_facts or {}).get("task_id") or qhash),
-                            agent=key, actions=_ret.get("tool_trace") or [])
-                    except Exception:
-                        pass
-                    _ret["artifacts"] = arts
-                    _version_seen: dict = {}
-                    for a in arts:
-                        # version(F3.2·§9 契约):同名产物第 N 次产出=第 N 版·前端版本序列直接消费
-                        _stem = str(a.get("name") or "")
-                        _vmatch = _VERSION_RE.search(_stem)
-                        _version = int(_vmatch.group(1)) if _vmatch else _version_seen.get(_stem, 0) + 1
-                        _version_seen[_stem] = _version
-                        a["version"] = _version
-                        emit({"t": "artifact_ready", "phase": "产出文件", "url": a.get("url"),
-                              "name": a.get("name"), "ext": a.get("kind"),
-                              "bytes": a.get("bytes"), "provenance": a.get("provenance"),
-                              "lineage": a.get("lineage"), "version": _version,
-                              "sha256": a.get("sha256"),
-                              "export_snapshot_id": a.get("export_snapshot_id")})
+                # Collection, versioning and memory above already describe this
+                # exact export. Never publish a second snapshot at success only.
                 # 过程沉淀(军团自评产品级优化):把本轮工具动作提炼成"我做了什么"过程卡随交付
                 # 返回·治评委一致指出的 process_transparency 弱(黑盒)。emit 给前端即时渲染。
                 _psum = _build_process_summary(_actions, elapsed, _model, arts)
@@ -5302,9 +5217,11 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
     elapsed = round(time.time() - t0, 2)
     tried = "、".join(tried_models) or "默认模型"
     emit({"t": "result", "x": (
+        "用户停止；已停止后续执行，正在核对可保留的成果"
+        if last.get("status") == "cancelled" else
         f"成员报告 {last['status']}；现有内容与现场已保留，尚未报告完成"
         if preserve_native_state else last["error"] if result.get("blocked_before_native")
-        else f"已试 {tried} 仍未通,最后:{last['status'][:80]}")})
+        else f"已试 {tried} 仍未通,最后:{last['status'][:80]}" )})
     failed_result = {"key": key, "harness": key,
                      "status": last["status"] if preserve_native_state else
                                "timeout" if last["status"] == "timeout" else "error",
@@ -5319,7 +5236,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                      "execution_depth": execution_depth,
                      "execution_depth_history": list(execution_depth_history),
                      "execution_depth_upgraded": depth_upgraded,
-                     "tool_trace": [action for row in prior_attempts for action in (row.get("actions") or [])][-100:],
+                     "tool_trace": [action for batch in action_batches for action in batch][-100:],
                      "workdir": str(result.get("workdir") or ""),
                      "model": (tried_models[-1] if tried_models else "默认"),
                      "attempts": max(0, executed_attempts - int(depth_upgraded)),
@@ -5333,40 +5250,52 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
         for field in ("model_used", "requested_model"):
             if field in result:
                 failed_result[field] = result[field]
+    if last.get("status") == "cancelled":
+        failed_result.update(status="cancelled", cancelled=True,
+                             error=str(last.get("error") or "用户停止"),
+                             partial=bool(result.get("partial")))
+        failed_result = _with_cancel_native_reference(failed_result)
     _attach_task_usage(failed_result, collect=False)
     checked_reported_artifacts = []
-    references = [item for item in
-                  [*(result.get("artifacts") or []), *(result.get("discovered_artifacts") or [])]
-                  if isinstance(item, dict)]
-    if (preserve_native_state or
-            (references and (failed_result.get("native_facts") or {}).get("runtime_budget_observation"))):
+    references = list(native_reported_artifacts)
+    if preserve_native_state or references:
         # A runtime pause must not drop explicitly reported files just because
         # they predate this attempt. Reuse the existing authorized exporter,
         # never promote an unchecked native path/URL directly.
         if references or project_context.get("workspace_root") or project_context.get("repo_root"):
             # Reported identities are observations, never a new download root.
             # Do not forward preview/content or unvalidated active URLs here.
-            failed_result["reported_artifacts"] = [
-                {field: item[field] for field in
-                 ("id", "name", "path", "kind", "bytes", "sha256", "export_snapshot_id")
-                 if field in item and isinstance(item[field], (str, int, float, bool))}
-                for item in references]
             import artifact_delivery as _partial_delivery
+            # Private-marked references must not become public merely because
+            # the exporter was given only their path. A mixed selection fails as
+            # one unit, and never falls back to a broader project scan. The bound
+            # root is only for path classification, never an export grant.
+            project_root = str(project_context.get("repo_root") or project_context.get("workspace_root") or "")
+            classified = [(item, _partial_delivery._is_private_artifact(item, project_root=project_root))
+                          for item in references]
+            private_selection = any(private for _, private in classified)
+            failed_result["reported_artifacts"] = [
+                {field: item[field] for field in ("name", "kind", "bytes", "sha256")
+                 if field in item and isinstance(item[field], (str, int, float, bool))
+                 and not _partial_delivery._content_safety.sensitive_text(str(item[field]))}
+                for item, private in classified if not private]
             paths = [item["path"] for item in references if isinstance(item.get("path"), str)]
-            workdir = str(project_context.get("workspace_root") or project_context.get("repo_root")
-                          or result.get("workdir") or "")
+            workdir = project_root or str(result.get("workdir") or "")
             if project_context.get("workspace_root") or project_context.get("repo_root"):
                 # Reuse the exact authenticated exporter. It rereads ownership,
                 # selection and revocation before touching reported file bytes.
                 team = str(task_facts.get("team_id") or qhash)
                 node = str(task_facts.get("task_id") or key)
                 try:
+                    if private_selection:
+                        raise _partial_delivery._content_safety.ArtifactUnsafe("artifact_private_reference")
                     export_conversation = _partial_delivery.project_export_conversation(
                         project_context, team_id=team, task_id=node, user_id=user_id,
                         harness_key=key, native_conversation_id=conversation_id, workdir=workdir)
                     exported = _partial_delivery.export_project_artifacts(
                         paths, team_id=team, task_id=node, user_id=user_id,
-                        conversation_id=export_conversation)
+                        conversation_id=export_conversation,
+                        requires_operator_grant=_require_project_authorization)
                 except _partial_delivery._content_safety.ArtifactUnsafe as exc:
                     exported = {"artifacts": [], "artifact_safety_observations": [
                         _partial_delivery._not_exported(str(exc))]}
@@ -5378,20 +5307,22 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                     exported = {"artifacts": [], "artifact_safety_observations": [observation]}
                 notes = list(exported.get("artifact_safety_observations") or [])
                 arts = list(exported.get("artifacts") or [])
-                failed_result.update(
-                    artifacts=arts, artifact_safety_observations=notes,
-                    artifact_export={"exported_files": len(arts), "observations": notes,
-                                     "workdir": workdir})
-                for note in notes:
-                    emit({"t": "artifact_not_exported", **note})
+                arts = record_artifact_facts(
+                    failed_result,
+                    {"artifacts": arts, "artifact_safety_observations": notes,
+                     "artifact_export": {"source": "authorized-project-export",
+                                         "exported_files": len(arts), "observations": notes,
+                                         "workdir": workdir}}, workdir)
                 for item in arts:
                     emit({"t": "artifact_ready", "phase": "未完成现场保留",
                           **{field: item.get(field) for field in
-                             ("name", "url", "bytes", "sha256", "export_snapshot_id")}})
+                             ("name", "url", "bytes", "sha256", "export_snapshot_id",
+                              "version", "provenance", "lineage")}})
                 # An accepted/refused project selection must not be widened
                 # afterwards by legacy memory, scan or native reference paths.
-                return result if pause_for_budget(failed_result) else failed_result
-            if workdir:
+                return (result if last.get("status") != "cancelled" and pause_for_budget(failed_result)
+                        else failed_result)
+            if workdir and not private_selection:
                 checked_reported_artifacts = _partial_delivery.extract(
                     "\n".join("`" + path + "`" for path in paths), roots=[workdir])
     # 失败时仍保留这次真实生成的产物，供接力家和最终恢复层验证/续做。状态仍是 error，
@@ -5419,7 +5350,7 @@ def run_one(key: str, task: str, qhash: str = "adhoc",
                   "lineage": artifact.get("lineage"), "sha256": artifact.get("sha256"),
                   "export_snapshot_id": artifact.get("export_snapshot_id"),
                   "x": f"{key} 遇阻，但已保留产物 {artifact.get('name') or artifact.get('path')} 供接力复验"})
-    if pause_for_budget(failed_result):
+    if last.get("status") != "cancelled" and pause_for_budget(failed_result):
         return result
     return failed_result
 
@@ -6084,6 +6015,177 @@ def _scene_measured_quality(key: str, plan: dict) -> float:
         return 0.5
 
 
+def _run_requested_peer(question: str, plan: dict, result: dict, *, task_id: str,
+                        team_id: str, user_id: str, conversation_id: str,
+                        cb=None, runtime_brief: str = "", project_packet: dict | None = None,
+                        _provider_results=None, cancel_check=None, qhash: str = "") -> dict | None:
+    """Execute the member's existing need_peer request; do not choose or replace its author."""
+    import hashlib
+    import project_context
+    import team_state
+    from error_envelope import requires_execution_pause
+
+    request = result.get("orchestration_request") or {}
+    peer_request = request.get("need_peer") if isinstance(request, dict) else None
+    if not isinstance(peer_request, dict):
+        return None
+    peer = str(peer_request.get("key") or "").strip()
+    ask = str(peer_request.get("ask") or "").strip()
+    request_id = str(qhash or team_id)
+    child_id = ""
+
+    def cancelled():
+        return bool((cancel_check and cancel_check())
+                    or _request_cancelled(request_id, task_id, peer)
+                    or (child_id and _request_cancelled(request_id, child_id, peer)))
+    if cancelled() or requires_execution_pause(result):
+        return None
+    valid = _harness_keys()
+    policy = plan.get("team_policy") or {}
+    scope = policy.get("candidate_harnesses") if isinstance(policy, dict) else None
+    if scope is not None and not isinstance(scope, (list, tuple, set)):
+        return None  # A malformed explicit candidate boundary cannot expand to the full catalog.
+    if isinstance(scope, (list, tuple, set)):
+        valid &= {str(key) for key in scope if str(key)}
+    state = team_state.load(team_id)
+    _require_mail_context_owner(state, team_id, user_id, conversation_id, bound_team=True)
+    parent = (state.get("tasks") or {}).get(task_id) or {}
+    author = str(parent.get("assigned_harness") or "")
+    if not author or author != str(result.get("assigned_harness") or result.get("harness") or author):
+        raise PermissionError("peer requester is not the current task owner")
+    if not peer or not ask or peer == author or peer not in valid:
+        if cb:
+            cb({"agent": author, "task_id": task_id, "t": "peer_input_unavailable",
+                "peer": peer, "reason": "outside_request_candidates_or_invalid_request"})
+        return None
+    if peer not in set(_aigc_ready().get("runnable_clis") or []):
+        if cb:
+            cb({"agent": author, "task_id": task_id, "t": "peer_input_unavailable",
+                "peer": peer, "reason": "peer_not_runnable"})
+        return None
+    paused = _request_budget_pause(_provider_results)
+    if paused:
+        result["peer_input_pause"] = paused
+        return None
+    packet = project_context.load(team_id) or dict(project_packet or {})
+    project_context.require_owner(packet, user_id, conversation_id)
+    # The peer receives only the requesting task's view, never another PK candidate's evidence.
+    parent_view = project_context.snapshot(team_id, task_id, packet=packet)
+    identity = json.dumps([team_id, task_id, author, parent.get("attempt_seq"), peer, ask],
+                          ensure_ascii=False, separators=(",", ":"))
+    child_id = task_id + "_peer_" + hashlib.sha256(identity.encode()).hexdigest()[:12]
+    node = {"task": ask, "assigned_harness": peer, "depends_on": [],
+            "task_kind": "peer_input", "supporting_context": True}
+    child = team_state.add_task(
+        team_id, child_id, ask, agent=peer, registered=valid,
+        metadata={"kind": "peer_input", "parent_task_id": task_id,
+                  "requested_by": author, "supporting_context": True})
+    if child.get("assigned_harness") != peer or child.get("text") != ask:
+        raise PermissionError("peer task identity differs from the original request")
+    project_context.record_task_bindings(
+        team_id, {child_id: node}, user_id=user_id, conversation_id=conversation_id)
+    def peer_error(exc, phase):
+        result["peer_input_error"] = {"phase": phase, "error_type": type(exc).__name__,
+                                      "peer_task_id": child_id, "peer": peer}
+        if cb:
+            cb({"agent": peer, "task_id": child_id, "peer_for": task_id,
+                "t": "peer_input_error", **result["peer_input_error"]})
+        return None
+
+    def publish_peer(peer_result):
+        if cancelled():
+            return None
+        project_context.record_result(team_id, child_id, peer_result, assigned_harness=peer)
+
+        def check_publication(current):
+            _require_mail_context_owner(current, team_id, user_id, conversation_id, bound_team=True)
+            owner = (current.get("tasks") or {}).get(task_id) or {}
+            saved_peer = (current.get("tasks") or {}).get(child_id) or {}
+            if (owner.get("assigned_harness") != author
+                    or owner.get("attempt_seq") != parent.get("attempt_seq")
+                    or not saved_peer.get("finished_at") or saved_peer.get("active_attempt") is not None
+                    or cancelled()):
+                raise PermissionError("peer input publication is no longer bound to the requesting attempt")
+
+        message = team_state.send_message(
+            team_id, peer, task_id, str(peer_result.get("final") or peer_result.get("error") or ""),
+            artifact_refs=list(peer_result.get("artifacts") or []),
+            idempotency_key=child_id, owner_check=check_publication)
+        peer_result["mailbox_ref"] = {"team_id": team_id, "recipient": task_id,
+                                      "message_id": message.get("id")}
+        result.setdefault("peer_results", []).append(peer_result)
+        return peer_result
+
+    existing = child.get("result")
+    if isinstance(existing, dict) and child.get("finished_at"):
+        # Restore the exact persisted peer result and any missed publication, not a new run.
+        peer_result = {**team_state.resolve_result(team_id, child_id), "key": child_id,
+                       "task_id": child_id, "harness": peer, "assigned_harness": peer,
+                       "peer_for": task_id, "ask": ask, "supporting_context": True,
+                       "retained_peer_input": True}
+        try:
+            return publish_peer(peer_result)
+        except Exception as exc:
+            return peer_error(exc, "publication")
+    if cancelled():
+        team_state.cancel_queued(team_id, child_id, "用户停止")
+        return None
+    try:
+        import model_registry
+        assignment = model_registry.resolve_assignments(plan, [peer]).get(peer, {})
+    except Exception:
+        assignment = {}
+    peer_view = {**parent_view, "tasks": [dict(node, task_id=child_id)],
+                 "task_view": {"task_id": child_id, "assigned_harness": peer}}
+    peer_view.pop("snapshot_sha256", None)  # This is a task-scoped derivative, not the old snapshot.
+    if cb:
+        cb({"agent": author, "task_id": task_id, "t": "dispatch", "peer_for": task_id,
+            "x": f"{author} 请求 {peer} 提供同伴输入", "peer_task_id": child_id})
+    attempt = team_state.begin_attempt(team_id, child_id, owner=f"server:{os.getpid()}")
+
+    def peer_progress(event):
+        if _event_advances_attempt(event):
+            team_state.renew_attempt(team_id, child_id, attempt)
+        if cb:
+            cb({**event, "peer_for": task_id, "task_id": child_id})
+
+    peer_task = (f"用户原始目标：{question}\n成员 {author} 为任务 {task_id} 请求一份独立输入：{ask}\n"
+                 "请返回可复用的事实、文件或结论；原作者负责决定是否采用。")
+    try:
+        peer_result = _run_one_with_gateway(
+            peer, peer_task, lease_plan=plan, cancel_check=cancelled,
+            qhash=f"{team_id}_task_{child_id}",
+            cb=peer_progress,
+            preferred_model=assignment.get("model"), preferred_appid=assignment.get("appid"),
+            direction=_resolve_direction(plan, child_id, peer), user_id=user_id,
+            conversation_id=f"{conversation_id}:task:{child_id}", runtime_brief=runtime_brief,
+            _provider_results=_provider_results, capability_policy=dict(plan.get("capability_policy") or {}),
+            task_facts={"goal": question, "role": ask, "team_id": team_id,
+                        "task_id": child_id, "attempt_id": attempt, "peer_for": task_id,
+                        "project_context": peer_view})
+    except BaseException as exc:
+        team_state.finish_attempt(team_id, child_id, attempt,
+                                  {"status": "error", "final": "", "error": type(exc).__name__})
+        if not isinstance(exc, Exception):
+            raise
+        return peer_error(exc, "execution")
+    peer_result = {**peer_result, "key": child_id, "task_id": child_id, "harness": peer,
+                   "assigned_harness": peer, "peer_for": task_id, "ask": ask,
+                   "supporting_context": True}
+    if not team_state.finish_attempt(team_id, child_id, attempt, peer_result):
+        return None  # A stale/cancelled attempt cannot publish a peer input.
+    try:
+        published = publish_peer(peer_result)
+    except Exception as exc:
+        return peer_error(exc, "publication")
+    if published is None:
+        return None
+    if cb:
+        cb({"agent": peer, "task_id": child_id, "peer_for": task_id, "t": "result",
+            "status": peer_result.get("status"), "x": "同伴输入已入原任务邮箱；尚不代表作者采用"})
+    return peer_result
+
+
 def _is_delivered(result: dict | None) -> bool:
     """Use the shared existing presence rule, not a new quality gate."""
     from legion_contracts import result_is_delivered
@@ -6313,6 +6415,7 @@ _COORDINATION_PATCH_FIELDS = {
     "task", "depends_on", "dependency_policy", "direction", "capability_requirements",
     "assigned_harness", "preferred_harnesses", "excluded_harnesses", "task_kind",
     "verification_role", "verification_criteria", "assignment_locked", "native_session_scope",
+    "supporting_context",
 }
 
 
@@ -6645,6 +6748,9 @@ def _rebind_or_block_unbound_tasks(team_id: str, plan: dict) -> dict:
     try:
         import team_state as _ts_rebind
         valid = set(_harness_keys())
+        requested_candidates = ((plan or {}).get("team_policy") or {}).get("candidate_harnesses")
+        if isinstance(requested_candidates, (list, tuple, set)):
+            valid &= {str(key) for key in requested_candidates if str(key)}
         state = _ts_rebind.load(team_id) or {}
         for task_id, task in (state.get("tasks") or {}).items():
             if not isinstance(task, dict) or task.get("active_attempt") is not None:
@@ -6759,7 +6865,12 @@ def _task_mail_context(team_id: str, task_id: str, user_id: str, conversation_id
         # Whole text first; otherwise keep the original references. If even the
         # attachment metadata is too large, reference the whole stored message,
         # never cut its URL/text or create a replacement message store.
-        variants = ([] if unavailable else [{**base, "text": text}]) + [
+        variants = ([] if unavailable else [
+            {**base, "text": text},
+            {key: value for key, value in {
+                **base, "text": text, "artifact_refs_omitted": len(refs)}.items()
+             if key != "artifact_refs"},
+        ]) + [
             {**base, **unavailable, "text_omitted": True},
             {"id": message.get("id"), "message_ref": reference,
              **unavailable, "text_omitted": True, "artifact_refs_omitted": len(refs)},
@@ -7582,7 +7693,7 @@ def _apply_coordination_to_plan(plan: dict, proposal: dict, *,
     changed = False
     changed_task_ids: set[str] = set()
     allowed = set(tasks) if pending_only is None else {str(key) for key in pending_only}
-    valid = set(valid_harnesses or _harness_keys())
+    valid = set(_harness_keys() if valid_harnesses is None else valid_harnesses)
     for task_id, raw_patch in (proposal.get("task_updates") or {}).items():
         task_id = str(task_id)
         if task_id not in tasks or task_id not in allowed or not isinstance(raw_patch, dict):
@@ -8161,11 +8272,14 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
 
     _inherited_provider_results = _provider_results
 
+    _results_lock = threading.RLock()
+
     def _provider_results():
-        # Existing request-local facts only. No history/global credential store,
-        # and no attempt to revoke calls already admitted or in flight.
+        # Snapshot under the same lock used by concurrent fork publications.
+        with _results_lock:
+            result_rows = list(results.values())
         current = [*(_inherited_provider_results() if _inherited_provider_results else []),
-                   *list(results.values()), *(
+                   *result_rows, *(
             row["result"] for row in list(_coordination_history)
             if isinstance(row.get("result"), dict))]
         # A failed relay is an actual execution too. Keep its typed facts
@@ -8330,6 +8444,7 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                 pass
         try:
             from legion_contracts import CapabilityPolicy, TaskFacts
+            import hashlib
             _node_spec = raw_tasks.get(k) or {} if isinstance(raw_tasks.get(k), dict) else {}
             _verification_role = str(_node_spec.get("verification_role") or "")
             _verification_criteria = list(_node_spec.get("verification_criteria") or [])
@@ -8347,13 +8462,32 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                 acceptance=list((plan.get("acceptance") or [])) if isinstance(plan.get("acceptance"), list)
                            else ([str(plan.get("acceptance"))] if plan.get("acceptance") else []),
                 upstream_artifacts=_upstream_refs,
-                upstream_results=[{"key": d, "status": (results.get(d) or {}).get("status"),
-                                   "error_envelope": (results.get(d) or {}).get("error_envelope")}
-                                  for d in deps],
+                upstream_results=[{
+                    "key": d, "status": (results.get(d) or {}).get("status"),
+                    "error_envelope": (results.get(d) or {}).get("error_envelope"),
+                    "harness": (results.get(d) or {}).get("assigned_harness")
+                               or (results.get(d) or {}).get("harness"),
+                    "model": (results.get(d) or {}).get("model_used") or (results.get(d) or {}).get("model"),
+                    "final_sha256": hashlib.sha256(
+                        str((results.get(d) or {}).get("final") or "").encode()).hexdigest(),
+                    "artifacts": [{field: item.get(field) for field in
+                                   ("path", "sha256", "export_snapshot_id")}
+                                  for item in (results.get(d) or {}).get("artifacts") or []
+                                  if isinstance(item, dict)],
+                    "observation": "included_upstream_input; adoption unverified",
+                } for d in deps],
                 project_context=_project_snapshot,
             ).to_dict()
             _task_facts.update(_native_scope_facts(
                 plan, _node_spec, request_id=team_id))
+            _author_origin = plan.get("initial_author") or {}
+            if isinstance(_author_origin, dict) and _author_origin.get("task_id") == k:
+                _task_facts["orchestration"]["author_role"] = {
+                    "task_id": k, "current_harness": harness_key,
+                    "initial_harness": _author_origin.get("harness"),
+                    "source": "current_delivery_task", "may_propose_task_graph": True,
+                    "meaning": "任务组织提案可沿既有协议执行；目录、历史成绩和主创身份不授予额外权限",
+                }
             _cap_policy = CapabilityPolicy.from_value(plan.get("capability_policy") or {}).to_dict()
         except PermissionError:
             raise
@@ -8650,7 +8784,8 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                        "requested_execution_depth": _execution_depth,
                        "depth_scene": _depth_scene, "depth_reason": _depth_reason,
                        "task_kind": str(_node_spec.get("task_kind") or "delivery"),
-                       "supporting_context": bool(_node_spec.get("supporting_context"))})
+                       "supporting_context": bool(_node_spec.get("supporting_context")),
+                       "contribution_input_refs": deepcopy(_task_facts.get("upstream_results") or [])})
         if isinstance(_node_spec.get("native_capabilities"), dict):
             result["native_capabilities"] = deepcopy(_node_spec["native_capabilities"])
         try:
@@ -8902,6 +9037,46 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                     "logical_conversation_id": str(conversation_id or qhash),
                     "attempt_round": relay_rounds,
                 }
+                _prior_relay_owner = str((r or {}).get("assigned_harness")
+                                         or (r or {}).get("harness") or failed_harness)
+                _relay_bound = False
+                def _restore_unstarted_relay_binding():
+                    nonlocal _relay_bound
+                    if not (_project_context and _relay_bound):
+                        return
+                    try:
+                        # Compare-and-set under the project lock: never overwrite
+                        # another actor's newer assignment or task facts.
+                        _project_context.record_task_bindings(
+                            team_id, {k: {"assigned_harness": _prior_relay_owner}},
+                            user_id=user_id, conversation_id=str(conversation_id or qhash),
+                            expected_assigned_harnesses={k: relay}, assignments_only=True)
+                        _relay_bound = False
+                    except Exception as exc:
+                        if cb:
+                            cb({"agent": "commander", "t": "task_status", "task_id": k,
+                                "status": "blocked", "phase": "接力归属恢复",
+                                "error_type": type(exc).__name__,
+                                "x": "未启动的接力归属无法安全恢复；保留现有项目记录。"})
+                if _project_context:
+                    # Bind before execution under the existing owner lock. This
+                    # changes no workspace, user, grant or dependency.
+                    try:
+                        _project_context.record_task_bindings(
+                            team_id, {k: {"assigned_harness": relay}},
+                            user_id=user_id, conversation_id=str(conversation_id or qhash),
+                            expected_assigned_harnesses={k: _prior_relay_owner}, assignments_only=True)
+                        _relay_bound = True
+                    except Exception as exc:
+                        if cb:
+                            cb({"agent": "commander", "t": "task_status", "task_id": k,
+                                "status": "blocked", "phase": "接力归属校验",
+                                "error_type": type(exc).__name__,
+                                "x": "接力归属未能保存；保留原执行现场，不启动未绑定成员。"})
+                        break
+                    if _request_cancelled(qhash, k, relay):
+                        _restore_unstarted_relay_binding()
+                        break
                 _relay_project_context = _project_snapshot_for(k)
                 relay_task = (
                     f"用户原始目标：{question}\n"
@@ -8963,17 +9138,66 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                         _relay_assignment = {}  # Preserve existing automatic relay selection.
                 except Exception:
                     _relay_assignment = {}
-                relay_res = _run_one_with_gateway(
-                    relay, relay_task, lease_plan=plan, cancel_check=_relay_cancel,
-                    preferred_model=_relay_assignment.get("model"),
-                    preferred_appid=_relay_assignment.get("appid"),
-                    _provider_results=_provider_results,
-                    qhash=relay_qhash,
-                    cb=(lambda ev, _k=k, _cb=cb: _cb({**ev, "relay_for": _k})) if cb else None,
-                    attempt_timeout=_relay_timeout, direction=_rdir, user_id=user_id,
-                    conversation_id=relay_conversation_id,
-                    runtime_brief=_rt_brief, task_facts=_relay_facts)
+                try:
+                    relay_res = _run_one_with_gateway(
+                        relay, relay_task, lease_plan=plan, cancel_check=_relay_cancel,
+                        preferred_model=_relay_assignment.get("model"),
+                        preferred_appid=_relay_assignment.get("appid"),
+                        _provider_results=_provider_results,
+                        qhash=relay_qhash,
+                        cb=(lambda ev, _k=k, _cb=cb: _cb({**ev, "relay_for": _k})) if cb else None,
+                        attempt_timeout=_relay_timeout, direction=_rdir, user_id=user_id,
+                        conversation_id=relay_conversation_id,
+                        runtime_brief=_rt_brief, task_facts=_relay_facts)
+                except BaseException:
+                    _restore_unstarted_relay_binding()
+                    raise
+                if ((relay_res or {}).get("status") == "cancelled"
+                        and not (relay_res or {}).get("execution_calls")):
+                    _restore_unstarted_relay_binding()
+                    break
+                if ((relay_res or {}).get("blocked_before_native")
+                        and not (relay_res or {}).get("execution_calls")):
+                    _restore_unstarted_relay_binding()
+                    # No relay author ran. Preserve the original native result
+                    # and artifacts while attaching only the trusted request
+                    # budget stop; never relabel it as the relay's failure.
+                    relay_facts = relay_res.get("native_facts") if isinstance(relay_res, dict) else {}
+                    observed_budget = (relay_facts.get("runtime_budget_observation")
+                                       if isinstance(relay_facts, dict) else None)
+                    owner_fact = observed_budget if isinstance(observed_budget, dict) else relay_res
+                    held = _request_budget_pause(lambda: [owner_fact], dict(r or {}))
+                    if held is None:
+                        # Preserve a non-budget admission refusal separately;
+                        # the attempted replacement did not execute and is not
+                        # the author of the original response or files.
+                        held = dict(r or {})
+                        native = dict(held.get("native_facts") or {})
+                        native["unstarted_relay_admission"] = {
+                            "harness": relay, "blocked_before_native": True,
+                            **{field: deepcopy(relay_res[field]) for field in
+                               ("status", "error", "error_envelope", "fail_kind") if field in relay_res}}
+                        held["native_facts"] = native
+                        if isinstance(relay_res.get("error_envelope"), dict):
+                            native.setdefault("execution_failure", {field: deepcopy(held[field]) for field in
+                                              ("status", "error", "error_envelope", "fail_kind") if field in held})
+                            held["error_envelope"] = deepcopy(relay_res["error_envelope"])
+                            held["fail_kind"] = str(relay_res["error_envelope"].get("category") or "")
+                    held.update(key=k, task_id=k, harness=_prior_relay_owner,
+                                assigned_harness=_prior_relay_owner)
+                    results[k] = held
+                    try:
+                        if _team_state and not _team_state.replace_result(
+                                team_id, k, held, previous_harness=_prior_relay_owner,
+                                reason="relay_blocked_before_native"):
+                            raise RuntimeError("blocked_relay_task_missing")
+                    except Exception as exc:
+                        held.setdefault("continuation_persistence_errors", []).append({
+                            "store": "team_state", "error": type(exc).__name__})
+                    break
                 if is_cancelled(qhash) or is_cancelled(qhash, k, scope="task"):
+                    if not (relay_res or {}).get("execution_calls"):
+                        _restore_unstarted_relay_binding()
                     break
                 previous = dict(r or {})
                 previous_harness = str(previous.get("harness") or failed_harness)
@@ -9382,55 +9606,27 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
         if (k in _provider_backoff_tasks(results, dependencies, dependency_policies)
                 or k in (_retained_results or {})):
             continue
-        # need_peer：成员主动请求同伴给一份输入。父层只执行 ask 并把原样回复放入持久 mailbox，
-        # 不融合、不替成员判断。请求方支持原生 resume 时后续轮可直接续；其余由 task_memory 回放。
+        # The same explicit peer request uses an independent support node in all entry paths.
         req0 = (results.get(k) or {}).get("orchestration_request") or {}
-        peer_req = req0.get("need_peer") if isinstance(req0, dict) else None
-        if (isinstance(peer_req, dict)
-                and not _request_cancelled(qhash, k, task_assignments.get(k) or k)):
-            peer = str(peer_req.get("key") or "").strip()
-            ask = str(peer_req.get("ask") or "").strip()
-            requester_harness = task_assignments.get(k) or k
-            try:
-                runnable_peer = peer in valid and peer in set(_aigc_ready().get("runnable_clis", []))
-            except Exception:
-                runnable_peer = False
-            if runnable_peer and peer != requester_harness and ask:
-                if cb:
-                    cb({"agent": "commander", "t": "dispatch", "phase": "搜集证据", "task_id": k,
-                        "x": f"✉️ {requester_harness} 为任务 {k} 请求 {peer} 提供同伴输入：{ask}",
-                        "need_peer": {"task_id": k, "from": requester_harness, "to": peer, "ask": ask}})
-                peer_task = (f"用户问题：{question}\n成员 {requester_harness} 为任务 {k} 请求你提供一份独立输入：{ask}\n"
-                             f"请直接把可复用的事实、文件或结论交给它。{media_ctx}")
-                peer_res = _run_one_with_gateway(
-                    peer, peer_task, lease_plan=plan,
-                    _provider_results=_provider_results,
-                    cancel_check=lambda _k=k, _peer=peer: _request_cancelled(qhash, _k, _peer),
-                    qhash=f"{qhash}_peer_{k}_{peer}",
-                    cb=(lambda ev: cb({**ev, "peer_for": k})) if cb else None,
-                    direction=_resolve_direction(plan, k, peer), user_id=user_id,
-                    conversation_id=conversation_id,
-                    runtime_brief=_rt_brief,
-                    task_facts={"goal": question, "role": f"peer_input:{k}", "team_id": team_id,
-                                "task_id": k,
-                                "project_context": (_project_context.snapshot(team_id, k, packet=_project_packet)
-                                                    if _project_context else dict(_project_packet or {}))})
-                peer_text = str(peer_res.get("final") or peer_res.get("error") or "")
-                try:
-                    refs = list(peer_res.get("artifacts") or [])
-                    if _team_state:
-                        _team_state.send_message(team_id, peer, k, peer_text, artifact_refs=refs)
-                    import task_memory as _tm
-                    _tm.update(team_id, k, peer_messages=[{"from": peer, "text": peer_text[:1000],
-                                                          "artifact_refs": refs}])
-                except Exception:
-                    pass
-                (results.get(k) or {}).setdefault("peer_results", []).append(
-                    {"key": peer, "ask": ask, "status": peer_res.get("status"),
-                     "final": peer_text, "artifacts": peer_res.get("artifacts") or []})
-                if cb:
-                    cb({"agent": "commander", "t": "result", "phase": "处理结果",
-                        "x": f"✉️ {peer} 已回复 {k}·消息已入持久 mailbox"})
+        if isinstance(req0, dict) and isinstance(req0.get("need_peer"), dict):
+            peer_res = _run_requested_peer(
+                question, plan, results[k], task_id=k, team_id=team_id,
+                user_id=user_id, conversation_id=str(conversation_id or qhash),
+                cb=cb, runtime_brief=_rt_brief, project_packet=_project_packet,
+                _provider_results=_provider_results, qhash=qhash,
+                cancel_check=lambda _k=k: _request_cancelled(qhash, _k, task_assignments.get(_k) or _k))
+            if peer_res and peer_res.get("task_id"):
+                # Supporting inputs are observable and budgeted, never delivery candidates.
+                _peer_id = str(peer_res["task_id"])
+                results[_peer_id] = peer_res
+                keys.append(_peer_id)
+                task_assignments[_peer_id] = str(peer_res.get("harness") or "")
+                raw_tasks[_peer_id] = {"task": str(peer_res.get("ask") or ""),
+                                      "assigned_harness": task_assignments[_peer_id],
+                                      "task_kind": "peer_input", "supporting_context": True}
+                tasks[_peer_id] = str(peer_res.get("ask") or "")
+                dependencies[_peer_id] = []
+                dependency_policies[_peer_id] = _DEFAULT_DEP_POLICY
 
         # need_approval：成员遇到需用户批准才能做的动作(git push / PR / release / public deploy)时,
         # 先交已能做的部分,末尾写 <<LEGION_ORCH>>{"need_approval":{...}}<<END>>。父层【不替它决定】,
@@ -9606,17 +9802,47 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
             _runnable = set()
         parent_harness = task_assignments.get(k) or k
         child_specs, used_children = [], {parent_harness}
+        _known_fork_ids = set(raw_tasks)
+        if _team_state:
+            _known_fork_ids.update((_team_state.load(team_id) or {}).get("tasks") or {})
         for idx, spec in enumerate(forks[:3]):
             if not isinstance(spec, dict) or not str(spec.get("task") or "").strip():
                 continue
+            child_task_id = str(spec.get("task_id") or f"{k}_fork_{idx + 1}")
+            if child_task_id in _known_fork_ids:
+                parent_res.setdefault("fork_protocol_feedback", []).append({
+                    "task_id": child_task_id, "reason": "fork_task_id_already_exists"})
+                continue  # An auxiliary request cannot replace a live or saved task.
             suggested = str(spec.get("suggest_key") or "").strip()
             child = (suggested if suggested in valid and suggested in _runnable and suggested not in used_children
                      else _pick_relay_harness(parent_harness, used_children, valid))
             if not child:
                 continue
-            used_children.add(child)
-            child_task_id = str(spec.get("task_id") or f"{k}_fork_{idx + 1}")
             child_text = str(spec["task"])
+            supporting = bool(spec.get("supporting_context")
+                              or (plan.get("initial_author") or {}).get("task_id") == k)
+            if _team_state:
+                try:
+                    _team_state.add_task(
+                        team_id, child_task_id, child_text, [k], agent=child,
+                        metadata={"kind": "fork", "parent_task_id": k,
+                                  "supporting_context": supporting,
+                                  "reason": str(spec.get("reason") or "")[:120]},
+                        registered=valid, exclusive=True)
+                except Exception as exc:
+                    feedback = {"task_id": child_task_id,
+                                "reason": ("fork_task_id_already_exists" if isinstance(exc, FileExistsError)
+                                           else "fork_task_registration_failed"),
+                                "error_type": type(exc).__name__}
+                    parent_res.setdefault("fork_protocol_feedback", []).append(feedback)
+                    if _project_context:
+                        try:
+                            _project_context.record_result(team_id, k, parent_res, assigned_harness=parent_harness)
+                        except Exception:
+                            pass
+                    continue  # Never adopt or replace a task registered by another execution.
+            used_children.add(child)
+            _known_fork_ids.add(child_task_id)
             child_specs.append((idx, child_task_id, child, child_text,
                                 str(spec.get("reason") or "")[:120]))
             tasks[child_task_id] = child_text
@@ -9625,16 +9851,9 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
             task_assignments[child_task_id] = child
             raw_tasks[child_task_id] = {"task": child_text, "task_id": child_task_id,
                                         "assigned_harness": child, "depends_on": [k],
-                                        "dependency_policy": "all_succeeded"}
+                                        "dependency_policy": "all_succeeded",
+                                        "supporting_context": supporting}
             keys.append(child_task_id)
-            if _team_state:
-                try:
-                    _team_state.add_task(team_id, child_task_id, str(spec["task"]), [k],
-                                         agent=child,
-                                         metadata={"kind": "fork", "parent_task_id": k,
-                                                   "reason": str(spec.get("reason") or "")[:120]})
-                except Exception:
-                    pass
         if not child_specs:
             continue
         if cb:
@@ -9645,45 +9864,155 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                          "children": [{"task_id": task_id, "harness": child}
                                       for _, task_id, child, _, _ in child_specs]}})
         fork_results: list[dict] = []
-        _fork_lock = threading.Lock()
+        _fork_lock = _results_lock
+        _fork_parent_node = ((_team_state.load(team_id) or {}).get("tasks") or {}).get(k) or {} if _team_state else {}
+
+        def _fork_cancelled(child_task_id, child):
+            if (_request_cancelled(qhash, k, parent_harness)
+                    or _request_cancelled(qhash, child_task_id, child)):
+                return True
+            if _team_state:
+                state = _team_state.load(team_id) or {}
+                parent = (state.get("tasks") or {}).get(k) or {}
+                node = (state.get("tasks") or {}).get(child_task_id) or {}
+                return bool(_team_state._cancel_request_for(state, k, parent)
+                            or _team_state._cancel_request_for(state, child_task_id, node))
+            return False
 
         def _fork_worker(idx, child_task_id, child, child_task, reason):
             full = (f"用户问题：{question}\n父任务 {k} 的执行者 {parent_harness} 主动拆给你的子任务：{child_task}\n"
                     f"拆分原因：{reason or '父成员判断需要并行子任务'}\n"
                     f"父成员当前成果/上下文：{str(parent_res.get('final') or '')[:1200]}{media_ctx}")
-            # 子任务继承项目现场(同迭代内 join,晚绑定捕获的 _project_packet/team_id 安全)。
-            cr = _run_one_with_gateway(
-                child, full, lease_plan=plan,
-                _provider_results=_provider_results,
-                cancel_check=lambda _id=child_task_id, _child=child: _request_cancelled(qhash, _id, _child),
-                qhash=f"{qhash}_fork_{child_task_id}",
-                cb=(lambda ev, _cb=cb: _cb({**ev, "fork_parent": k,
-                                            "task_id": child_task_id})) if cb else None,
-                attempt_timeout=None, direction=_resolve_direction(plan, child_task_id, child), user_id=user_id,
-                conversation_id=conversation_id,
-                runtime_brief=_rt_brief,
-                task_facts={"goal": question, "role": child_task[:200] or "子任务",
-                            "task_id": child_task_id, "team_id": team_id, "fork_parent": k,
-                            "project_context": (_project_context.snapshot(team_id, child_task_id, packet=_project_packet)
-                                                if _project_context else dict(_project_packet or {}))})
-            cr = dict(cr)
+            # A waiter must observe cancellation and the same request budget before claim.
+            child_attempt = None
+            child_project_context = None
+            stopped = None
+            try:
+                if _fork_cancelled(child_task_id, child):
+                    stopped = {"status": "cancelled", "final": "", "error": "用户停止",
+                               "cancelled": True, "blocked_before_native": True, "execution_calls": 0}
+                    if _team_state:
+                        _team_state.cancel_queued(team_id, child_task_id, "父任务或子任务已取消")
+                else:
+                    stopped = _request_budget_pause(_provider_results)
+                    if stopped and _team_state:
+                        _team_state.mark_task_blocked(
+                            team_id, child_task_id, str(stopped.get("error") or "request budget exhausted"),
+                            facts={"error_envelope": deepcopy(stopped.get("error_envelope") or {})})
+                if stopped:
+                    stopped.update({"key": child_task_id, "task_id": child_task_id,
+                                    "harness": child, "assigned_harness": child,
+                                    "fork_parent": k, "fork_index": idx,
+                                    "supporting_context": bool(raw_tasks[child_task_id].get("supporting_context"))})
+                    with _fork_lock:
+                        results[child_task_id] = stopped
+                        fork_results.append(stopped)
+                    return
+                if not _team_state or not _project_context:
+                    raise LookupError("fork_project_context_unavailable")
+                if _team_state:
+                    def check_fork_claim(state):
+                        nonlocal child_project_context
+                        _require_mail_context_owner(state, team_id, user_id,
+                                                   conversation_id or qhash, bound_team=True)
+                        parent = (state.get("tasks") or {}).get(k) or {}
+                        node = (state.get("tasks") or {}).get(child_task_id) or {}
+                        if (_team_state._cancel_request_for(state, k, parent)
+                                or parent.get("assigned_harness") != parent_harness
+                                or parent.get("attempt_seq") != _fork_parent_node.get("attempt_seq")
+                                or not parent.get("finished_at") or parent.get("active_attempt") is not None
+                                or node.get("assigned_harness") != child
+                                or (node.get("metadata") or {}).get("kind") != "fork"
+                                or (node.get("metadata") or {}).get("parent_task_id") != k
+                                or node.get("status") != "pending" or node.get("attempt_seq") != 0):
+                            raise PermissionError("fork_task_binding_changed")
+                        # The exclusive TeamState child must also be bound in
+                        # the canonical project before native execution/export.
+                        # Merge only this new task, never replay the old packet.
+                        packet = _project_context.load(team_id)
+                        _require_mail_context_owner(packet, team_id, user_id,
+                                                   conversation_id or qhash, bound_team=True)
+                        if any(row.get("task_id") == child_task_id
+                               for row in packet.get("tasks") or [] if isinstance(row, dict)):
+                            raise PermissionError("fork_project_task_already_exists")
+                        packet = _project_context.record_task_bindings(
+                            team_id, {child_task_id: raw_tasks[child_task_id]},
+                            user_id=user_id, conversation_id=str(conversation_id or qhash),
+                            expected_assigned_harnesses={k: parent_harness})
+                        child_project_context = _project_context.snapshot(
+                            team_id, child_task_id, packet=packet)
+                    child_attempt = _team_state.begin_attempt(
+                        team_id, child_task_id, owner=f"server:{os.getpid()}", owner_check=check_fork_claim)
+            except Exception as exc:
+                with _fork_lock:
+                    row = {
+                        "key": child_task_id, "task_id": child_task_id, "harness": child,
+                        "assigned_harness": child, "fork_parent": k, "fork_index": idx,
+                        "status": "blocked", "final": "", "error": type(exc).__name__,
+                        "blocked_before_native": True, "execution_calls": 0,
+                        "supporting_context": bool(raw_tasks[child_task_id].get("supporting_context")),
+                        "fork_execution_observation": "task_claim_rejected; native execution not started"}
+                    results[child_task_id] = row
+                    fork_results.append(row)
+                return
+            def fork_progress(event):
+                if _team_state and _event_advances_attempt(event):
+                    _team_state.renew_attempt(team_id, child_task_id, child_attempt)
+                if cb:
+                    cb({**event, "fork_parent": k, "task_id": child_task_id})
+            try:
+                import model_registry as _fork_models
+                child_binding = _fork_models.resolve_assignments(plan, [child]).get(child) or {}
+            except Exception:
+                child_binding = {}
+            # 子任务继承原工程和请求范围，并使用独立的原生任务会话。
+            try:
+                cr = _run_one_with_gateway(
+                    child, full, lease_plan=plan,
+                    _provider_results=_provider_results,
+                    cancel_check=lambda _id=child_task_id, _child=child: _fork_cancelled(_id, _child),
+                    qhash=f"{qhash}_fork_{child_task_id}",
+                    cb=fork_progress,
+                    preferred_model=child_binding.get("model"), preferred_appid=child_binding.get("appid"),
+                    attempt_timeout=None, direction=_resolve_direction(plan, child_task_id, child), user_id=user_id,
+                    conversation_id=f"{conversation_id or qhash}:task:{child_task_id}",
+                    runtime_brief=_rt_brief, capability_policy=dict(plan.get("capability_policy") or {}),
+                    task_facts={"goal": question, "role": child_task[:200] or "子任务",
+                                "task_id": child_task_id, "team_id": team_id, "fork_parent": k,
+                                "attempt_id": child_attempt,
+                                **_native_scope_facts(plan, raw_tasks[child_task_id], request_id=team_id),
+                                "project_context": child_project_context})
+                cr = dict(cr)
+            except Exception as exc:
+                cr = {"status": "error", "final": "", "error": type(exc).__name__,
+                      "error_envelope": {"category": "harness_runtime", "scope": "harness",
+                                         "retryable": False, "code": "fork_execution_exception",
+                                         "message": type(exc).__name__},
+                      "fork_execution_observation": "native invocation raised; original author retained"}
             cr.update({"key": child_task_id, "task_id": child_task_id, "harness": child,
                        "assigned_harness": child, "fork_parent": k, "fork_index": idx,
-                       "requested_task": child_task})
-            if _team_state:
-                try:
-                    child_attempt = _team_state.begin_attempt(team_id, child_task_id,
-                                                              owner=f"server:{os.getpid()}")
-                    _team_state.finish_attempt(team_id, child_task_id, child_attempt, cr)
-                except Exception:
-                    pass
-            # 子任务自己的 orchestration_request 不在本层递归执行(一层自然收敛),但原样保留给后续轮看。
+                       "requested_task": child_task,
+                       "supporting_context": bool(raw_tasks[child_task_id].get("supporting_context"))})
+            if cr["supporting_context"]:
+                cr["peer_for"] = k
+            if _team_state and not _team_state.finish_attempt(team_id, child_task_id, child_attempt, cr):
+                cr.update(status="blocked", final="", fork_execution_observation="late_attempt_not_accepted")
+            # Publish typed results before the next bounded fork acquires its slot.
             with _fork_lock:
+                results[child_task_id] = cr
                 fork_results.append(cr)
 
+        try:
+            _fork_parallel = max(1, min(3, int((plan.get("team_policy") or {}).get("max_parallel", 3))))
+        except (TypeError, ValueError):
+            _fork_parallel = 1
+        _fork_slots = threading.BoundedSemaphore(_fork_parallel)
+        def _fork_slot_worker(*args):
+            with _fork_slots:
+                _fork_worker(*args)
         fthreads = []
         for spec in child_specs:
-            th = threading.Thread(target=_fork_worker, args=spec, daemon=True)
+            th = threading.Thread(target=_fork_slot_worker, args=spec, daemon=True)
             th.start(); fthreads.append(th)
         for th in fthreads:
             th.join()
@@ -9691,7 +10020,40 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
         parent_res["fork_results"] = fork_results
         parent_res["fork_count"] = len(fork_results)
         for child_result in fork_results:
-            results[str(child_result.get("task_id"))] = child_result
+            child_id = str(child_result.get("task_id"))
+            results[child_id] = child_result
+            if _team_state and _project_context and not child_result.get("blocked_before_native"):
+                try:
+                    def check_fork_publication(state):
+                        _require_mail_context_owner(state, team_id, user_id,
+                                                   conversation_id or qhash, bound_team=True)
+                        parent = (state.get("tasks") or {}).get(k) or {}
+                        saved_child = (state.get("tasks") or {}).get(child_id) or {}
+                        if (parent.get("assigned_harness") != parent_harness
+                                or parent.get("attempt_seq") != _fork_parent_node.get("attempt_seq")
+                                or parent.get("active_attempt") is not None
+                                or not parent.get("finished_at")
+                                or not saved_child.get("finished_at")
+                                or saved_child.get("active_attempt") is not None
+                                or _request_cancelled(qhash, k, parent_harness)):
+                            raise PermissionError("fork_publication_attempt_changed")
+                    _project_context.record_result(
+                        team_id, child_id, child_result,
+                        assigned_harness=str(child_result.get("assigned_harness") or ""))
+                    message = _team_state.send_message(
+                        team_id, str(child_result.get("assigned_harness") or ""), k,
+                        str(child_result.get("final") or child_result.get("error") or ""),
+                        artifact_refs=list(child_result.get("artifacts") or []),
+                        idempotency_key=child_id, owner_check=check_fork_publication)
+                    child_result["mailbox_ref"] = {
+                        "team_id": team_id, "recipient": k, "message_id": message.get("id")}
+                    _team_state.replace_result(
+                        team_id, k, parent_res, previous_harness=parent_harness,
+                        reason="fork_inputs_available", owner_check=check_fork_publication)
+                except Exception as exc:
+                    parent_res.setdefault("fork_protocol_feedback", []).append({
+                        "task_id": child_id, "reason": "fork_publication_failed",
+                        "error_type": type(exc).__name__})
         if cb:
             done_n = sum(1 for x in fork_results if _is_delivered(x))
             cb({"agent": "commander", "t": "result",
@@ -9720,8 +10082,8 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
     _candidate_results = [r for r in ordered
                           if str(r.get("key") or "") not in _verification_nodes | _supporting_nodes]
     if mode == "relay":
-        _delivered_results = [r for r in ordered if _is_delivered(r)]
-        _tail = ordered[-1] if ordered else None
+        _delivered_results = [r for r in _candidate_results if _is_delivered(r)]
+        _tail = _candidate_results[-1] if _candidate_results else None
         _final_result = (_tail if _is_delivered(_tail)
                          else (_delivered_results[-1] if _delivered_results else _tail))
     else:
@@ -10337,8 +10699,14 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
                 for _candidate in _pre_revision_results:
                     if _candidate.get("verification_role"):
                         continue
+                    # The independent score belongs to the assessed delivery,
+                    # not every earlier candidate or supporting contribution.
+                    if (len(_pre_revision_results) != 1 or _revision_results
+                            or _candidate.get("supporting_context")):
+                        continue
                     _verified_perf.record(
-                        str(_candidate.get("relay_by") or _candidate.get("key") or ""),
+                        str(_candidate.get("relay_by") or _candidate.get("assigned_harness")
+                            or _candidate.get("harness") or _candidate.get("key") or ""),
                         str(plan.get("direction") or next(iter((plan.get("directions") or {}).values()), "general")),
                         str(mode or "single"), ok=_is_delivered(_candidate),
                         wall_s=float(_candidate.get("elapsed") or 0), quality=_verified_quality,
@@ -10445,6 +10813,7 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
         # field. Include compiler-generated nodes, their policies and bindings.
         _execution_plan.update(_snapshot_execution_plan())
     out = {"results": ordered, "hierarchy": hierarchy, "team_id": team_id,
+            "execution_mode": mode,
             "dependencies": dependencies, "cyclic": cyclic, "cycle_broken": cycle_broken_edges,
             "gold_unknown": True,
             "task_assignments": task_assignments, "assignment_decisions": assignment_decisions,
@@ -10489,6 +10858,9 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
             "delivery_contract": dict(plan.get("delivery_contract") or {}),
             "experience_intent": dict(plan.get("experience_intent") or {}),
             "frontier_research_contract": dict(plan.get("frontier_research_contract") or {}),
+            "selection": _selection_facts(
+                {"winner": _success_audit.get("winner") or _recommend_winner(ordered, mode, _final_result)},
+                ordered, mode, _final_result, _success_audit),
             "supporting_context_results": [r for r in ordered if r.get("supporting_context")],
             "outcome": _outcome,
             "partial": _outcome.get("status") == "partial",
@@ -10551,6 +10923,60 @@ def _baseline_snapshot(question: str, ordered: list) -> dict | None:
 _VERSION_RE = __import__("re").compile(r"[-_ v](\d+)$|\((\d+)\)$")
 
 
+def _selection_row(pool: list, winner: str) -> dict | None:
+    """Resolve a unique task first, then a unique legacy key; never guess."""
+    if not winner:
+        return None
+    for field in ("task_id", "key"):
+        matches = [row for row in pool if str(row.get(field) or "") == winner]
+        if matches:
+            return matches[0] if len(matches) == 1 else None
+    return None
+
+
+def _selection_facts(out: dict, ordered: list, mode: str, final_result,
+                     success_audit: dict) -> dict:
+    """Describe the actual final selection without inventing a quality decision."""
+    candidates = [row for row in (ordered or [])
+                  if not row.get("supporting_context") and not row.get("verification_role")]
+    delivered = [row for row in candidates if _is_delivered(row) and (row.get("final") or "").strip()]
+    pool = delivered or [row for row in candidates if (row.get("final") or "").strip()]
+    if not pool:
+        pool = [row for row in (out.get("results") or [])
+                if not row.get("supporting_context") and (row.get("final") or "").strip()]
+    winner = str(out.get("winner") or success_audit.get("winner") or "")
+    audit_winner = str(success_audit.get("winner") or "")
+    chosen = _selection_row(pool, winner)
+    if winner and chosen is None:
+        if isinstance(final_result, dict) and final_result in pool and mode == "relay":
+            chosen, source = final_result, "final_result_reference"
+        else:
+            source = ("success_audit_bundle" if winner == "__delivery__" and audit_winner == winner
+                      else "unresolved_winner")
+    elif chosen is not None:
+        source = "success_audit" if winner == audit_winner else "explicit_winner"
+    elif isinstance(final_result, dict) and final_result in pool:
+        chosen, source = final_result, "final_result_reference"
+    elif (len(delivered) > 1 and (mode == "pk" or
+          (mode != "relay" and bool(success_audit.get("winner_rejected"))))):
+        source = "unadjudicated_candidates"
+    elif pool:
+        chosen, source = pool[-1], "ordered_delivery_fallback"
+    else:
+        source = "no_candidate"
+    evidence = success_audit.get("evidence_refs") or success_audit.get("evidence") or []
+    return {
+        "selected_task_id": str((chosen or {}).get("task_id") or (chosen or {}).get("key") or ""),
+        "selected_harness": str((chosen or {}).get("relay_by") or (chosen or {}).get("harness") or ""),
+        "source": source,
+        "order_basis": "task_order" if source in {"ordered_delivery_fallback", "unadjudicated_candidates"} else "not_applicable",
+        "author_basis": "not_recorded",
+        "audit_basis": "recorded" if source in {"success_audit", "success_audit_bundle"} else "not_recorded",
+        "evidence_refs": list(evidence) if source in {"success_audit", "success_audit_bundle"}
+                         and isinstance(evidence, (list, tuple)) else [],
+    }
+
+
 def _winner_note(winner: str, ordered: list) -> str:
     """推荐理由兜底：从交付事实(耗时/产物数)拼中性白话；无 winner 返回空。"""
     row = next((r for r in (ordered or [])
@@ -10568,40 +10994,80 @@ def _winner_note(winner: str, ordered: list) -> str:
 
 
 def _recommend_winner(ordered: list, mode: str, final_result) -> str:
-    """PK 模式推荐兜底：成功审计未启用时从交付结果派生推荐家 key。
+    """Only return an actually selected/audited winner, never mere delivery order.
 
-    与 _winner_final 同一选择逻辑(交付优先·final_result 指定次之·最后交付兜底),
-    区别是返回 key 而非 final 文本。relay/orchestrate 不推荐(接力人人有份·队长已知),
-    单家交付也不推荐(只有一家谈不上推荐)。
+    Order remains available through results and _winner_final. In PK, a final
+    row can disagree with an earlier member without proving it is better.
     """
     if mode != "pk":
         return ""
-    results = [r for r in (ordered or []) if not r.get("supporting_context")]
+    results = [r for r in (ordered or [])
+               if not r.get("supporting_context") and not r.get("verification_role")]
     delivered = [r for r in results if _is_delivered(r) and (r.get("final") or "").strip()]
     if len(delivered) < 2:
         return ""  # 少于两家交付无"推荐"可言
     if isinstance(final_result, dict) and final_result in delivered:
         return str(final_result.get("key") or final_result.get("task_id") or "")
-    return str(delivered[-1].get("key") or delivered[-1].get("task_id") or "")
+    return ""
 
 
 def _winner_final(out: dict) -> str:
     """取被审计/显式选中的最终交付；没有质量证据时保持执行顺序，不以字数冒充质量。"""
-    results = [r for r in (out.get("results") or []) if not r.get("supporting_context")]
+    results = [r for r in (out.get("results") or [])
+               if not r.get("supporting_context") and not r.get("verification_role")]
     delivered = [r for r in results if _is_delivered(r) and (r.get("final") or "").strip()]
     pool = delivered or [r for r in results if (r.get("final") or "").strip()]
     if not pool:
+        # A review is not a replacement for an existing user deliverable. If
+        # it is the only actual record, preserve that evidence rather than
+        # silently returning an empty answer.
+        pool = [r for r in (out.get("results") or [])
+                if not r.get("supporting_context") and (r.get("final") or "").strip()]
+    if not pool:
         return ""
     winner = str(out.get("winner") or (out.get("success_audit") or {}).get("winner") or "")
-    if winner:
-        chosen = next((row for row in pool if str(row.get("task_id") or row.get("key") or "") == winner
-                       or str(row.get("key") or "") == winner), None)
-        if chosen:
-            return str(chosen.get("final") or "")
     final_result = out.get("final_result") if isinstance(out.get("final_result"), dict) else None
+    if winner:
+        chosen = _selection_row(pool, winner)
+        if chosen is not None:
+            return str(chosen.get("final") or "")
+        # Relay has an independently established tail/last-delivered result.
+        # An invalid winner or a bundle audit must not select a different row.
+        if str(out.get("execution_mode") or "") == "relay" and final_result in pool:
+            return str(final_result.get("final") or "")
+        return ""
     if final_result and final_result in pool:
         return str(final_result.get("final") or "")
+    mode = str(out.get("execution_mode") or "")
+    audit = out.get("success_audit") if isinstance(out.get("success_audit"), dict) else {}
+    if len(delivered) > 1 and (mode == "pk" or (mode != "relay" and audit.get("winner_rejected"))):
+        # Independent PK candidates or a rejected bundle choice provide no
+        # basis to silently promote a single row as the final answer.
+        return ""
     return str(pool[-1].get("final") or "")
+
+
+def _persistent_candidate_context(out: dict) -> str:
+    """Preserve bounded, unranked candidate facts when no final was selected."""
+    rows = [row for row in (out.get("results") or [])
+            if isinstance(row, dict) and not row.get("supporting_context")
+            and not row.get("verification_role") and _is_delivered(row)
+            and isinstance(row.get("final"), str) and row["final"].strip()]
+    if not rows:
+        return ""
+    # Cap both count and characters; disclose omissions instead of presenting
+    # an incomplete excerpt as a selected answer or a full history.
+    visible = rows[:12]
+    per_row = max(60, 1200 // len(visible))
+    lines = []
+    for row in visible:
+        label = str(row.get("task_id") or row.get("key") or "未上报")[:80]
+        text = row["final"].strip()
+        excerpt = text[:per_row]
+        lines.append(f"{label}: {excerpt}" + (" [正文已截断]" if len(text) > per_row else ""))
+    if len(rows) > len(visible):
+        lines.append(f"另有 {len(rows) - len(visible)} 条候选未列入摘要；完整结果保留在原记录。")
+    return "【未裁决候选·仅为续作事实，非最终结论】\n" + "\n".join(lines)
 
 
 def _pilot_run_state(r: dict) -> dict:
@@ -10889,6 +11355,8 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         if isinstance(out.get("coordination"), dict):
             controls.append(out["coordination"])
         for control in controls:
+            if control.get("source") == "native_author_proposal":
+                continue  # This is the already-accounted member reply, not a new control call.
             records = control.get("execution_usage_records")
             if isinstance(records, list):
                 for record in records:
@@ -10980,6 +11448,11 @@ def dispatch_persistent(question: str, plan: dict | None = None,
     plan = dict(plan or {})
     original_question = str(question)
     next_guidance = ""
+    # Keep the incoming request boundary separate from later member proposals.
+    _author_request_policy = deepcopy(plan.get("team_policy") or {})
+    _request_snapshot = (plan.get("input_snapshot") or {}).get("request_team_policy")
+    if isinstance(_request_snapshot, dict):
+        _author_request_policy.update(deepcopy(_request_snapshot))
     trajectory: list[str] = []   # 前几轮真实轨迹(winner final 摘要)·下一轮回流给军团·不失忆
     previous_full_final: str | None = None
     # per-key 跨轮轨迹(cc 复验揪出的真缺口·2026-08-28):旧版跨轮续跑只回流【全军团 winner】的
@@ -11282,18 +11755,91 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         same_full_final = (previous_full_final is not None
                            and _no_progress(final, previous_full_final))
         previous_full_final = final
-        trajectory.append(final[:1500])
+        # An empty selected final is deliberate for unresolved candidates; it
+        # must not erase their factual evidence from a later continuation.
+        trajectory_fact = final[:1500] if final else _persistent_candidate_context(out)
+        if trajectory_fact:
+            trajectory.append(trajectory_fact)
         coordination = {}
         objective_outcome = out.get("outcome") if isinstance(out.get("outcome"), dict) else {}
         objective_complete = bool(
             objective_outcome.get("status") == "completed"
             and not objective_outcome.get("verification_incomplete")
             and not objective_outcome.get("contract_incomplete"))
-        if ((_wave_handoff or (not _paused and _coordination_enabled(round_plan, mode)))
+        _author_proposal = {}
+        _author_origin = round_plan.get("initial_author") or {}
+        if isinstance(_author_origin, dict) and _author_origin.get("task_id"):
+            _author_task_id = str(_author_origin["task_id"])
+            _author_result = next((row for row in out.get("results") or []
+                                   if str(row.get("task_id") or row.get("key") or "") == _author_task_id), {})
+            _author_request = (_author_result.get("orchestration_request") or {}).get("coordinate")
+            if (isinstance(_author_request, dict)
+                    and bool(_lp.load_user_config(user_id).get("enabled"))
+                    and _author_task_id not in _retained_results
+                    and not requires_execution_pause(_author_result)
+                    and not _author_result.get("supporting_context")):
+                import collaboration_runtime as _author_protocol
+                import project_context as _author_context
+                import team_state as _author_team
+                _author_state = _author_team.load(str(round_plan.get("team_id") or qhash))
+                _author_packet = _author_context.load(str(round_plan.get("team_id") or qhash))
+                _author_context.require_owner(_author_packet, user_id, conversation_id or qhash)
+                _author_context.require_owner(_author_state, user_id, conversation_id or qhash)
+                _author_owner = str(_author_result.get("assigned_harness")
+                                    or _author_result.get("harness") or "")
+                _author_node = (_author_state.get("tasks") or {}).get(_author_task_id) or {}
+                if (_author_node.get("assigned_harness") == _author_owner
+                        and _author_node.get("active_attempt") is None and _author_node.get("finished_at")):
+                    _author_proposal = _author_protocol.normalize_coordination(
+                        _author_request, protocol=dict(_author_result.get("collaboration_protocol") or {}),
+                        require_action=True, strict=True)
+                    _author_proposal.update(
+                        source="native_author_proposal", author=_author_owner, task_id=_author_task_id,
+                        sequence=rounds, result=_author_result)
+                    if not _author_proposal.get("ok"):
+                        _author_proposal["error"] = "author_invalid_coordinate_shape"
+                    # A native plan may reorganize work, never enlarge the caller's
+                    # candidate/permission/resource boundaries or clear them.
+                    _next = _author_proposal.get("next_plan") or {}
+                    _proposed_policy = _next.get("team_policy")
+                    if "team_policy" in _next and not isinstance(_proposed_policy, dict):
+                        _author_proposal.update(ok=False, action=None,
+                                               error="author_invalid_team_policy")
+                    elif isinstance(_proposed_policy, dict):
+                        _next["team_policy"] = {**_proposed_policy, **_author_request_policy}
+                    _author_valid = set(_harness_keys())
+                    _request_candidates = _author_request_policy.get("candidate_harnesses")
+                    if _request_candidates is not None:
+                        if not isinstance(_request_candidates, (list, tuple, set)):
+                            _author_valid = set()
+                        else:
+                            _author_valid &= {str(key) for key in _request_candidates if str(key)}
+                    _owner_patches = [*(_author_proposal.get("task_updates") or {}).values(),
+                                      *(_next.get("tasks") or {}).values()]
+                    _outside_owners = sorted({str(node[field]) for node in _owner_patches
+                                              if isinstance(node, dict)
+                                              for field in ("assigned_harness", "assign_to", "harness", "agent")
+                                              if node.get(field) and str(node[field]) not in _author_valid})
+                    _conflicting_owners = any(
+                        len({str(node[field]) for field in ("assigned_harness", "assign_to", "harness", "agent")
+                             if node.get(field)}) > 1 for node in _owner_patches if isinstance(node, dict))
+                    if _conflicting_owners:
+                        _author_proposal.update(ok=False, action=None, error="author_conflicting_assignment_aliases")
+                    if _outside_owners:
+                        _author_proposal.update(ok=False, action=None,
+                            error="author_assignment_outside_request_candidates",
+                            protocol_feedback={"outside_request_candidates": _outside_owners})
+        _author_continue_without_graph = False
+        if ((_wave_handoff or _author_proposal
+             or (not _paused and _coordination_enabled(round_plan, mode)))
                 and not is_cancelled(qhash)):
             if _wave_handoff:
                 coordination = _wave_handoff["proposal"]
                 plan = {**plan, **_wave_handoff["execution_plan"],
+                        "tasks": {key: dict(node) for key, node in _request_tasks.items()}}
+            elif _author_proposal:
+                coordination = _author_proposal
+                plan = {**plan, **_execution_plan,
                         "tasks": {key: dict(node) for key, node in _request_tasks.items()}}
             else:
                 coordination = _run_captain_coordination(
@@ -11317,6 +11863,10 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                 out["coordination"] = coordination
                 out["coordination_history"] = list(coordination_history)
                 refresh_invocation_usage(out)
+            if _author_proposal and not coordination.get("ok"):
+                _author_context.record_coordination(
+                    str(round_plan.get("team_id") or qhash), _author_owner, coordination)
+                return incomplete_coordination(out, coordination, rounds)
             if _coordination_unavailable(coordination):
                 return incomplete_coordination(out, coordination, rounds)
             if coordination.get("ok"):
@@ -11324,17 +11874,21 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                     next_plan, changed = _apply_coordination_to_plan(
                         plan, coordination,
                         pending_only=(set(_wave_handoff["pending_task_ids"]) if _wave_handoff else None),
-                        valid_harnesses=_harness_keys(), allow_graph_changes=True)
+                        valid_harnesses=_author_valid if _author_proposal else _harness_keys(),
+                        allow_graph_changes=True)
+                    _author_continue_without_graph = bool(_author_proposal and not changed)
                     if changed:
                         plan = next_plan
                         try:
                             import collaboration_runtime as _persistent_binding
-                            _valid = _harness_keys()
-                            _runnable = set(_aigc_ready().get("runnable_clis", []))
+                            _valid = _author_valid if _author_proposal else set(_harness_keys())
+                            _runnable = set(_aigc_ready().get("runnable_clis", [])) & _valid
                             plan, _ = _persistent_binding.bind_plan(
                                 plan, _valid, runnable=_runnable)
+                            if _author_proposal and plan.get("binding_errors"):
+                                raise ValueError("author_plan_binding_failed")
                         except Exception as exc:
-                            if _wave_handoff:
+                            if _wave_handoff or _author_proposal:
                                 return incomplete_coordination(
                                     out, {**coordination, "ok": False,
                                           "error": "coordination_handoff_bind_failed",
@@ -11389,7 +11943,7 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                                         text=str(node.get("task") or "回答问题"),
                                         dependencies=list(node.get("depends_on") or []),
                                         agent=str(node.get("assigned_harness") or ""),
-                                        reason="captain_next_plan",
+                                        reason="author_next_plan" if _author_proposal else "captain_next_plan",
                                         native_session_scope=node.get("native_session_scope"))
                                     if not reopened:
                                         continue
@@ -11407,7 +11961,7 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                                     user_id=user_id, conversation_id=conversation_id,
                                     registered=set(_harness_keys()), sync_pending_only=True)
                         except Exception as exc:
-                            if _wave_handoff:
+                            if _wave_handoff or _author_proposal:
                                 return incomplete_coordination(
                                     out, {**coordination, "ok": False,
                                           "error": "coordination_handoff_persist_failed",
@@ -11463,19 +12017,56 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                     # 锚点与复验观察已进入首脑上下文；是否返工、返工哪些维度
                     # 由它的 task_updates / next_plan 表达，不再由平台追加业务任务。
                 elif coordination.get("action") in {"blocked", "user_decision"}:
+                    if _author_proposal:
+                        _author_context.record_coordination(
+                            str(round_plan.get("team_id") or qhash), _author_owner, coordination)
                     out["persistent_rounds"] = rounds
                     out["pilot"] = {"round": rounds, "action": "stop",
                                     "kind": "captain_" + str(coordination.get("action"))}
                     return out
-                elif coordination.get("action") == "complete" and not objective_complete:
+                elif (coordination.get("action") == "complete" and not objective_complete
+                      and not _author_proposal):
                     coordination.update({
                         "ok": False, "action": "continue",
                         "error": "captain_complete_conflicts_with_objective_outcome",
                         "reason": (str(coordination.get("reason") or "")
                                    + "；客观交付或复验仍未闭合，需继续调整任务"),
                     })
+        if _author_proposal:
+            try:
+                _author_receipt_team = str(round_plan.get("team_id") or qhash)
+                _messages = list(coordination.get("messages") or [])
+                def _check_author_message_owner(state):
+                    _require_mail_context_owner(state, _author_receipt_team, user_id,
+                                               conversation_id or qhash, bound_team=True)
+                    node = (state.get("tasks") or {}).get(_author_task_id) or {}
+                    expected_owner = str(((plan.get("tasks") or {}).get(_author_task_id) or {}).get(
+                        "assigned_harness") or _author_owner)
+                    if (node.get("assigned_harness") != expected_owner
+                            or node.get("attempt_seq") != _author_node.get("attempt_seq")
+                            or node.get("active_attempt") is not None
+                            or node.get("queue_owner") or node.get("lease_owner")
+                            or (not node.get("finished_at") and _author_task_id not in
+                                set(plan.get("_coordination_reopen_task_ids") or []))):
+                        raise PermissionError("author_proposal_attempt_changed")
+                delivered = _author_team.send_messages(
+                    _author_receipt_team, _author_owner, _messages,
+                    owner_check=_check_author_message_owner) if _messages else []
+                coordination["message_receipts"] = [{
+                    "message_id": message.get("id"), "to": message.get("to"),
+                    "correlation_id": (coordination.get("collaboration_protocol") or {}).get("correlation_id"),
+                    "meaning": "persisted input; adoption unverified",
+                } for message in delivered]
+            except Exception as exc:
+                coordination.setdefault("protocol_feedback", {})["message_delivery_error"] = type(exc).__name__
+                coordination.update(ok=False, error="author_message_delivery_failed")
+            _author_context.record_coordination(
+                str(round_plan.get("team_id") or qhash), _author_owner, coordination)
+            if not coordination.get("ok"):
+                return incomplete_coordination(out, coordination, rounds)
         if coordination_history:
             out["coordination_history"] = list(coordination_history)
+            out.setdefault("coordination", coordination_history[-1])
         # per-key 轨迹累积:记下每家自己这轮的实质产出(下轮回流给它自己·接力自己的活)。
         for r in (out.get("results") or []):
             _k = r.get("key") or r.get("harness")
@@ -11485,13 +12076,17 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         # 下一轮只执行开放节点。已完成的前置节点以私有只读结果回放，保留依赖边和完整输入，
         # 不重复执行副作用。显式 coordination reopen 的节点仍进入开放集。
         _round_results = {str(r.get("task_id") or r.get("key") or ""): r
-                          for r in (out.get("results") or [])}
+                          for r in (out.get("results") or [])
+                          if not r.get("supporting_context")}
         # Consume the same self-continuation contract as server single. This
         # reopens only this member's existing task; it cannot change a team plan
         # or overrule an explicitly applied captain decision.
         _native_requests = {}
-        if len(_round_results) == 1 and not coordination.get("ok"):
+        if ((len(_round_results) == 1 and not coordination.get("ok"))
+                or _author_continue_without_graph):
             for _task_id, _row in _round_results.items():
+                if _author_continue_without_graph and _task_id != _author_task_id:
+                    continue
                 _intent = _pilot_run_state(_row).get("native_continuation")
                 if _task_id and _intent:
                     if _row.get("error_envelope") or _row.get("fail_kind"):
@@ -11624,7 +12219,8 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                 _stagnant_rounds = 0
         _prev_progress_fp = _progress_fp
         out["progress_stagnant_rounds"] = _stagnant_rounds
-        if _stagnant_rounds >= 2 and _captain_requests_continue:
+        if (_stagnant_rounds >= 2 and _captain_requests_continue
+                and coordination.get("source") != "native_author_proposal"):
             for _stg_id, _stg_node in (plan.get("tasks") or {}).items():
                 if (isinstance(_stg_node, dict) and not _stg_node.get("assignment_locked")
                         and str(_stg_id) not in _terminal_messages):
@@ -11701,6 +12297,14 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         })
         out["persistent_diagnostics"] = list(persistent_diagnostics)
         if verdict.get("action") != "continue":
+            # A peer is a saved contribution, not another main result or a vanished prior call.
+            supporting = [row for row in _request_results.values()
+                          if row.get("supporting_context") and row.get("peer_for")]
+            if supporting:
+                present = {str(row.get("task_id") or row.get("key") or "")
+                           for row in out.get("results") or []}
+                out["results"] = [*(out.get("results") or []), *(
+                    row for row in supporting if str(row.get("task_id")) not in present)]
             # 本轮返回、声明完成或既有运行停因均可收尾，不等于独立质量验收。
             out["persistent_rounds"] = rounds
             out["persistent_diagnostics"] = list(persistent_diagnostics)

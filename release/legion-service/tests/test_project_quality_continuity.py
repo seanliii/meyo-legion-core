@@ -133,6 +133,29 @@ def read_report_reference(reference):
     return value
 
 
+def test_conditional_contribution_report_preserves_origin_without_certifying_effect(isolated_context, tmp_path):
+    pc = isolated_context
+    member_project(pc, tmp_path)
+    report = {"contributions": [{
+        "bottleneck": "The current design lacks evidence for one important assumption",
+        "conditions": {"model": "fixture-model", "budget": "same request"},
+        "contribution_refs": [{"task_id": "peer", "sha256": "fixture-content-hash"}],
+        "adoption": "adopted", "artifact_refs": [{"path": "result.html", "sha256": "fixture-new-version"}],
+        "verified": True,
+    }]}
+    publish_member(pc, "maker", report)
+    view = pc.snapshot("__ut_member_reports", "peer")
+    row, = view["quality_context"]["contributions"]
+    assert row["bottleneck"] == report["contributions"][0]["bottleneck"]
+    assert row["adoption"] == "adopted", "keep the author's claim, not an inferred verdict"
+    assert row["verified"] is False and row["independent_verification"] is False
+    assert row["provenance"]["task_id"] == "maker"
+    assert read_report_reference(row["provenance"]["report_ref"]) == report
+    assert view["frontier_context"]["contributions"] == [row]
+    assert view["claim_ceiling"] == "UNVALIDATED"
+    assert not view["verification_findings"]
+
+
 def test_member_frame_reaches_next_snapshot_with_revisitable_provenance(isolated_context, tmp_path):
     pc = isolated_context
     member_project(pc, tmp_path)

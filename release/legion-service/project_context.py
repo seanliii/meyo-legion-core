@@ -137,12 +137,16 @@ def initialize(team_id: str, objective: str, plan: dict, *, mode: str,
 
 
 def record_task_bindings(team_id: str, tasks: dict, *, user_id: str,
-                         conversation_id: str) -> dict:
+                         conversation_id: str,
+                         expected_assigned_harnesses: dict | None = None,
+                         assignments_only: bool = False) -> dict:
     """Persist the scheduler's actual assignments without replaying a stale plan.
 
     This updates task facts only. It cannot create a project, change its owner
     or workspace, or supply an export grant. Other facts may have arrived while
     discovery/binding was running, so re-read them under the existing lock.
+    assignments_only updates just existing authors, leaving concurrent task
+    text, dependency and verification facts untouched.
     """
     with _packet_lock(team_id):
         packet = load(team_id)
@@ -155,8 +159,24 @@ def record_task_bindings(team_id: str, tasks: dict, *, user_id: str,
                     if isinstance(row, dict) and row.get("task_id")]
         order = [str(row["task_id"]) for row in previous]
         rows = {str(row["task_id"]): row for row in previous}
+        if type(assignments_only) is not bool:
+            raise ValueError("assignments_only must be a boolean")
+        if expected_assigned_harnesses is not None:
+            if not isinstance(expected_assigned_harnesses, dict):
+                raise ValueError("expected task assignments must be a mapping")
+            for task_id, expected in expected_assigned_harnesses.items():
+                current = rows.get(str(task_id))
+                if not current or str(current.get("assigned_harness") or "") != str(expected):
+                    raise ValueError("project_task_binding_changed")
         for task_id, value in tasks.items():
             task_id = str(task_id)
+            if assignments_only:
+                if (task_id not in rows or not isinstance(value, dict)
+                        or not isinstance(value.get("assigned_harness"), str)
+                        or not value["assigned_harness"].strip()):
+                    raise ValueError("existing task and assigned harness required")
+                rows[task_id] = {**rows[task_id], "assigned_harness": value["assigned_harness"]}
+                continue
             node = _task_node(task_id, value, {})
             if task_id not in rows:
                 order.append(task_id)
@@ -251,6 +271,7 @@ def _initialize_locked(team_id: str, objective: str, plan: dict, *, mode: str,
         "execution_role": str(plan.get("execution_role") or packet.get("execution_role") or "champion"),
         "mode": str(packet.get("mode") or mode),
         "captain": str(plan.get("captain") or packet.get("captain") or ""),
+        "initial_author": _json_safe(plan.get("initial_author") or packet.get("initial_author") or {}),
         "north_star": _json_safe(packet.get("north_star") or plan.get("north_star") or {}),
         "critical_dimensions": _json_safe(packet.get("critical_dimensions") or
                                           plan.get("critical_dimensions") or []),
@@ -454,7 +475,7 @@ def _record_member_quality(packet: dict, context: dict, task_id: str, harness: s
     back to the immutable payload, so normalization cannot discard attribution.
     """
     if not any(isinstance(context.get(field), list) and context[field]
-               for field in ("sources", "journey_observations", "gap_plan")):
+               for field in ("sources", "journey_observations", "gap_plan", "contributions")):
         return
     import quality_context as _quality
 
@@ -485,6 +506,18 @@ def _record_member_quality(packet: dict, context: dict, task_id: str, harness: s
                   "independent_verification": False, "report_ref": reference}
     reports[report_id] = {**provenance, "payload": payload, "recorded_at": time.time()}
     quality["member_reports"] = reports
+    contributions = []
+    for contribution in context.get("contributions") or []:
+        if not isinstance(contribution, dict):
+            continue
+        contributions.append({
+            **{key: _json_safe(value) for key, value in contribution.items()
+               if key not in ("verified", "independent_verification", "provenance", "source_task_id")},
+            "source_task_id": str(task_id), "provenance": _json_safe(provenance),
+            "verified": False, "independent_verification": False,
+            "meaning": "member-attributed contribution/adoption report; effect unverified",
+        })
+    quality["contributions"] = _append_unique_facts(quality.get("contributions"), contributions)
     locator = reference["path"] + "#" + reference["json_pointer"]
     # Only data fields are projected. Claims about reviewer identity, quality
     # acceptance, or release readiness remain statements in the original payload.
@@ -890,6 +923,8 @@ def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
         "workdir": str(result.get("workdir") or ""),
         "version_identity": _json_safe(result.get("version_identity") or {}),
         "continuation": _json_safe(continuation or {}),
+        "contribution_input_refs": _json_safe(result.get("contribution_input_refs") or []),
+        "supporting_context": bool(result.get("supporting_context")),
         "recorded_at": time.time(),
     }
     for field in ("orchestration_request", "raw_orchestration_request", "collaboration_protocol"):
@@ -935,7 +970,9 @@ def _record_coordination_unlocked(team_id: str, captain: str, proposal: dict) ->
     packet = load(team_id)
     if not packet:
         return {}
-    row = {"kind": "captain_coordination", "captain": str(captain),
+    is_author_proposal = proposal.get("source") == "native_author_proposal"
+    row = {"kind": "author_coordination" if is_author_proposal else "captain_coordination",
+           "author" if is_author_proposal else "captain": str(captain),
            "sequence": int(proposal.get("sequence") or 0),
            "action": (None if proposal.get("error") and not proposal.get("action")
                       else str(proposal.get("action") or "continue")),
@@ -948,13 +985,15 @@ def _record_coordination_unlocked(team_id: str, captain: str, proposal: dict) ->
     # 原提案和运行回执并列保留。不能只记“首脑要继续”，却丢掉它的提案
     # 未能进入执行图这一事实；旧记录缺失的字段也不补造为成功。
     for field in ("ok", "error", "protocol_feedback", "protocol_recovery", "execution_result_ref",
-                  "collaboration_protocol", "message_receipts", "raw_orchestration_request"):
+                  "collaboration_protocol", "message_receipts", "raw_orchestration_request",
+                  "source", "task_id"):
         if field in proposal:
             row[field] = _json_safe(proposal[field])
     decisions = [item for item in (packet.get("decisions") or []) if isinstance(item, dict)]
     decisions.append(row)
     packet["decisions"] = decisions[-_MAX_ITEMS:]
-    packet["captain"] = str(captain)
+    if not is_author_proposal:
+        packet["captain"] = str(captain)
     packet["current_stage"] = "coordinating"
     packet["updated_at"] = time.time()
     _atomic_write(_path(team_id), packet)
@@ -1259,7 +1298,7 @@ def _project_member_reports(source: dict, allowed_tasks: set[str] | None = None)
             row["projection_reason"] = "original_report_has_no_task_scoped_reference"
         index[key] = project(row)
     for field in ("sources", "journey_observations", "gap_plan", "rendered_observations",
-                  "reference_patterns", "human_evidence"):
+                  "reference_patterns", "human_evidence", "contributions"):
         if field in quality:
             quality[field] = project(quality[field]) or []
     for field in ("journey_observations", "gap_plan", "open_gaps", "verification_findings",
@@ -1283,7 +1322,7 @@ def _project_member_reports(source: dict, allowed_tasks: set[str] | None = None)
                 rows = _append_unique_facts(rows, [value])
         if rows:
             frontier[field] = project(rows) or []
-    for field in ("sources", "journey_observations", "gap_plan"):
+    for field in ("sources", "journey_observations", "gap_plan", "contributions"):
         frontier[field] = _json_safe(quality.get(field) or [])
     source["frontier_context"] = _json_safe(frontier)
     quality["frontier_context"] = _json_safe(frontier)

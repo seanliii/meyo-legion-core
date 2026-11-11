@@ -76,6 +76,49 @@ def test_binding_update_preserves_newer_project_facts_and_workspace(scene):
     assert scene.identity.project_grant(USER, str(scene.work))["export_paths"] == ["."]
 
 
+def test_conditional_binding_does_not_overwrite_a_newer_assignment(scene):
+    team = "__ut_conditional_project_binding"
+    scene.pc.initialize(team, "Original", deepcopy(scene.plan), mode="pk",
+                        user_id=USER, conversation_id=CONVERSATION)
+    updated = scene.pc.record_task_bindings(
+        team, {TASK: {"assigned_harness": "new-owner", "task": "Original"}},
+        user_id=USER, conversation_id=CONVERSATION, expected_assigned_harnesses={TASK: TASK})
+    before = deepcopy(updated)
+    with pytest.raises(ValueError, match="project_task_binding_changed"):
+        scene.pc.record_task_bindings(
+            team, {TASK: {"assigned_harness": TASK}}, user_id=USER,
+            conversation_id=CONVERSATION, expected_assigned_harnesses={TASK: "stale-owner"})
+    assert scene.pc.load(team) == before
+    assert next(row for row in before["tasks"] if row["task_id"] == TASK)["assigned_harness"] == "new-owner"
+
+
+def test_assignment_only_cas_preserves_concurrent_task_facts(scene):
+    team = "__ut_assignment_only_cas"
+    scene.pc.initialize(team, "Original", deepcopy(scene.plan), mode="pk",
+                        user_id=USER, conversation_id=CONVERSATION)
+    newer = scene.pc.record_task_bindings(
+        team, {TASK: {"task": "New task body", "assigned_harness": TASK,
+                      "depends_on": ["other"], "dependency_policy": "all_done",
+                      "verification_role": "independent-reviewer"}},
+        user_id=USER, conversation_id=CONVERSATION)
+    before = next(row for row in newer["tasks"] if row["task_id"] == TASK)
+    updated = scene.pc.record_task_bindings(
+        team, {TASK: {"assigned_harness": "relay", "task": "STALE TASK", "depends_on": []}},
+        user_id=USER, conversation_id=CONVERSATION,
+        expected_assigned_harnesses={TASK: TASK}, assignments_only=True)
+    after = next(row for row in updated["tasks"] if row["task_id"] == TASK)
+    assert after == {**before, "assigned_harness": "relay"}
+    restored = scene.pc.record_task_bindings(
+        team, {TASK: {"assigned_harness": TASK}}, user_id=USER, conversation_id=CONVERSATION,
+        expected_assigned_harnesses={TASK: "relay"}, assignments_only=True)
+    assert next(row for row in restored["tasks"] if row["task_id"] == TASK) == before
+    with pytest.raises(ValueError, match="existing task and assigned harness required"):
+        scene.pc.record_task_bindings(team, {"unknown": {"assigned_harness": TASK}},
+                                      user_id=USER, conversation_id=CONVERSATION,
+                                      assignments_only=True)
+    assert scene.pc.load(team) == restored
+
+
 @pytest.mark.parametrize("user,conversation", [
     ("another-user", CONVERSATION), (USER, "another-conversation"),
 ])

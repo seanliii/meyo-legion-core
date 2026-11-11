@@ -335,6 +335,61 @@ def bind_explicit_owner_request(question: str, plan: Any, *, mode: str = "auto",
             "source": source}
 
 
+def bind_initial_author_request(question: str, plan: Any, *, mode: str = "auto",
+                                valid: set[str] | list[str],
+                                runnable: set[str] | list[str],
+                                definitions: dict[str, dict] | None = None) -> dict:
+    """Bind one initial execution node, not a solution plan or a permanent captain.
+
+    Reuse the existing runtime binder. The request's candidate pool remains the
+    pool for later assistance; an initial author is not a sole-member boundary.
+    """
+    if mode != "auto" or not isinstance(plan, dict) or not str(question).strip():
+        return {"bound": False}
+    policy = plan.get("team_policy") or {}
+    if not isinstance(policy, dict):
+        return {"bound": False, "error": "invalid_initial_author_policy"}
+    try:
+        if policy.get("force_multi") or int(policy.get("min_agents", 1)) > 1:
+            return {"bound": False}
+    except (TypeError, ValueError):
+        return {"bound": False, "error": "invalid_initial_author_policy"}
+    if plan.get("solo") is False or any(plan.get(field) for field in (
+            "tasks", "pipeline", "hierarchy", "organization", "orchestration",
+            "orchestration_spec", "pattern", "verification", "result_policy",
+            "captain", "captain_candidates", "captain_synthesis")):
+        return {"bound": False}
+    available = set(valid) & set(runnable)
+    candidates = policy.get("candidate_harnesses")
+    if candidates is not None:
+        if not isinstance(candidates, (list, tuple, set)):
+            return {"bound": False, "error": "invalid_initial_author_candidates"}
+        available &= set(_strings(candidates))
+    if not available:
+        return {"bound": False, "error": "no_initial_author_available"}
+    source = copy.deepcopy(plan)
+    node = {"task": str(question), "direction": str(source.get("direction") or "general"),
+            "depends_on": []}
+    for field in ("capability_requirements", "preferred_harnesses", "excluded_harnesses"):
+        if field in source:
+            node[field] = copy.deepcopy(source[field])
+    source["tasks"] = {"delivery": node}
+    bound, decisions = bind_plan(source, available, runnable=available,
+                                 definitions=definitions, max_harnesses=1)
+    author = (bound.get("tasks") or {}).get("delivery") or {}
+    owner = str(author.get("assigned_harness") or "")
+    if not owner or author.get("binding_error"):
+        return {"bound": False, "error": "no_initial_author_available"}
+    author["assignment_locked"] = True
+    bound["initial_author"] = {
+        "task_id": "delivery", "harness": owner,
+        "source": "runtime_initial_author_binding", "advantage_verification": "unproven",
+        "assignment_decisions": decisions,
+    }
+    return {"bound": True, "owner": owner, "plan": bound,
+            "source": "runtime_initial_author_binding"}
+
+
 def _task_node(task_id: str, value: Any) -> dict:
     if isinstance(value, dict):
         node = copy.deepcopy(value)
@@ -502,7 +557,7 @@ def bind_plan(plan: Any, valid: set[str] | list[str], *,
                                      provisional.get(str(target), ""))
                 if target_harness:
                     excluded.add(target_harness)
-        candidates = [key for key in available if key not in excluded]
+        candidates = [key for key in sorted(available) if key not in excluded]
         hard_requirements = _hard_runtime_requirements(requirements)
         if hard_requirements:
             qualified = [key for key in candidates

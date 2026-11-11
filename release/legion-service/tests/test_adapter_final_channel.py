@@ -229,5 +229,10 @@ def test_partial_keeps_native_coordination_and_reported_files(cli_stack, monkeyp
     assert result["status"] == "partial"
     assert result["orchestration_request"] == request
     assert result["model_used"] == "fixture-model"
-    assert any(item.get("path") == str(draft) for item in result.get("reported_artifacts", []))
+    # A native file report is retained as an observation. It is not authority
+    # to expose an arbitrary absolute path or turn it into a download link.
+    assert result.get("reported_artifacts") == [
+        {"name": "draft.txt", "kind": "text", "bytes": 5}
+    ]
+    assert draft.read_text() == "draft", "refused export must preserve the source file"
     assert not result.get("artifacts"), "this unbound fixture does not grant a project export"

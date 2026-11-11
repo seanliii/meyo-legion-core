@@ -317,7 +317,14 @@ def from_dispatch(out: dict, is_cancelled: Any = None, delivery_contract: Any = 
             for report in terminal_reports)
         verification_passed = verification_passed and revision_verified
     verification_incomplete = verification_required and not verification_passed
-    coordination_incomplete = bool(out.get("coordination_incomplete"))
+    from error_envelope import requires_execution_pause
+    # A successful author invocation can leave a draft while its requested peer
+    # is stopped. Preserve that invocation, but do not project the whole request
+    # as completed. Both direct single and dispatch consume these same facts.
+    coordination_incomplete = bool(out.get("coordination_incomplete") or any(
+        isinstance(row, dict) and (row.get("peer_input_error")
+                                   or requires_execution_pause(row.get("peer_input_pause")))
+        for row in results))
     if contract_incomplete or verification_incomplete or coordination_incomplete:
         if st == COMPLETED:
             st = PARTIAL

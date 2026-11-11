@@ -111,6 +111,23 @@ def test_current_observations_reach_actual_native_send(
     assert packet == before, "Projection must not modify the adapter's project object."
 
 
+@pytest.mark.parametrize("path", ["core_inproc", "external_inproc", "isolate"])
+def test_exact_goal_folding_reaches_each_actual_native_send(send_stack, monkeypatch, path):
+    stack = send_stack
+    monkeypatch.setenv("LEGION_HARNESS_INPUT_BUDGET", "90000")
+    packet = project(stack)
+    packet["objective"] = "ORIGINAL USER GOAL " + "完整信息" * 300
+    before = copy.deepcopy(packet)
+    result = invoke_native(stack, monkeypatch, packet, path)
+    assert result["final"] == "NATIVE_PAYLOAD_OK"
+    actual = json.loads(stack.capture.read_text())
+    sent = actual["task"]
+    facts = json.loads(sent.split("\n\nTASK_FACTS_JSON\n", 1)[1].split("\n\n", 1)[0])
+    view = json.loads(sent.split("\n\nPROJECT_CONTEXT_JSON\n", 1)[1].split("\n\n", 1)[0])
+    assert "goal" not in facts and view["objective"] == packet["objective"]
+    assert packet == before
+
+
 def many_observations(stack):
     packet = observed_project(stack, 50000)
     report = packet["verification_findings"][0]
@@ -233,19 +250,55 @@ def test_soft_facts_do_not_become_an_impossible_minimum(send_stack, monkeypatch)
     before = copy.deepcopy(packet)
     ctx, ref = projection_context(send_stack, packet)
     header = "\n\nPROJECT_CONTEXT_JSON\n"
+    # Absolute paths are hard bindings and grow with the isolated TMPDIR.
+    # Reserve room for an omission marker explicitly: a fixed 2036-byte goal
+    # left only 24 bytes under a nested private HOME, less than its 64-byte JSON.
+    bindings = {key: packet[key] for key in
+                ("user_id", "conversation_id", "team_id", "workspace_root")}
+    bindings["context_ref"] = ref
+    fixed_bytes = len((registry._CONTEXT_BUDGET_NOTICE + "\n" + "P" * 1024
+                       + header + json.dumps(bindings, ensure_ascii=False)
+                       + "\n\nQuestion:\n").encode())
+    goal_bytes = min(2036, 4096 - fixed_bytes - 128)
+    assert goal_bytes > 0, "the fixture must fit identities, protocol and a nonempty goal"
     # The existing goal/protocol/identity minima fit. Adding optional facts must
     # not turn the same request into an input-budget exception.
     sections = [
         ("protocol", "P" * 1024, 10, .45),
         ("project_context", header + json.dumps(packet, ensure_ascii=False), 22, .45),
-        ("question", "\n\nQuestion:\n" + "G" * 2036, 40, .5),
+        ("question", "\n\nQuestion:\n" + "G" * goal_bytes, 40, .5),
     ]
     sent, report = registry._budget_prompt_sections(sections, ctx)
     assert len(sent.encode()) <= 4096
     assert report["degraded"] is True
+    assert "P" * 1024 in sent and "G" * goal_bytes in sent
     view = json.loads(sent.split(header, 1)[1].split("\n\nQuestion:\n", 1)[0])
     assert view["context_ref"] == ref
     assert view["observation_projection"]["complete"] is False
+    assert_original_reference(view, before)
+    assert packet == before
+
+
+def test_identity_only_observation_budget_preserves_original_reference(send_stack):
+    """Optional omission metadata may not displace an exact identity/reference."""
+    import harness_registry as registry
+    packet = many_observations(send_stack)
+    before = copy.deepcopy(packet)
+    ctx, ref = projection_context(send_stack, packet)
+    header = "\n\nPROJECT_CONTEXT_JSON\n"
+    _, projected, preview = registry._prompt_json_view(
+        "project_context", header + json.dumps(packet, ensure_ascii=False), ctx)
+    bindings = {key: packet[key] for key in
+                ("user_id", "conversation_id", "team_id", "workspace_root")}
+    bindings["context_ref"] = ref
+    limit = len(json.dumps(bindings, ensure_ascii=False).encode()) + 24
+    sent = registry._context_preview_json(projected, projected, preview, limit)
+    view = json.loads(sent)
+    assert len(sent.encode()) <= limit
+    assert {key: view[key] for key in bindings} == bindings
+    assert not any(key in view for key in (
+        "verification_findings", "journey_observations", "open_gaps",
+        "observation_projection"))
     assert_original_reference(view, before)
     assert packet == before
 

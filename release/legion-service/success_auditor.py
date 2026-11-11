@@ -342,6 +342,7 @@ def build_prompt(question: str, plan: dict, candidates: list[dict]) -> tuple[str
                            "estimated_payload_tokens": 0},
     }
     payload["context_budget"]["estimated_payload_tokens"] = _approx_tokens(payload)
+    example_winner = "delivery_bundle" if evaluation_mode == "bundle" else "candidate_1"
     prompt = (
         "你是最终 Success Auditor，与候选作者独立。请从真实用户能否直接成功使用成品出发审计，"
         "不要按篇幅、成员数量或文件数量奖励；简单需求以准确、直接、低摩擦为优，复杂需求才要求"
@@ -356,7 +357,7 @@ def build_prompt(question: str, plan: dict, candidates: list[dict]) -> tuple[str
         "frontier_contract.ready=false 时只能返回 blocked/unverified，绝不能自封超越。"
         "先给一句人可读结论，末尾严格输出："
         "<<LEGION_VERIFY>>{\"verdict\":\"pass|revise|fail|blocked\","
-        "\"winner\":\"candidate_N\",\"scores\":{\"candidate_N\":{\"overall\":0,"
+        f'"winner":"{example_winner}","scores":{{"{example_winner}":{{"overall":0,'
         "\"requirement_fit\":0,\"correctness_and_evidence\":0,\"usability_and_interaction\":0,"
         "\"craft_and_detail\":0,\"coherence\":0,\"restraint_and_focus\":0}},"
         "\"author_hidden\":true,\"reference_scores\":{\"requirement_fit\":0,\"correctness_and_evidence\":0,"
@@ -401,7 +402,14 @@ def normalize_report(report: Any, aliases: dict[str, str], *, reviewer: str = ""
                 continue
         scores[aliases[alias]] = normalized
     winner_alias = str(value.get("winner") or "")
-    if not winner_alias and len(aliases) == 1:
+    # Bundle audits assess complementary contributions as one delivery. A
+    # candidate alias is still useful for scores and findings, but cannot
+    # identify a winner for that delivery. Never fabricate a bundle choice.
+    bundle_scope = aliases.get("delivery_bundle") == "__delivery__"
+    scope_conflict = bool(bundle_scope and winner_alias and winner_alias != "delivery_bundle")
+    if bundle_scope and winner_alias != "delivery_bundle":
+        winner_alias = ""
+    elif not winner_alias and len(aliases) == 1:
         winner_alias = next(iter(aliases))
     winner = aliases.get(winner_alias, "")
     winning_scores = scores.get(winner) or {}
@@ -430,6 +438,9 @@ def normalize_report(report: Any, aliases: dict[str, str], *, reviewer: str = ""
         "profile": str(value.get("profile") or ""),
         "evaluated_at": "post_delivery",
         "winner": winner,
+        **({"winner_rejected": {"alias": str(value.get("winner") or "")[:128],
+                                "reason": "bundle_requires_delivery_bundle"}}
+           if scope_conflict else {}),
         "scores": scores,
         "findings": strings("findings"),
         "evidence": strings("evidence"),

@@ -642,12 +642,49 @@ def _budget_prompt_sections(sections: list[tuple[str, str, float, float]], ctx) 
     original_size = _prompt_upper_bound(original)
     budget, retry_index = _prompt_input_budget(ctx)
     if original_size <= budget:
-        return original, {"degraded": False, "reason": "within_budget",
-                          "input_budget_tokens": budget, "original_estimated_tokens": original_size,
-                          "final_estimated_tokens": original_size, "retry_index": retry_index,
-                          "sections": {name: {"original": _prompt_upper_bound(text),
-                                              "final": _prompt_upper_bound(text), "truncated": False}
-                                       for name, text, _, _ in sections}}
+        # Only fold byte-identical copies when their complete project objective
+        # remains in this very prompt. Never mutate ctx or its persisted refs;
+        # an over-budget projection keeps the existing behaviour unchanged.
+        compact_sections = list(sections)
+        deduplicated = []
+        by_name = {name: (index, text) for index, (name, text, _, _) in enumerate(sections)}
+        if "task_facts" in by_name and "project_context" in by_name:
+            index, facts_text = by_name["task_facts"]
+            _, project_text = by_name["project_context"]
+            facts_header = "\n\nTASK_FACTS_JSON\n"
+            project_header = "\n\nPROJECT_CONTEXT_JSON\n"
+            if (len(by_name) == len(sections) and facts_text.startswith(facts_header)
+                    and project_text.startswith(project_header)):
+                try:
+                    facts_json = facts_text[len(facts_header):]
+                    facts = _json.loads(facts_json)
+                    project = _json.loads(project_text[len(project_header):])
+                    objective = project.get("objective") if isinstance(project, dict) else None
+                    if (isinstance(facts, dict) and isinstance(objective, str) and objective
+                            and facts_json == _json.dumps(facts, ensure_ascii=False, separators=(",", ":"))):
+                        for field in ("goal", "role"):
+                            if facts.get(field) == objective:
+                                facts.pop(field)
+                                deduplicated.append(field)
+                        if deduplicated:
+                            name, _, weight, head_ratio = sections[index]
+                            compact_sections[index] = (
+                                name, facts_header + _json.dumps(
+                                    facts, ensure_ascii=False, separators=(",", ":")), weight, head_ratio)
+                except (TypeError, ValueError, RecursionError):
+                    pass  # Preserve the original sections if either view is unavailable.
+        prompt = "".join(text for _, text, _, _ in compact_sections)
+        report = {"degraded": False, "reason": "within_budget",
+                  "input_budget_tokens": budget, "original_estimated_tokens": original_size,
+                  "final_estimated_tokens": _prompt_upper_bound(prompt), "retry_index": retry_index,
+                  "sections": {name: {"original": _prompt_upper_bound(text),
+                                      "final": _prompt_upper_bound(compact_sections[index][1]),
+                                      "truncated": False}
+                               for index, (name, text, _, _) in enumerate(sections)}}
+        if deduplicated:
+            report["deduplicated_fields"] = {"task_facts": deduplicated}
+            report["deduplicated_bytes"] = original_size - _prompt_upper_bound(prompt)
+        return prompt, report
 
     notice = _CONTEXT_BUDGET_NOTICE + "\n"
     available = max(0, budget - _prompt_upper_bound(notice))
@@ -2029,6 +2066,21 @@ def _legion_prompt(question: str, ctx=None, *, adapter_capabilities=None) -> str
     else:
         base = (QUICK_LEGION_PROTOCOL if quick else LEGION_PROTOCOL.format(
             legion_cli=_legion_tool_path(), media_cli=_media_cli_path()))
+    author_role = ((ctx.task_facts or {}).get("orchestration") or {}).get("author_role") or {}
+    if (not quick and not read_only and isinstance(author_role, dict)
+            and author_role.get("may_propose_task_graph") is True):
+        base += (
+            "\nYour current delivery task carries the full user objective and may organize its work. "
+            "The runtime accepts your existing coordinate task_updates/next_plan proposal after this turn; "
+            "you are not required to perform a separate planning or captain round. "
+            "Continue yourself, explore independently, ask for a concrete peer contribution, delegate "
+            "independent work or transfer the existing task when the current evidence supports it. "
+            "These are options, not required stages; you decide what helps the user's actual outcome. "
+            "Use supporting_context=true for a contribution that is not itself the main delivery. "
+            "Initial member ranks and capability declarations do not prove a local advantage. "
+            "If useful, report actual contribution_refs, bottleneck, conditions, adoption and artifact_refs "
+            "in contributions inside the existing LEGION_FRONTIER_CONTEXT evidence block; these remain "
+            "your attributed observations, not verified quality. No extra permission or budget is granted.\n")
     adapter_block = ("\n\nADAPTER_CAPABILITIES_JSON\n"
                      + _json.dumps(adapter_facts, ensure_ascii=False, separators=(",", ":"))
                      if adapter_facts else "")

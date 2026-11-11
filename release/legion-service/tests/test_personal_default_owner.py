@@ -81,14 +81,17 @@ def test_explicit_owner_still_wins_and_absent_default_keeps_legacy_route(isolate
 
 
 @pytest.mark.parametrize("project_approved", [False, True])
-def test_real_default_http_dispatch_plans_without_losing_subject_or_project(http_entry, isolated, project_approved):
+def test_real_default_http_dispatch_starts_author_without_losing_subject_or_project(http_entry, isolated, project_approved):
     server = http_entry.server
     monkeypatch = isolated.monkeypatch
     env, _ = isolated.runtime.environment(isolated.root, {})
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     calls, planner_calls = [], []
-    monkeypatch.setattr(server.LEGION, "_harness_keys", lambda: ["codex", "cc"])
+    monkeypatch.setattr(server.LEGION, "_harness_keys", lambda: {"codex", "cc"})
+    monkeypatch.setattr(server.LEGION, "_aigc_ready", lambda **kw: {"runnable_clis": ["codex", "cc"]})
+    monkeypatch.setattr(importlib.import_module("collaboration_runtime"), "_performance_order",
+                        lambda keys, scene: ["cc", "codex"])
     monkeypatch.setattr(server.LEGION, "pilot_settings", lambda _uid: {"enabled": False})
     monkeypatch.setattr(
         importlib.import_module("harness_performance"), "route_policy",
@@ -147,14 +150,16 @@ def test_real_default_http_dispatch_plans_without_losing_subject_or_project(http
         return
     assert status == 200
     assert len(calls) == 1, raw.decode("utf-8", "replace")[-2200:]
-    assert len(planner_calls) == 1
+    assert planner_calls == [], "the actual author must start before any solution/formation planner"
     question, request = calls[0]
     assert question == "继续原工程"
-    assert request["mode"] == "pk"
+    assert request["mode"] == "single"
     assert request["user_id"] == "invited-test"
     assert request["conversation_id"] == "personaldefault123"
-    assert request["plan"]["tasks"]["chosen"]["assigned_harness"] == "cc"
-    assert request["plan"]["tasks"]["chosen"]["task"] == question
+    assert request["plan"]["tasks"]["delivery"]["assigned_harness"] == "cc"
+    assert request["plan"]["tasks"]["delivery"]["task"] == question
+    assert request["plan"]["initial_author"]["task_id"] == "delivery"
+    assert not request["plan"].get("captain"), "initial author selection is not a permanent captain"
     assert request["plan"]["quality_context"]
     assert request["plan"]["project_context"]["workspace_root"] == str(workspace)
     assert request["plan"]["project_context"]["continued_from_team_id"] == "personal-default-prior"
@@ -163,6 +168,54 @@ def test_real_default_http_dispatch_plans_without_losing_subject_or_project(http
         if line.startswith("data: ")
     ]
     selection = next(event for event in events if event.get("t") == "mode_selected")
-    assert selection["mode"] == "pk"
+    assert selection["mode"] == "single"
     assert selection.get("selection_source") != "personal_runtime_owner_binding"
     assert any(event.get("results") for event in events)
+
+
+def test_initial_author_binding_keeps_whole_candidate_pool_and_does_not_infer_solution(isolated):
+    runtime = importlib.import_module("collaboration_runtime")
+    isolated.monkeypatch.setattr(runtime, "_performance_order", lambda keys, scene: ["cc", "codex"])
+    plan = {
+        "team_policy": {"candidate_harnesses": ["codex", "cc"], "max_agents": 2},
+        "project_context": {"workspace_root": "/fixture/original"},
+        "model_overrides": {"cc": "fixture-model"}, "resource_budget": {"remaining_calls": 12},
+        "attachments": ["/fixture/material.json"],
+    }
+    before = copy.deepcopy(plan)
+    bound = runtime.bind_initial_author_request(
+        "完整用户原话", plan, valid={"cc", "codex"}, runnable={"cc", "codex"}, definitions={})
+    assert plan == before
+    assert bound["bound"] and bound["owner"] == "cc"
+    output = bound["plan"]
+    assert output["team_policy"] == before["team_policy"]
+    assert len(output["tasks"]) == 1
+    assert output["tasks"]["delivery"]["task"] == "完整用户原话"
+    assert output["tasks"]["delivery"]["assigned_harness"] == "cc"
+    assert not output.get("captain")
+    assert not output.get("pipeline")
+    assert output["initial_author"]["advantage_verification"] == "unproven"
+    for field in ("project_context", "model_overrides", "resource_budget", "attachments"):
+        assert output[field] == before[field]
+
+
+@pytest.mark.parametrize("plan", [
+    {"tasks": {"known": "explicit work"}}, {"team_policy": {"force_multi": True}},
+    {"team_policy": {"min_agents": 2}}, {"solo": False},
+    {"captain": "cc"}, {"captain_candidates": ["cc"]},
+    {"pipeline": ["cc", "codex"]}, {"verification": {"enabled": True}},
+])
+def test_initial_author_does_not_replace_explicit_organization(isolated, plan):
+    runtime = importlib.import_module("collaboration_runtime")
+    before = copy.deepcopy(plan)
+    bound = runtime.bind_initial_author_request(
+        "完整用户原话", plan, valid={"cc", "codex"}, runnable={"cc", "codex"}, definitions={})
+    assert not bound["bound"] and plan == before
+
+
+def test_empty_candidate_boundary_never_expands_to_an_initial_author(isolated):
+    runtime = importlib.import_module("collaboration_runtime")
+    bound = runtime.bind_initial_author_request(
+        "完整用户原话", {"team_policy": {"candidate_harnesses": []}},
+        valid={"cc", "codex"}, runnable={"cc", "codex"}, definitions={})
+    assert not bound["bound"] and bound["error"] == "no_initial_author_available"

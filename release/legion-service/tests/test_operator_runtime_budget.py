@@ -315,6 +315,39 @@ def test_failed_relay_keeps_original_history_and_new_owner_fact(budget_case):
 
 
 @pytest.mark.parametrize("entry", ["dispatch", "persistent"])
+def test_budget_after_relay_binding_keeps_original_author_and_artifacts(budget_case, entry):
+    case = budget_case
+    _choose_relay(case)
+    def answer(call):
+        assert call["key"] == ORIGINAL, "the relay must never start after the owner stops it"
+        return _failed(case, ORIGINAL, PROCESS, artifact=True, call=call)
+    case.answer = answer
+    bind = case.pc.record_task_bindings
+    def publish_after_binding(team_id, tasks, **kwargs):
+        packet = bind(team_id, tasks, **kwargs)
+        if any(node.get("assigned_harness") == RELAY for node in tasks.values()):
+            case.publish_budget()
+        return packet
+    case.monkeypatch.setattr(case.pc, "record_task_bindings", publish_after_binding)
+    out = execute(case, entry)
+    assert [call["key"] for call in case.native_calls] == [ORIGINAL]
+    row = _rows(out)["A"]
+    assert_pause(row)
+    assert row["harness"] == row["assigned_harness"] == ORIGINAL
+    assert row["native_checkpoint"]["session_id"] == "__ut_cursor_" + ORIGINAL
+    assert row["native_facts"]["execution_failure"]["error_envelope"] == PROCESS
+    assert ORIGINAL + ".txt" in {item["name"] for item in row["artifacts"]}
+    assert not row.get("via_relay") and not row.get("relay_by")
+    packet = case.pc.load(case.active_team)
+    assert next(node for node in packet["tasks"] if node["task_id"] == "A")["assigned_harness"] == ORIGINAL
+    stored = case.teams.load(case.active_team)["tasks"]["A"]
+    assert stored["assigned_harness"] == ORIGINAL
+    assert stored["result"]["error_envelope"] == OWNER["error_envelope"]
+    if entry == "persistent":
+        assert out["pilot"]["kind"] == "request_budget_exhausted"
+
+
+@pytest.mark.parametrize("entry", ["dispatch", "persistent"])
 def test_empty_callback_keeps_temporary_reservation_and_normal_relay_open(budget_case, entry):
     case = budget_case
     _choose_relay(case)

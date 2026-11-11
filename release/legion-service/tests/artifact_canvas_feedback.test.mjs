@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
 
-const html = readFileSync(new URL("../web/index_v2.html", import.meta.url), "utf8");
+const html = readFileSync(process.env.LEGION_UI_FILE || new URL("../web/index_v2.html", import.meta.url), "utf8");
 function fn(name) {
   const start = html.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
   if (start < 0) return "";
@@ -220,6 +220,41 @@ function previewCanvas(fetcher = () => jsonResponse(grant)) {
   return { ctx, calls, node, listeners, message, emit, downloads, objectUrls, revoked, timers };
 }
 
+test("预览接线：HTML、CSS、JS相对路径保留在同一授权快照根",async()=>{
+  const h=previewCanvas();
+  await h.ctx.openLightbox("html",artifactUrl,"index.html",{sid:"sid-a"});
+  const frame=h.node("#lbContent").frame;
+  assert.equal(frame.src,grant.preview_url);
+  const base=new URL(frame.src,"https://meyo.test"),root=base.pathname.split("/nested/")[0];
+  for(const path of ["./styles.css","./three.min.js","../assets/game.js"]){
+    const resource=new URL(path,base);
+    assert.ok(resource.pathname.startsWith(root+"/"));
+    assert.ok(resource.pathname.includes("/artifact-preview/__ut_cap/"));
+  }
+  assert.doesNotMatch(frame.getAttribute("sandbox"),/allow-same-origin/);
+});
+
+test("split内嵌预览：点击才授权、旧响应不串会话、拒绝legacy与越界地址",{skip:!fn("_canvasPreviewInline")},async()=>{
+  for(const scenario of ["ok","legacy","wrong","stale"]){
+    const pending=deferred();
+    const h=previewCanvas(()=>scenario==="stale"?pending.promise:jsonResponse(
+      scenario==="legacy"?{ok:false,unsupported:true,error_code:"preview_unsupported"}:
+      scenario==="wrong"?{...grant,preview_url:"https://other.test/page"}:grant,scenario==="legacy"?422:200));
+    const host=h.node("#inline"),button={disabled:false,textContent:"点击加载"};host.isConnected=true;
+    assert.equal(h.calls.length,0);
+    const opening=h.ctx._canvasPreviewInline(host,artifactUrl,"游戏","sid-a",button);
+    if(scenario==="stale"){h.ctx._sessionView++;pending.resolve(jsonResponse(grant));}
+    await opening;
+    assert.equal(h.calls.length,1);
+    assert.equal(h.calls[0].url,"/api/legion/artifact/preview");
+    assert.equal(JSON.parse(h.calls[0].options.body).sid,"sid-a");
+    if(scenario==="ok"){
+      assert.equal(host.frame.src,grant.preview_url);
+      assert.doesNotMatch(host.frame.getAttribute("sandbox"),/allow-same-origin/);
+    }else assert.equal(host.frame,null);
+  }
+});
+
 const exportMessage = (data = {}) => ({
   type: "meyo-artifact-preview", nonce: grant.preview_nonce,
   download: { name: "state(1).json", blob: new Blob(['{"progress":7}'], { type: "text/html" }) }, ...data,
@@ -354,6 +389,8 @@ test("换身份或会话后旧按钮丢弃字节，真实openSession入口立即
   h.node("#lbExportDownload").onclick({ isTrusted: true });
   const preview = h.ctx._canvasState.preview;
   h.ctx._resumeCtx = null; h.ctx.sessionStorage = { removeItem() {} };
+  h.ctx._sessionViewCache = new Map();
+  h.ctx.document.getElementById = () => ({ textContent: "", hidden: false });
   vm.runInContext(fn("openSession"), h.ctx);
   await h.ctx.openSession("sid-other");
   assert.equal(preview.download, null); assert.equal(h.objectUrls.size, 0);

@@ -176,6 +176,24 @@ def test_first_export_survives_same_workdir_continuation_under_original_sha(case
         assert not first.get("native_checkpoint"), "allocation must not invent a native checkpoint"
 
 
+@pytest.mark.parametrize("exports", [[], ["../outside"], ["."]])
+def test_operator_declaration_presence_does_not_grant_export_authority(case, exports):
+    work = case.root / "declared-project"
+    work.mkdir()
+    assert not case.identity.project_grant_declared(OWNER, str(work))
+    case.tokens.write_text(json.dumps({"synthetic-account-only": {
+        "user": OWNER, "project_grants": [{"root": str(work), "export_paths": exports}],
+    }}))
+    assert case.identity.project_grant_declared(OWNER, str(work))
+    assert not case.identity.project_grant_declared("another-owner", str(work))
+    assert not case.identity.project_grant_declared(OWNER, str(work.parent))
+    grant = case.identity.project_grant(OWNER, str(work))
+    if exports == ["../outside"]:
+        assert grant is None, "an invalid declaration is a restriction, not permission"
+    else:
+        assert grant["export_paths"] == exports
+
+
 def test_current_packet_and_output_prefix_are_not_allocation_proof(case):
     req = request(case)
     work = case.root / "data/outputs/unbound-existing"
@@ -433,6 +451,47 @@ def test_first_export_refusal_cannot_fall_back_to_mutable_source(case, failure, 
     case.ad.enrich(out, since_ts=1, workdirs=[result["workdir"]])
     assert not out.get("artifacts") and not out["results"][0].get("artifacts")
     assert "live-fixture-credential-7a93c81f56dd" not in repr(out)
+
+
+@pytest.mark.parametrize("pause", ["partial", "budget"])
+def test_partial_collection_cannot_downgrade_a_revoked_operator_grant(case, pause):
+    req = request(case)
+    work = Path(allocate(case, req))
+    case.tokens.write_text(json.dumps({"synthetic-account-only": {
+        "user": OWNER, "project_grants": [{"root": str(work), "export_paths": ["."]}],
+    }}))
+    original = case.core._run_core_inprocess
+    observations = []
+
+    def native(*args, **kwargs):
+        result = original(*args, **kwargs)
+        case.tokens.write_text(json.dumps({"synthetic-account-only": {"user": OWNER}}))
+        result.update(status="partial", final="The saved partial file is not a completed task.",
+                      artifacts=[{"name": "README.md", "path": str(work / "README.md")}])
+        result["native_facts"] = {"process_returncode": 0, "turn_status": "incomplete"}
+        if pause == "budget":
+            observations.append({"status": "error", "source": "operator_runtime_budget",
+                "error_envelope": {"category": "runtime_budget", "scope": "request",
+                    "retryable": False, "code": "request_total_budget_exhausted",
+                    "message": "Synthetic request budget exhausted."}})
+        return result
+
+    case.monkeypatch.setattr(case.core, "_run_core_inprocess", native)
+    result = case.core.run_one(
+        req.key, "retain only the authorized partial work", qhash=req.qhash,
+        user_id=req.owner, conversation_id=req.lane,
+        _provider_results=lambda: list(observations),
+        task_facts={"team_id": req.team, "task_id": req.task, "attempt_id": req.attempt,
+                    "project_context": case.pc.snapshot(req.team, req.task)})
+    assert result["status"] != "done"
+    assert (work / "README.md").read_bytes() == FIRST
+    assert case.identity.authorized_project_path(OWNER, str(work), conversation_id=SESSION)
+    assert not result.get("artifacts"), "the native allocation cannot replace the revoked operator grant"
+    assert "artifact_project_not_authorized" in {
+        note["reason"] for note in result["artifact_safety_observations"]}
+    memory = importlib.import_module("task_memory").load(req.qhash, req.key)
+    assert memory["artifact_export"] == result["artifact_export"]
+    assert memory["artifact_safety_observations"] == result["artifact_safety_observations"]
 
 
 def test_operator_subtree_still_limits_a_real_default_allocation(case):

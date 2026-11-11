@@ -192,6 +192,137 @@ def test_request_budget_pause_uses_typed_facts_not_http_status_or_answer_words(g
         k: v for k, v in BUDGET.items() if k != "retryable"}})
 
 
+def test_relay_is_bound_to_the_same_owned_project_before_its_native_call(graph):
+    case = graph
+    _choose_relay(case)
+    observed = []
+    def answer(call):
+        packet = case.pc.load(case.active_team)
+        task = next(node for node in packet["tasks"] if node["task_id"] == "A")
+        observed.append((call["key"], task["assigned_harness"], packet["user_id"],
+                         packet["conversation_id"], packet["repo_root"]))
+        return _failed(case, call["key"], PROCESS) if call["key"] == ORIGINAL else _returned(case, "__ut_bound")
+    case.answer = answer
+    team = "__ut_relay_prebound"
+    out = _execute(case, "dispatch", team)
+    assert [row[:2] for row in observed] == [(ORIGINAL, ORIGINAL), (RELAY, RELAY)]
+    assert all(row[2:] == (USER, CONVERSATION, str(case.work)) for row in observed)
+    assert _rows(out)["A"]["status"] == "done"
+
+
+def test_failed_relay_binding_does_not_run_unattributed_native_work(graph):
+    case = graph
+    _choose_relay(case)
+    case.answer = lambda call: _failed(case, call["key"], PROCESS)
+    original = case.pc.record_task_bindings
+    def bind(team_id, tasks, **kwargs):
+        if any(node.get("assigned_harness") == RELAY for node in tasks.values()):
+            raise PermissionError("synthetic binding refusal")
+        return original(team_id, tasks, **kwargs)
+    case.monkeypatch.setattr(case.pc, "record_task_bindings", bind)
+    out = _execute(case, "dispatch", "__ut_relay_binding_refused")
+    assert [call["key"] for call in case.native_calls] == [ORIGINAL]
+    assert _rows(out)["A"]["status"] == "error"
+    assert any(event.get("phase") == "接力归属校验" and event.get("status") == "blocked"
+               for event in case.events)
+
+
+def test_relay_binding_does_not_restore_revoked_project_grant(graph):
+    case = graph
+    _choose_relay(case)
+    tokens = Path(__import__("os").environ["LEGION_PERSONAL_TOKENS_FILE"])
+    def answer(call):
+        if call["key"] == ORIGINAL:
+            return _failed(case, call["key"], PROCESS)
+        tokens.write_text("{}")
+        result = _failed(case, call["key"], PROCESS)
+        path = case.work / "relay-unapproved.txt"
+        path.write_text("not authorized after revocation")
+        result["artifacts"] = [{"path": str(path), "name": path.name}]
+        return result
+    case.answer = answer
+    out = _execute(case, "dispatch", "__ut_relay_revoked")
+    row = _rows(out)["A"]
+    assert [call["key"] for call in case.native_calls] == [ORIGINAL, RELAY]
+    assert not any(item.get("name") == "relay-unapproved.txt" for item in row.get("artifacts") or [])
+    notes = row.get("artifact_safety_observations") or []
+    assert any(note.get("reason") == "artifact_project_not_authorized" for note in notes), notes
+
+
+@pytest.mark.parametrize("fault", ["authorization", "workspace"])
+def test_unstarted_relay_keeps_original_author_and_admission_error(graph, fault):
+    case = graph
+    _choose_relay(case)
+    case.answer = lambda call: _failed(case, call["key"], PROCESS, artifact=True, call=call)
+    original = case.core._run_one_with_gateway
+    envelope = {"category": "authorization_required", "scope": "request", "retryable": False,
+                "code": "provider_denied", "message": "fixture authorization denied"}
+    def unavailable(key, *args, **kwargs):
+        if key == RELAY:
+            return {"key": RELAY, "harness": RELAY, "status": "error", "final": "",
+                    "error": "fixture admission refusal", "blocked_before_native": True,
+                    "execution_calls": 0,
+                    **({"error_envelope": deepcopy(envelope)} if fault == "authorization"
+                       else {"fail_kind": "project_workspace"})}
+        return original(key, *args, **kwargs)
+    case.monkeypatch.setattr(case.core, "_run_one_with_gateway", unavailable)
+    team = "__ut_relay_admission_" + fault
+    out = _execute(case, "dispatch", team)
+    assert [call["key"] for call in case.native_calls] == [ORIGINAL]
+    row = _rows(out)["A"]
+    assert row["harness"] == row["assigned_harness"] == ORIGINAL
+    assert ORIGINAL + ".txt" in {item["name"] for item in row["artifacts"]}
+    admission = row["native_facts"]["unstarted_relay_admission"]
+    assert admission["harness"] == RELAY and admission["blocked_before_native"] is True
+    assert admission["error"] == "fixture admission refusal"
+    if fault == "authorization":
+        assert row["error_envelope"] == envelope
+    else:
+        assert admission["fail_kind"] == "project_workspace"
+    assert next(node for node in case.pc.load(team)["tasks"] if node["task_id"] == "A")["assigned_harness"] == ORIGINAL
+    saved = case.teams.load(team)["tasks"]["A"]
+    assert saved["assigned_harness"] == ORIGINAL
+    assert saved["result"]["native_facts"]["unstarted_relay_admission"] == admission
+
+
+def test_harness_cancel_after_relay_binding_keeps_original_author(graph):
+    case = graph
+    _choose_relay(case)
+    case.answer = lambda call: _failed(case, call["key"], PROCESS)
+    original = case.core._run_one_with_gateway
+    def cancel_relay(key, *args, **kwargs):
+        if key == RELAY:
+            case.core.request_cancel(case.active_team, key=RELAY, scope="harness", reason="fixture stop")
+        return original(key, *args, **kwargs)
+    case.monkeypatch.setattr(case.core, "_run_one_with_gateway", cancel_relay)
+    team = "__ut_harness_cancel_before_relay"
+    out = _execute(case, "dispatch", team)
+    assert [call["key"] for call in case.native_calls] == [ORIGINAL]
+    assert _rows(out)["A"]["harness"] == ORIGINAL
+    assert _rows(out)["A"]["assigned_harness"] == ORIGINAL
+    assert next(row for row in case.pc.load(team)["tasks"] if row["task_id"] == "A")["assigned_harness"] == ORIGINAL
+    assert case.teams.load(team)["tasks"]["A"]["assigned_harness"] == ORIGINAL
+
+
+def test_cancel_during_relay_binding_does_not_reassign_or_start_new_author(graph):
+    case = graph
+    _choose_relay(case)
+    case.answer = lambda call: _failed(case, call["key"], PROCESS)
+    original = case.pc.record_task_bindings
+    def bind(team_id, tasks, **kwargs):
+        if any(node.get("assigned_harness") == RELAY for node in tasks.values()):
+            assert case.teams.request_cancel(team_id, reason="fixture cancellation")
+            assert case.core.request_cancel(team_id, reason="fixture cancellation")["ok"]
+        return original(team_id, tasks, **kwargs)
+    case.monkeypatch.setattr(case.pc, "record_task_bindings", bind)
+    team = "__ut_relay_cancel_binding"
+    _execute(case, "dispatch", team)
+    assert [call["key"] for call in case.native_calls] == [ORIGINAL]
+    packet = case.pc.load(team)
+    node = next(item for item in packet["tasks"] if item["task_id"] == "A")
+    assert node["assigned_harness"] == ORIGINAL, "unstarted relay cannot become the persisted author"
+
+
 def test_later_success_keeps_each_failed_author_and_file_in_the_same_request(graph):
     case = graph
     case.monkeypatch.setattr(

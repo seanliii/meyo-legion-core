@@ -169,6 +169,18 @@ def _absolute_unlinked_path(value: str, *, directory: bool = True) -> Path:
     return path
 
 
+def project_grant_declared(user_id: str, root: str) -> bool:
+    """An exact operator declaration is a restriction, never export authority."""
+    if not isinstance(user_id, str) or not user_id or not isinstance(root, str) or not root:
+        return False
+    return any(
+        isinstance(record, dict) and record.get("user") == user_id
+        and isinstance(record.get("project_grants"), list)
+        and any(isinstance(grant, dict) and grant.get("root") == root
+                for grant in record["project_grants"])
+        for record in _operator_records().values())
+
+
 def project_grant(user_id: str, root: str) -> dict | None:
     """Return a public directory grant from the static operator token store.
 
@@ -258,12 +270,8 @@ def authorized_project_path(user_id: str, root: str, *,
     grant = project_grant(user_id, root)
     if grant:
         return grant
-    for record in _operator_records().values():
-        if isinstance(record, dict) and record.get("user") == user_id:
-            declared = record.get("project_grants")
-            if isinstance(declared, list) and any(
-                    isinstance(g, dict) and g.get("root") == root for g in declared):
-                return None  # Invalid explicit grant must not gain a broader fallback.
+    if project_grant_declared(user_id, root):
+        return None  # Invalid explicit grant must not gain a broader fallback.
     try:
         import legion_paths
         wanted = _absolute_unlinked_path(root)

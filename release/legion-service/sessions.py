@@ -361,6 +361,7 @@ def save_turn(sid: str, question: str, result: dict, mode: str = "pk", user_id: 
         "schema_version": 2,
         "question": question,
         "mode": mode,
+        "execution_mode": result.get("execution_mode"),
         "results": result.get("results", []),
         "final_result": result.get("final_result"),
         "pipeline": result.get("pipeline"),
@@ -372,6 +373,7 @@ def save_turn(sid: str, question: str, result: dict, mode: str = "pk", user_id: 
         # outcome 里的 delivered/total 也在·新字段缺省时前端按 turns 自身降级渲染。
         "winner": result.get("winner") or "",
         "winner_note": result.get("winner_note") or "",
+        "selection": result.get("selection") or {},
         "baseline": result.get("baseline"),
         "outcome": result.get("outcome"),
         "usage": result.get("usage"),
@@ -384,6 +386,7 @@ def save_turn(sid: str, question: str, result: dict, mode: str = "pk", user_id: 
     # Preserve delivery observations through refresh/export. A member returning
     # text is not a substitute for the whole request's recorded outcome.
     for field in ("outcome", "delivery_contract", "partial", "contract_incomplete",
+                  "success_audit", "verification_reports", "verification_required",
                   "verification_incomplete", "delivered_count", "total",
                   "all_failed", "cancelled", "usage", "pilot", "persistent_rounds",
                   "persistent_diagnostics", "persistent_capped"):

@@ -425,17 +425,27 @@ _INTERNAL_FILE_NAMES = _content_safety._INTERNAL_FILE_NAMES
 _is_internal_dir_name = _content_safety._is_internal_dir_name
 
 
-def _is_internal_artifact_path(path: str) -> bool:
-    """Reject runtime/cache files even when a final answer explicitly mentions their path."""
+def _is_internal_artifact_path(path: str, *, project_root: str = "") -> bool:
+    """Reject internal files relative to their storage or bound project root."""
     try:
         candidate = pathlib.Path(os.path.realpath(unquote(str(path))))
-        # The configured storage root may itself live under "state" or "logs".
-        # Classify only the content beneath an explicitly served root; private
-        # descendants and paths outside every served root retain the same checks.
-        roots = [pathlib.Path(root) for root in _allowed_roots()
-                 if candidate.is_relative_to(pathlib.Path(root))]
-        if roots:
-            candidate = candidate.relative_to(max(roots, key=lambda root: len(root.parts)))
+        project_relative = None
+        if project_root and os.path.isabs(project_root):
+            root = pathlib.Path(os.path.realpath(project_root))
+            if root != pathlib.Path(root.anchor) and candidate.is_relative_to(root):
+                project_relative = candidate.relative_to(root)
+        if project_relative is not None:
+            # An authorized project can itself live beneath "state" or "logs".
+            # Check the same descendants as the exporter, plus the legacy
+            # temporary-message prefix below. This does not grant export access.
+            if _content_safety._export_internal_path(project_relative):
+                return True
+            candidate = project_relative
+        else:
+            roots = [pathlib.Path(root) for root in _allowed_roots()
+                     if candidate.is_relative_to(pathlib.Path(root))]
+            if roots:
+                candidate = candidate.relative_to(max(roots, key=lambda root: len(root.parts)))
         parts = candidate.parts
     except (OSError, TypeError, ValueError):
         return True
@@ -445,14 +455,19 @@ def _is_internal_artifact_path(path: str) -> bool:
                 or parts[-1].casefold().startswith("deepagents-messages.json.tmp."))))
 
 
-def _is_private_artifact(artifact: dict) -> bool:
-    """本机/本站运行路径与显式私有标记；不把外站 URL 当本机文件路径。"""
+def _is_private_artifact(artifact: dict, *, project_root: str = "") -> bool:
+    """本机/本站运行路径与显式私有标记；项目根仅用于分类，不授予导出权限。"""
     path = artifact.get("path")
     url = str(artifact.get("url") or "")
     if not path and url.startswith("/") and not url.startswith("//"):
         path = url
+    if path and not os.path.isabs(str(path)) and project_root and os.path.isabs(project_root):
+        relative = pathlib.Path(str(path))
+        if ".." in relative.parts or "\\" in str(path) or "\x00" in str(path):
+            return True
+        path = os.path.join(project_root, str(path))
     if artifact.get("visibility") == "private" or bool(
-            path and _is_internal_artifact_path(str(path))):
+            path and _is_internal_artifact_path(str(path), project_root=project_root)):
         return True
     # Explicit references and producer-supplied previews cannot bypass discovery.
     for field in ("url", "preview", "description", "next_action"):
@@ -764,6 +779,90 @@ def export_project_artifacts(paths: list[str], *, team_id: str, task_id: str,
     except (OSError, TypeError, ValueError, RuntimeError, NotImplementedError):
         notes.append(_not_exported("artifact_export_unavailable"))
     return out
+
+
+def collect_run_artifacts(*, since_ts: float, workdir: str, project: dict,
+                          team_id: str, task_id: str, user_id: str,
+                          harness_key: str, native_conversation_id: str,
+                          request_id: str, final: str = "",
+                          extra_roots: list | None = None,
+                          previous_artifacts: list | None = None,
+                          require_project_authorization: bool = False) -> dict:
+    """Collect success and failure through the same authenticated export boundary.
+
+    A refused project export never falls back to mutable sources or old memory.
+    Legacy unbound calls retain their existing task-root collection behavior.
+    """
+    import artifact_provenance
+
+    arts, notes = [], []
+    project_root = str(project.get("repo_root") or project.get("workspace_root") or "")
+    export_conversation = ""
+    collection_source = "legacy-task-collection"
+    phase = "artifact_project_binding"
+    try:
+        exported = None
+        if project_root:
+            import personal_identity
+            import legion_sandbox
+
+            collection_source = "authorized-project-export"
+            export_conversation = project_export_conversation(
+                project, team_id=team_id, task_id=task_id, user_id=user_id,
+                harness_key=harness_key, native_conversation_id=native_conversation_id,
+                workdir=workdir)
+            phase = "artifact_project_authorization"
+            grant = personal_identity.authorized_project_path(
+                user_id, project_root, conversation_id=export_conversation)
+            allocated = os.path.realpath(os.path.join(
+                _paths.under("outputs"), f"{harness_key}_{request_id}"))
+            owned_allocation = any(
+                row["task_id"] == task_id and row["harness_key"] == harness_key
+                and row["root"] == project_root
+                for row in legion_sandbox.owned_workdir_allocations(
+                    team_id, user_id, export_conversation))
+            if (grant is not None or owned_allocation or require_project_authorization
+                    or os.path.realpath(workdir) != allocated):
+                phase = "artifact_project_export"
+                exported = export_project_artifacts(
+                    list((grant or {}).get("export_paths") or []),
+                    team_id=team_id, task_id=task_id, user_id=user_id,
+                    conversation_id=export_conversation,
+                    requires_operator_grant=(require_project_authorization
+                                             or (grant or {}).get("source") == "operator_project_grant"))
+            else:
+                collection_source = "legacy-task-collection"
+        if exported is not None:
+            arts = list(exported.get("artifacts") or [])
+            notes.extend(exported.get("artifact_safety_observations") or [])
+        else:
+            phase = "artifact_scan"
+            scanned = scan_new_files(since_ts, workdir=workdir, extra_roots=extra_roots,
+                                     safety_observations=notes)
+            if not any(note.get("reason") == "artifact_workdir_unmapped" for note in notes):
+                phase = "artifact_explicit_paths"
+                roots = [workdir, *(extra_roots or [])] if workdir else None
+                explicit = extract(final, roots=roots)
+                arts = artifact_provenance.merge_artifacts(previous_artifacts, scanned, explicit)
+    except _content_safety.ArtifactUnsafe as exc:
+        reason = str(exc)
+        if not re.fullmatch(r"artifact_[a-z0-9_]{1,80}", reason):
+            reason = "artifact_export_unavailable"
+        notes.append({**_not_exported(reason), "phase": phase,
+                      "error_type": type(exc).__name__})
+    except Exception as exc:
+        # Public diagnostics retain the stage/type, not credentials or paths.
+        notes.append({**_not_exported("artifact_export_unavailable"), "phase": phase,
+                      "error_type": type(exc).__name__})
+    for note in notes:
+        note.setdefault("phase", phase)
+    return {
+        "artifacts": arts,
+        "artifact_safety_observations": notes,
+        "artifact_export": {"source": collection_source, "exported_files": len(arts),
+                            "observations": notes, "workdir": workdir,
+                            "conversation_id": export_conversation},
+    }
 
 
 def scan_new_files(since_ts: float, limit: int = 60, workdir: str = "",

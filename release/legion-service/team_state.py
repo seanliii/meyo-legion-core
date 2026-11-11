@@ -394,7 +394,7 @@ def reopen_task(team_id: str, task_id: str, *, text: str = "", dependencies: lis
 
 def add_task(team_id: str, task_id: str, text: str, dependencies: list[str] | None = None,
              *, agent: str = "", metadata: dict | None = None,
-             registered: set | list | None = None) -> dict:
+             registered: set | list | None = None, exclusive: bool = False) -> dict:
     """运行中扩图；动态 fork/verification/revision 与初始节点共用同一持久状态机。
 
     registered(P0-5):未注册 agent 同 ensure 处理——标 unbound_owner,不进 members 执行池。
@@ -404,6 +404,8 @@ def add_task(team_id: str, task_id: str, text: str, dependencies: list[str] | No
         if not state:
             raise KeyError(f"unknown team: {team_id}")
         if task_id in state.get("tasks", {}):
+            if exclusive:
+                raise FileExistsError("task_id_already_exists")
             return dict(state["tasks"][task_id])
         task_meta = dict(metadata or {})
         registered_set = {str(item) for item in (registered or [])} if registered is not None else None
@@ -570,13 +572,15 @@ def cancel_queued(team_id: str, key: str, reason: str) -> bool:
 
 
 def begin_attempt(team_id: str, key: str, *, owner: str = "", lease_s: int = 900,
-                  dependency_ready: bool = False) -> int:
+                  dependency_ready: bool = False, owner_check=None) -> int:
     """原子领取任务，返回单调 attempt id，并持久化可回收 lease。"""
     with _state_lock(team_id):
         state = load(team_id)
         if not state or key not in state["tasks"]:
             raise KeyError(f"unknown team/task: {team_id}/{key}")
         task = state["tasks"][key]
+        if owner_check is not None:
+            owner_check(state)
         now = time.time()
         active = task.get("active_attempt")
         if _cancel_request_for(state, key, task):
@@ -702,7 +706,11 @@ def finish_attempt(team_id: str, key: str, attempt: int, result: dict) -> bool:
         # must survive both ordinary completion and continuation persistence.
         for field, kind in (("artifact_export", dict), ("artifact_safety_observations", list),
                             ("checkpoint_writes", dict), ("checkpoint_storage_error", str),
-                            ("native_resume_error", dict)):
+                            ("native_resume_error", dict), ("orchestration_request", dict),
+                            ("collaboration_protocol", dict), ("peer_results", list), ("fork_results", list),
+                            ("fork_protocol_feedback", list), ("fork_count", int), ("contribution_input_refs", list),
+                            ("peer_input_pause", dict), ("peer_input_error", dict), ("supporting_context", bool),
+                            ("peer_for", str), ("ask", str), ("mailbox_ref", dict)):
             if isinstance(result.get(field), kind):
                 stored[field] = kind(result[field])
         task.update({"status": status, "active_attempt": None, "finished_at": time.time(),
@@ -1075,13 +1083,15 @@ def resolve_by_idempotency(team_id: str, idempotency_key: str) -> dict | None:
 
 
 def replace_result(team_id: str, task_id: str, result: dict, *,
-                   previous_harness: str = "", reason: str = "failover") -> bool:
+                   previous_harness: str = "", reason: str = "failover", owner_check=None) -> bool:
     """Persist a continuation result after the original attempt already reached a terminal state."""
     with _state_lock(team_id):
         state = load(team_id)
         task = ((state or {}).get("tasks") or {}).get(task_id)
         if not task:
             return False
+        if owner_check is not None:
+            owner_check(state)
         final = str(result.get("final") or "")
         final_ref = None
         if final:
@@ -1121,7 +1131,11 @@ def replace_result(team_id: str, task_id: str, result: dict, *,
                   "revision_round": result.get("revision_round")}
         for field, kind in (("artifact_export", dict), ("artifact_safety_observations", list),
                             ("checkpoint_writes", dict), ("checkpoint_storage_error", str),
-                            ("native_resume_error", dict)):
+                            ("native_resume_error", dict), ("orchestration_request", dict),
+                            ("collaboration_protocol", dict), ("peer_results", list), ("fork_results", list),
+                            ("fork_protocol_feedback", list), ("fork_count", int), ("contribution_input_refs", list),
+                            ("peer_input_pause", dict), ("peer_input_error", dict), ("supporting_context", bool),
+                            ("peer_for", str), ("ask", str), ("mailbox_ref", dict)):
             if isinstance(result.get(field), kind):
                 stored[field] = kind(result[field])
         task.setdefault("result_history", []).append({"status": task.get("status"),
@@ -1217,12 +1231,15 @@ _MAILBOX_TEXT_CAP = 200000   # 持久 mailbox 单条上限(军团自审 #3:8000 
                              # (legion_core 已改)·这里只保证持久层重启回放不腰斩。
 
 
-def send_messages(team_id: str, sender: str, messages: list[dict]) -> list[dict]:
-    """Atomically append one protocol's messages and commit the mailbox once."""
+def send_messages(team_id: str, sender: str, messages: list[dict], *,
+                  owner_check=None) -> list[dict]:
+    """Atomically append one protocol's messages after its bound-owner check."""
     with _state_lock(team_id):
         state = load(team_id)
         if not state:
             raise KeyError(f"unknown team: {team_id}")
+        if owner_check is not None:
+            owner_check(state)
         delivered = []
         for message in messages:
             recipient = str(message.get("to") or "")
@@ -1252,12 +1269,24 @@ def send_messages(team_id: str, sender: str, messages: list[dict]) -> list[dict]
 
 def send_message(team_id: str, sender: str, recipient: str, text: str,
                  artifact_refs: list[dict] | None = None, *,
-                 execution_request_id: str = "", user_id: str = "") -> dict:
+                 execution_request_id: str = "", user_id: str = "",
+                 idempotency_key: str = "", owner_check=None) -> dict:
     """成员/总指挥直达持久邮箱；长正文自动转内容引用，不塞爆 team JSON。"""
     with _state_lock(team_id):
         state = load(team_id)
         if not state:
             raise KeyError(f"unknown team: {team_id}")
+        if owner_check is not None:
+            owner_check(state)
+        message_digest = ""
+        if idempotency_key:
+            import hashlib
+            message_digest = hashlib.sha256(str(text or "").encode()).hexdigest()
+            for old in state.get("mailboxes", {}).get(recipient, []):
+                if old.get("idempotency_key") == idempotency_key:
+                    if old.get("body_sha256") != message_digest or old.get("from") != sender:
+                        raise ValueError("mailbox_idempotency_conflict")
+                    return old
         continuation = None
         if execution_request_id:
             import hashlib
@@ -1297,6 +1326,8 @@ def send_message(team_id: str, sender: str, recipient: str, text: str,
                "text": inline, "artifact_refs": refs, "ts": time.time(), "read_at": None}
         if continuation:
             msg["continuation"] = continuation
+        if idempotency_key:
+            msg.update(idempotency_key=idempotency_key, body_sha256=message_digest)
         state["mailboxes"].setdefault(recipient, []).append(msg)
         _write(state)
         return msg

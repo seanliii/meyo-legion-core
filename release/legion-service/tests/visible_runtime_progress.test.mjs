@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const html = readFileSync(new URL("../web/index_v2.html", import.meta.url), "utf8");
+const html = readFileSync(process.env.LEGION_UI_FILE || new URL("../web/index_v2.html", import.meta.url), "utf8");
 
 // Execute the page's actual functions without page startup, a browser, or network.
 function pageFunction(name) {
@@ -31,6 +31,12 @@ class Element {
       },
     };
   }
+  addEventListener(type, listener) { (this.listeners ||= new Map()).set(type, listener); }
+  dispatch(type) { this.listeners?.get(type)?.(); }
+  get scrollHeight() { return this.measureHeight ? this.measureHeight() : this.height || 0; }
+  set scrollHeight(value) { this.height = value; }
+  get scrollTop() { return this.top || 0; }
+  set scrollTop(value) { this.top = this.measureHeight ? Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)) : value; }
   get childElementCount() { return this.children.length; }
   setAttribute(name, value) {
     this.attributes[name] = String(value);
@@ -57,6 +63,17 @@ class Element {
   get innerHTML() { return this.markup || ""; }
   appendChild(child) { this.children.push(child); return child; }
   prepend(child) { this.children.unshift(child); }
+  insertBefore(child, reference) {
+    const index = this.children.indexOf(reference);
+    if (index < 0) this.children.push(child); else this.children.splice(index, 0, child);
+    return child;
+  }
+  insertAdjacentHTML(position, value) {
+    assert.equal(position, "afterbegin");
+    const child = new Element();
+    child.innerHTML = value;
+    this.children.unshift(child);
+  }
   querySelectorAll(selector) {
     const all = this.children.flatMap((c) => [c, ...c.querySelectorAll("*")]);
     return all.filter((c) => selector.split(",").some((s) => {
@@ -71,23 +88,25 @@ class Element {
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 }
 
-async function screen(mode) {
-  const root = new Element(), sendButton = new Element(), qEl = { value: "fixture" };
+async function screen(mode, requestedMode = "auto") {
+  const root = new Element(), chat = new Element(), sendButton = new Element(), qEl = { value: "fixture" };
   const intervals = new Map(); let clock = 0, pendingRead, sequence = 0;
   const finals = [], notices = [];
   const context = vm.createContext({
     document: { createElement: (tag) => new Element(tag), title: "fixture" },
-    Date: { now: () => clock }, TextDecoder, ci: () => root,
+    Date: { now: () => clock }, TextDecoder, AbortSignal, ci: () => root,
     setInterval: (fn) => { intervals.set(fn, fn); return fn; },
     clearInterval: (id) => intervals.delete(id),
-    $: (s) => s === "#send" ? sendButton : s === "#q" ? qEl : null,
+    $: (s) => s === "#chat" ? chat : s === "#modeSelect" ? {value: requestedMode} : s === "#send" ? sendButton : s === "#q" ? qEl : null,
     qEl, uploads: [], _squad: [], _SQUAD_AGENTS: [], _sessionView: 0,
     _personalSubject: "__ut_owner", _personalEpoch: 1, _personalSwitchPending: false,
     _readPersonalStatus: async () => "__ut_owner", _origTitle: "fixture",
     running: false, liveTeamId: "", lastEventId: 0, curSession: "__ut_sid",
     _resumeCtx: null, nameOf: (name) => name,
     esc: (s) => String(s).replaceAll("<", "&lt;"), _toolLabel: (name) => ({ name, desc: "" }),
-    _stepPurpose: () => "", _renderProductMilestone: () => false,
+    _stepPurpose: () => "", colorOf: () => "#123456", _avatarIndex: () => 0,
+    artifactHTML: () => "<div>真实产物卡</div>", hydrateArtifacts() {},
+    _toggleJumpBtn(show) { chat.jumpVisible = show; },
     currentQuerySource: () => ({}), loadSessions: async () => {},
     consumeQuerySource() {}, applyModeReason() {}, toast: (text) => notices.push(text),
     renderLegionAnswer(results, data, message) {
@@ -104,20 +123,28 @@ async function screen(mode) {
       return { body: { getReader: () => ({ read: () => new Promise((resolve) => { pendingRead = resolve; }) }) } };
     },
   });
-  const functions = ["_syncProcessProgress", "_renderRuntimePulse", "newLegionMsg",
+  const functions = ["_scrollAtLatest", "_processScrollState", "_captureProgressScroll", "_restoreProgressScroll", "_syncProcessJump", "_syncProcessProgress", "_renderRuntimePulse", "newLegionMsg",
     "_renderLegionHeartbeat", "_renderAgentHeartbeat", "_finalDeliveryData",
     "_deliveryDisplay", "_turnSignature", "_markReplayTerminal", "notifyDone",
-    "applyLiveEvent", "send"];
-  vm.runInContext([html.match(/^const _PHASE_LABELS=.*$/m)[0], ...functions.map(pageFunction)].join("\n"), context);
+    "_renderProductMilestone", "_renderToolStep", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "send"];
+  vm.runInContext([html.match(/^const _PHASE_LABELS=.*$/m)[0], html.match(/^const _PRODUCT_MILESTONES=.*$/m)[0], ...functions.map(pageFunction)].join("\n"), context);
   let sending;
   if (mode === "live") { sending = context.send(); await new Promise(setImmediate); }
-  else context.newLegionMsg("auto");
+  else context.newLegionMsg(requestedMode);
   const message = root.children[0], state = { steps: 0, eventId: 0 };
   context.applyLiveEvent("meta", { team_id: "__ut_team", sid: "__ut_sid" }, message, { steps: 0, eventId: ++sequence });
   const proc = message.querySelector(".proc-detail"), toggle = message.querySelector(".proc-toggle");
+  if (requestedMode === "pk") {
+    // Preserve the real PK nesting in this otherwise flat markup fixture.
+    for (const selector of [".pk-tabs", ".pk-panels"]) {
+      const element=message.querySelector(selector);
+      message.children=message.children.filter(child=>child!==element);
+      proc.appendChild(element);
+    }
+  }
   message.querySelector(".progress").style.display = "flex";
   return {
-    message, proc, toggle, context, finals, notices,
+    message, proc, toggle, context, finals, notices, chat,
     async event(data, eventId = ++sequence) {
       if (mode === "resume") context.applyLiveEvent("step", data, message, { ...state, eventId });
       else {
@@ -151,6 +178,258 @@ async function screen(mode) {
     async close() { if (pendingRead) pendingRead({ done: true }); await sending; },
   };
 }
+
+// Deterministic geometry at the DOM boundary, running the actual SSE consumer/renderers.
+// This verifies scroll behavior, not browser layout or screenshot appearance.
+function scrollBox(el, viewport = 280) {
+  el.clientHeight = viewport;
+  el.measureHeight = () => 1200 + el.children.reduce((sum, row) => sum + Math.max(180, row.innerHTML.length), 0);
+  el.scrollTop = el.scrollHeight;
+  return el;
+}
+test("过程框高度：原生纵向调整有上下限，手机预留输入区，PK内容随框伸展", () => {
+  const css = html.match(/^\.proc-detail\{([^}]+)\}/m)[1];
+  assert.match(css, /resize:vertical/);
+  assert.match(css, /overflow-y:auto/);
+  assert.match(css, /height:min\(420px,50dvh\)/);
+  assert.match(css, /min-height:min\(160px,var\(--proc-max-height\)\)/);
+  assert.match(css, /max-height:var\(--proc-max-height\)/);
+  assert.match(css, /100dvh - var\(--top-chrome\) - var\(--composer-clearance\) - 48px/);
+  assert.match(html, /@media\(max-width:640px\)\{\.proc-detail\{height:min\(340px,45dvh\);min-height:min\(120px,var\(--proc-max-height\)\)\}\}/);
+  assert.match(html, /\.pk-swimlanes\.proc-detail\.show\{display:flex;flex-direction:column\}/);
+  assert.match(html, /\.pk-panels\{[^}]*flex:1;min-height:0/);
+  assert.match(html, /\.pk-lane\{[^}]*height:100%/);
+});
+for (const mode of ["live", "resume"]) {
+  test(`${mode}: 过程框高度调整后更新和折叠保留尺寸、阅读位置与回最新`, async () => {
+    const ui = await screen(mode);
+    try {
+      scrollBox(ui.proc, 480);
+      ui.proc.style.height = "480px"; // Native resize writes an inline height.
+      await ui.event({t:"harness_step",x:"first"});
+      ui.proc.scrollTop = 92; ui.proc.dispatch("scroll");
+      await ui.event({t:"harness_step",x:"new step while reading"});
+      assert.equal(ui.proc.scrollTop, 92);
+      ui.toggle.onclick(); ui.proc.clientHeight = 0;
+      await ui.event({t:"harness_step",x:"while collapsed"});
+      ui.proc.clientHeight = 480; ui.toggle.onclick();
+      assert.equal(ui.proc.style.height, "480px");
+      assert.equal(ui.proc.scrollTop, 92);
+      ui.message.querySelector(".proc-latest").onclick();
+      await ui.event({t:"harness_step",x:"follow at resized height"});
+      assert.equal(ui.proc.scrollTop, ui.proc.scrollHeight - 480);
+      assert.equal(ui.proc.style.height, "480px");
+    } finally { await ui.close(); }
+  });
+  test(`${mode}: every progress branch preserves reading position and follows only the previous bottom`, async () => {
+    const ui = await screen(mode);
+    const events = [
+      {t:"task_started", agent:"codex"}, {t:"harness_step", x:"公开动作"},
+      {t:"tool_started", tool:"bash", call_id:"one", args_brief:"short"},
+      {t:"tool_end", tool:"bash", call_id:"one", ok:true, result_brief:"long".repeat(200)},
+      {t:"tool_timeout", call_id:"one"}, {t:"heartbeat", stage:"executing", x:"已 3s"},
+      {t:"heartbeat", stage:"verifying", x:"已 4s"}, {t:"reason", hb:true, agent:"codex", x:"已 5s"},
+      {t:"first_artifact_reported", x:"首份候选"}, {t:"artifact_handoff", x:"产物接力"},
+      {t:"artifact_ready", url:"/media/a.png"}, {t:"artifact_recovered", url:"/media/b.png"},
+      {t:"weapon_candidates", candidates:[{name:"工具"}]}, {t:"verification_result", ok:true},
+    ];
+    try {
+      scrollBox(ui.proc); scrollBox(ui.chat, 600);
+      ui.chat.measureHeight = () => 2400 + ui.proc.scrollHeight;
+      for (const [i, data] of events.entries()) {
+        ui.proc.scrollTop = 91; ui.proc.dispatch("scroll");
+        ui.chat.scrollTop = 123;
+        await ui.event({...data, url:data.url && `${data.url}?paused=${i}`});
+        assert.equal(ui.proc.scrollTop, 91, `${data.t}: preserve process reading`);
+        assert.equal(ui.chat.scrollTop, 123, `${data.t}: preserve chat reading`);
+        const jump = ui.message.querySelector(".proc-latest");
+        assert.equal(jump?.hidden, false);
+        jump.onclick();
+        assert.equal(ui.proc.scrollTop, ui.proc.scrollHeight-ui.proc.clientHeight);
+        assert.equal(ui.chat.scrollTop, 123, "process jump must not jump the chat");
+        assert.equal(jump.hidden, true);
+        ui.chat.scrollTop = ui.chat.scrollHeight;
+        await ui.event({...data, url:data.url && `${data.url}-follow-${i}`});
+        assert.equal(ui.proc.scrollTop, ui.proc.scrollHeight-ui.proc.clientHeight, `${data.t}: follow previous bottom`);
+        assert.equal(ui.chat.scrollTop, ui.chat.scrollHeight-ui.chat.clientHeight, `${data.t}: chat follows even after large growth`);
+      }
+      ui.proc.scrollTop -= 20;
+      await ui.event({t:"harness_step",x:"略微上翻也应停住"});
+      assert.equal(ui.message.querySelector(".proc-latest").hidden, false);
+    } finally { await ui.close(); }
+  });
+
+  test(`${mode}: scrolling to bottom resumes follow; collapse keeps the paused position`, async () => {
+    const ui = await screen(mode);
+    try {
+      scrollBox(ui.proc);
+      await ui.event({t:"harness_step",x:"first"});
+      ui.proc.scrollTop = 90; ui.proc.dispatch("scroll");
+      ui.toggle.onclick();
+      ui.proc.clientHeight = 0; // display:none has zero layout dimensions.
+      ui.proc.dispatch("scroll");
+      await ui.event({t:"harness_step",x:"while collapsed"});
+      ui.proc.clientHeight = 280;
+      ui.toggle.onclick();
+      assert.equal(ui.proc.scrollTop, 90);
+      ui.proc.scrollTop = ui.proc.scrollHeight; ui.proc.dispatch("scroll");
+      assert.equal(ui.message.querySelector(".proc-latest").hidden, true);
+      await ui.event({t:"harness_step",x:"follow again"});
+      assert.equal(ui.proc.scrollTop, ui.proc.scrollHeight-ui.proc.clientHeight);
+    } finally { await ui.close(); }
+  });
+}
+
+for (const mode of ["live", "resume"]) {
+  test(`${mode}: PK members keep independent scroll positions, including hidden lanes`, async () => {
+    const ui = await screen(mode, "pk");
+    try {
+      await ui.event({t:"tasklist", tasks:[{key:"a"},{key:"b"}]});
+      const a=ui.context.pkGetLane(ui.message,"a"), b=ui.context.pkGetLane(ui.message,"b");
+      scrollBox(a); scrollBox(b);
+      Object.defineProperty(a,"clientHeight",{get:()=>ui.message._pkActive==="a"?280:0});
+      Object.defineProperty(b,"clientHeight",{get:()=>ui.message._pkActive==="b"?280:0});
+      a.scrollTop=97; a.dispatch("scroll");
+      await ui.event({t:"harness_step",agent:"b",x:"hidden b update"});
+      assert.equal(a.scrollTop,97);
+      ui.context.pkActivate(ui.message,"b");
+      assert.equal(b.scrollTop,b.scrollHeight-b.clientHeight,"hidden following lane catches up on activation");
+      b.scrollTop=62; b.dispatch("scroll");
+      ui.context.pkActivate(ui.message,"a");
+      assert.equal(a.scrollTop,97);
+      await ui.event({t:"harness_step",agent:"b",x:"hidden paused b update"});
+      await ui.event({t:"harness_step",agent:"a",x:"active paused a update"});
+      assert.equal(a.scrollTop,97);
+      ui.message.querySelector(".proc-latest").onclick();
+      assert.equal(a.scrollTop,a.scrollHeight-a.clientHeight);
+      ui.context.pkActivate(ui.message,"b");
+      assert.equal(b.scrollTop,62,"jumping a must not reset hidden b");
+    } finally { await ui.close(); }
+  });
+}
+
+async function terminalProcess() {
+  const ui=await screen("resume"), {message,context}=ui;
+  message.dataset.teamId="__ut_saved"; message.dataset.sid=context.curSession;
+  message._replay={cursor:800,complete:true,terminalId:800};
+  message._memberDeliveryFinal=true;
+  message.querySelector(".st").textContent="本轮已停止";
+  message.querySelector(".progress").style.display="none";
+  context.liveTeamId="__ut_other_running"; context.lastEventId=999; context.running=true;
+  context._resumeCtx={teamId:"__ut_other_running"};
+  context._bindHistoryProcess(message,{ts:100});
+  scrollBox(ui.proc);
+  const requests=[];
+  context.fetch=async(url,options)=>{
+    requests.push({url,options});
+    return {ok:true,json:async()=>({team_id:"__ut_saved",last_event_id:7,events:[
+      {event_id:1,ts:1,event:"meta",data:{team_id:"__ut_saved",sid:"do-not-switch"}},
+      {event_id:2,ts:2,event:"step",data:{t:"tool_started",tool:"bash",call_id:"saved",args_brief:"实际命令"}},
+      {event_id:3,ts:3,event:"step",data:{t:"tool_end",tool:"bash",call_id:"saved",ok:false,result_brief:"真实报错"}},
+      {event_id:4,ts:4,event:"step",data:{t:"approval",status:"waiting_approval"}},
+      {event_id:5,ts:5,event:"step",data:{t:"task_completed",agent:"codex"}},
+      {event_id:6,ts:6,event:"step",data:{t:"reasoning",channel:"analysis",x:"PRIVATE_REASONING_SENTINEL"}},
+      {event_id:7,ts:7,event:"final",data:{results:[],outcome:{status:"completed"}}},
+    ]})};
+  };
+  for(const name of ["saveLive","loadWorkspace","_memberDeliverySignal","notifyDone"])
+    context[name]=()=>{throw new Error("history side effect: "+name);};
+  return {...ui,requests};
+}
+
+test("历史详情：用户展开才 GET 本团队过程，复用真实工具渲染且不碰在线任务",async()=>{
+  const ui=await terminalProcess();
+  try {
+    assert.equal(ui.requests.length,0);
+    assert.match(ui.toggle.textContent,/执行详情/);
+    ui.toggle.onclick(); await new Promise(setImmediate);
+    assert.equal(ui.requests.length,1);
+    assert.equal(ui.requests[0].url,"/api/legion/events?team_id=__ut_saved&after=0");
+    assert.equal(ui.requests[0].options.method,undefined,"only GET, no dispatch/resume");
+    assert.equal(ui.proc.querySelectorAll(".tool-row").length,1,"tool start/end update one real row");
+    assert.match(ui.proc.querySelector(".tool-row").innerHTML,/真实报错/);
+    assert.doesNotMatch(ui.proc.children.map(x=>x.innerHTML).join(""),/PRIVATE_REASONING_SENTINEL/);
+    assert.equal(ui.message._replaySteps,4);
+    assert.equal(ui.context.liveTeamId,"__ut_other_running");
+    assert.equal(ui.context.lastEventId,999);
+    assert.equal(ui.context.curSession,"__ut_sid");
+    assert.equal(ui.context.running,true);
+    assert.equal(ui.message._replay.complete,true);
+    assert.equal(ui.message._replay.cursor,800);
+    assert.equal(ui.message.querySelector(".st").textContent,"本轮已停止");
+    assert.equal(ui.message.querySelector(".progress").style.display,"none");
+    const count=ui.proc.children.length;
+    ui.context.fetch=async url=>{ui.requests.push({url});return {ok:true,json:async()=>({team_id:"__ut_saved",last_event_id:7,events:[]})};};
+    await ui.message.querySelector(".history-process-note").querySelector("button").onclick();
+    assert.match(ui.requests[1].url,/after=7$/);
+    assert.equal(ui.message._historyProcess.loaded,true);
+    ui.toggle.onclick(); ui.toggle.onclick(); await new Promise(setImmediate);
+    assert.equal(ui.requests.length,2,"loaded detail must not fetch again");
+    assert.equal(ui.proc.children.length,count,"reopen must not duplicate rows");
+  } finally {await ui.close();}
+});
+
+test("历史详情：响应失败可重新读取；不接受别的团队、切会话或切身份后的响应",async()=>{
+  for(const scenario of ["http","team","session","identity","collapse","reopened"]){
+    const ui=await terminalProcess();
+    try {
+      let resolve;
+      ui.context.fetch=()=>new Promise(done=>{resolve=done;});
+      ui.toggle.onclick();
+      if(scenario==="session")ui.context._sessionView++;
+      if(scenario==="identity")ui.context._personalEpoch++;
+      if(scenario==="collapse")ui.toggle.onclick();
+      if(scenario==="reopened")ui.message._memberDeliveryFinal=false;
+      resolve({ok:scenario!=="http",status:403,json:async()=>({team_id:scenario==="team"?"other":"__ut_saved",last_event_id:1,events:[{event_id:1,event:"step",data:{t:"harness_step",x:"must not render"}}]})});
+      await new Promise(setImmediate);
+      assert.equal(ui.proc.children.length,0,scenario);
+      assert.equal(ui.message._historyProcess.cursor,0,scenario);
+      assert.equal(ui.message._historyProcess.loading,false);
+      if(["http","team"].includes(scenario)){
+        const note=ui.message.querySelector(".history-process-note");
+        assert.match(note.textContent,/读取失败/);
+        ui.context.fetch=async()=>({ok:true,json:async()=>({team_id:"__ut_saved",last_event_id:0,events:[]})});
+        await note.querySelector("button").onclick();
+        assert.match(note.textContent,/未找到/);
+      }
+    } finally {await ui.close();}
+  }
+});
+
+test("历史详情：超过500条按after分页，过滤后的空页仍沿服务端游标继续",async()=>{
+  const ui=await terminalProcess(),afters=[];
+  try {
+    ui.message._historyProcess.until=0;
+    ui.context.fetch=async url=>{
+      const after=Number(new URL(url,"https://fixture.test").searchParams.get("after"));afters.push(after);
+      // The second raw page contains only private events, omitted by the server.
+      const end=Math.min(after+500,1003),events=after===500?[]:
+        Array.from({length:end-after},(_,index)=>({event_id:after+index+1,event:"step",data:{t:"harness_step",x:"saved "+(after+index+1)}}));
+      return {ok:true,json:async()=>({team_id:"__ut_saved",last_event_id:end,events})};
+    };
+    ui.toggle.onclick();await new Promise(setImmediate);
+    assert.equal(ui.message._historyProcess.cursor,500);
+    for(let page=0;page<3;page++)await ui.context._loadHistoryProcess(ui.message);
+    assert.deepEqual(afters,[0,500,1000,1003]);
+    assert.equal(ui.message._replaySteps,503);
+    assert.equal(ui.message._historyProcess.loaded,true);
+  } finally {await ui.close();}
+});
+
+test("历史详情：旧轮只读截至该轮的事件，分页重复 ID 不重放",async()=>{
+  const ui=await terminalProcess();
+  try {
+    ui.context.fetch=async()=>({ok:true,json:async()=>({team_id:"__ut_saved",last_event_id:4,events:[
+      {event_id:1,ts:80,event:"step",data:{t:"harness_step",x:"old"}},
+      {event_id:1,ts:80,event:"step",data:{t:"harness_step",x:"duplicate"}},
+      {event_id:2,ts:101,event:"step",data:{t:"harness_step",x:"later turn"}},
+    ]})});
+    ui.toggle.onclick(); await new Promise(setImmediate);
+    assert.equal(ui.message._replaySteps,1);
+    assert.equal(ui.message._historyProcess.loaded,true);
+    assert.doesNotMatch(ui.proc.children.map(x=>x.innerHTML).join(""),/duplicate|later turn/);
+  } finally {await ui.close();}
+});
 
 test("live/resume expose real progress, preserve manual collapse, and exclude pulses/private reasoning", async () => {
   for (const mode of ["live", "resume"]) {
@@ -266,7 +545,7 @@ function answerScreen(results, data) {
     "esc", "_artifactPresentationRole", "_chooseVisibleDeliveries",
     "_artifactPurpose", "_artifactSizeLabel", "_toolLabel", "artifactHTML",
     "_looksInternalFailure", "_isVisualArtifact", "_requestedPpt",
-    "_bindResultTabs", "_deliveryDisplay", "renderLegionAnswer",
+    "_bindResultTabs", "_deliveryDisplay", "_planningFailureHTML", "_taskFailureHTML", "renderLegionAnswer",
   ].map(pageFunction).join("\n"), context);
   context.renderLegionAnswer(results, data, message);
   const answers = message.querySelector(".legion-answers");
@@ -278,6 +557,143 @@ function answerScreen(results, data) {
     status: message.querySelector(".st").textContent,
   };
 }
+
+test("规划诊断：0成员的持久规划失败显示具体原因与恢复事实，取消状态保留",()=>{
+  const outcome={status:"failed",failure_stage:"planning",planner_error:"planner_tool_unavailable",
+    planner_attempts:[{error:"unavailable"}],recovery:{endpoint:"/api/legion/team/resume",session_id:"saved-session",team_id:"original-team",automatic_started:false}};
+  for(const data of [{outcome}, {planner_error:outcome.planner_error,recovery:outcome.recovery,outcome},
+    {cancelled:true,outcome:{...outcome,status:"cancelled"}}]){
+    const ui=answerScreen([],data);
+    assert.match(ui.status,data.cancelled?/本轮已停止/:/本轮规划未完成.*尚未派出成员/);
+    const markup=ui.answers.children.map(row=>row.innerHTML).join("\n");
+    assert.match(markup,/规划所需工具不可用/);
+    assert.match(markup,/planner_tool_unavailable/);
+    assert.match(markup,/原会话 saved-session/);
+    assert.match(markup,/原任务 original-team/);
+    assert.match(markup,/尚未自动启动/);
+    assert.match(markup,/恢复入口不代表问题已解决/);
+    assert.doesNotMatch(markup,/onclick=.*(?:resume|dispatch)/);
+  }
+});
+
+test("规划诊断：持久错误或恢复事实变化会刷新同一轮；未知信息不造承诺",()=>{
+  const screen=historyScreen(),base={question:"q",team_id:"team",status:"error",results:[],ts:1};
+  const old=screen.context.renderSessionTurn(base,0);screen.attach(old);
+  const changed=screen.context.renderSessionTurn({...base,outcome:{status:"failed",failure_stage:"planning",planner_error:"planner_tool_unavailable"}},0);
+  assert.equal(changed[1],old[1]);assert.equal(changed[1].renderCount,2);
+  assert.match(changed[1].recordedDisplay,/规划未完成/);
+  const data={outcome:{failure_stage:"planning",planner_error:'<img src=x onerror="alert(1)">',recovery:{endpoint:"/recorded",automatic_started:true}}};
+  const ui=answerScreen([],data),markup=ui.answers.children.map(x=>x.innerHTML).join("\n");
+  assert.match(markup,/&lt;img/);assert.doesNotMatch(markup,/<img src=x/);
+  assert.match(markup,/是否已启动以实际运行记录为准/);
+  assert.doesNotMatch(markup,/尚未自动启动|会自动恢复|恢复成功/);
+});
+
+test("执行诊断：只显示最后一次已保存公开动作，不捏造补位或泄漏私有思考",()=>{
+  const rows=[{key:"codex",status:"error",error:"cancelled",tool_trace:[
+    {t:"tool_started",tool:"bash",brief:"first"},
+    {t:"tool_end",tool:"bash",ok:false,brief:"最后的实际报错 <script>"},
+    {t:"reasoning",channel:"analysis",x:"PRIVATE_REASONING_SENTINEL"},
+  ]}];
+  const ui=answerScreen(rows,{}),diag=ui.answers.querySelector('[data-pane="diag"]').innerHTML;
+  assert.match(diag,/最后一次已记录动作.*bash.*已返回失败.*最后的实际报错 &lt;script&gt;/);
+  assert.doesNotMatch(diag,/PRIVATE_REASONING_SENTINEL|已尝试补位|已经恢复/);
+  const empty=answerScreen([{key:"codex",status:"error"}],{}).answers.querySelector('[data-pane="diag"]').innerHTML;
+  assert.doesNotMatch(empty,/最后一次|已尝试补位/);
+});
+
+test("审计展示：只有有效通过结论可标推荐，返工/失败/未验证不冒充通过", () => {
+  const rows = [{key: "a", task_id: "a", harness: "codex", status: "done", final: "candidate"}];
+  const variants = [
+    {verdict: "pass", profile: "ordinary", frontier: null, recommended: true},
+    {verdict: "revise", profile: "ordinary", frontier: null, recommended: false},
+    {verdict: "fail", profile: "ordinary", frontier: null, recommended: false},
+    {verdict: "blocked", profile: "ordinary", frontier: null, recommended: false},
+    {verdict: "unverified", profile: "ordinary", frontier: null, recommended: false},
+    {verdict: "pass", profile: "frontier", frontier: {proven: false}, recommended: false},
+    {verdict: "pass", profile: "frontier", frontier: {proven: true}, recommended: true},
+  ];
+  for (const variant of variants) {
+    const data = {winner: "a", selection: {source: "success_audit", selected_task_id: "a"},
+      success_audit: {enabled: true, winner: "a", verdict: variant.verdict, profile: variant.profile,
+        ...(variant.frontier ? {frontier: variant.frontier} : {}), reason: "audit evidence"}};
+    const ui = answerScreen(rows, data);
+    assert.equal(ui.answers.innerHTML.includes("🏆 推荐"), variant.recommended, JSON.stringify(variant));
+    assert.match(ui.answers.innerHTML, /audit evidence/, "actual audit reason must remain visible");
+    if (!variant.recommended) assert.match(ui.answers.innerHTML, /审计结论/);
+  }
+});
+
+test("审计和评委只为各自选中的候选授予推荐", () => {
+  const rows = [{key: "a", task_id: "task-a", harness: "codex", status: "done", final: "A"},
+                {key: "b", task_id: "task-b", harness: "cc", status: "done", final: "B"}];
+  const audit = {enabled: true, verdict: "pass", winner: "task-b", reason: "audit chose B"};
+  const conflicts = [
+    {winner: "a", success_audit: audit},
+    {winner: "a", selection: {source: "success_audit", selected_task_id: "task-b"}, success_audit: audit},
+    {winner: "a", judge: {winner: "b", reason: "judge chose B"}},
+  ];
+  for (const data of conflicts) {
+    const ui = answerScreen(rows, data);
+    assert.doesNotMatch(ui.answers.innerHTML, /🏆 推荐/);
+    assert.doesNotMatch(ui.answers.innerHTML, /audit chose B|judge chose B/,
+                        "another candidate's reason cannot be attributed to A");
+  }
+  const validAudit = answerScreen(rows, {winner: "task-b",
+    selection: {source: "success_audit", selected_task_id: "task-b"}, success_audit: audit});
+  assert.match(validAudit.answers.innerHTML, /🏆 推荐/);
+  assert.match(validAudit.answers.innerHTML, /audit chose B/);
+  const validJudge = answerScreen(rows, {winner: "b", judge: {winner: "b", reason: "judge chose B"}});
+  assert.match(validJudge.answers.innerHTML, /🏆 推荐/);
+});
+
+test("整体审计选择冲突作为整单诊断保留，不冒充末棒的推荐依据", () => {
+  const rows = [{key: "a", task_id: "A", status: "done", final: "earlier contribution"},
+                {key: "b", task_id: "B", status: "done", final: "relay tail"}];
+  const data = {winner: "", execution_mode: "relay", final_result: rows[1],
+    selection: {source: "final_result_reference", selected_task_id: "B"},
+    success_audit: {enabled: true, verdict: "unverified", winner: "",
+      reason: "cannot verify the whole delivery", winner_rejected: {
+        alias: "candidate_1", reason: "bundle_requires_delivery_bundle"}}};
+  const ui = answerScreen(rows, data);
+  assert.doesNotMatch(ui.answers.innerHTML, /🏆 推荐/);
+  assert.match(ui.summary.innerHTML, /选择范围不匹配，未通过/);
+  const notice = ui.answers.querySelectorAll(".diagnostic-card").find(x => /整体审计/.test(x.textContent));
+  assert.ok(notice);
+  assert.match(notice.textContent, /cannot verify the whole delivery/);
+  assert.match(ui.answers.innerHTML, /earlier contribution/);
+  assert.match(ui.answers.innerHTML, /relay tail/);
+});
+
+test("显式选中不等于独立质量推荐，旧 winner 也不冒充审计", () => {
+  const rows = [{key: "a", task_id: "a", harness: "codex", status: "done", final: "candidate"}];
+  for (const data of [
+    {winner: "a", selection: {source: "explicit_winner", selected_task_id: "a"}},
+    {winner: "a", selection: {source: "final_result_reference", selected_task_id: "a"}},
+    {winner: "a"},
+  ]) {
+    const ui = answerScreen(rows, data);
+    assert.doesNotMatch(ui.answers.innerHTML, /🏆 推荐/);
+    assert.match(ui.answers.innerHTML, /当前选中/);
+  }
+});
+
+test("未记录审计不是未启用审计；审计事实变化要刷新原会话卡", () => {
+  const row = {key: "a", task_id: "a", status: "done", final: "candidate"};
+  assert.match(answerScreen([row], {}).summary.innerHTML, /审计状态未记录/);
+  const noAudit = {enabled: false, verdict: "not_required"};
+  assert.match(answerScreen([row], {success_audit: noAudit}).summary.innerHTML, /未启用重型质量审计/);
+  const {context} = historyScreen();
+  const base = {ts: 1, status: "done", results: [row], winner: "a",
+    selection: {source: "success_audit", selected_task_id: "a"},
+    success_audit: {enabled: true, verdict: "pass", winner: "a", reason: "first"}};
+  const revised = {...base, success_audit: {...base.success_audit, verdict: "revise", reason: "needs work"}};
+  assert.notEqual(context._turnSignature(base), context._turnSignature(revised));
+  const selected = {...base, selection: {...base.selection, selected_task_id: "b"}};
+  assert.notEqual(context._turnSignature(base), context._turnSignature(selected));
+  const scoreChange = {...base, success_audit: {...base.success_audit, scores: {a: {overall: 70}}}};
+  assert.notEqual(context._turnSignature(base), context._turnSignature(scoreChange));
+});
 
 const GAME_URL = "/home-outputs/codex_web_11a7a60aba57_1792296493_task_codex/pelican-bike/dist/index.html";
 const gameArtifact = () => ({ name: "index.html", url: GAME_URL, kind: "html", bytes: 765050 });
@@ -686,7 +1102,7 @@ function historyScreen() {
       message.recordedDisplay = answerScreen(results, data).status;
     },
   });
-  vm.runInContext(["_replayEntry", "_bindReplayCard", "_turnSignature", "renderSessionTurn"]
+  vm.runInContext(["_replayEntry", "_bindReplayCard", "_turnSignature", "_bindHistoryProcess", "renderSessionTurn"]
     .map(pageFunction).join("\n"), context);
   return {
     context,

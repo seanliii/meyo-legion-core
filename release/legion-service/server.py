@@ -343,6 +343,25 @@ def _read_html(name: str) -> str:
     return _read_index_html() if html.startswith("<h1>军团前端缺失</h1>") else html
 
 
+def _peer_stop_pilot(result: dict, rounds: int) -> dict:
+    """Project an actual peer stop without relabelling the author's saved draft."""
+    from error_envelope import (is_provider_authorization_denial, requires_execution_pause,
+                                requires_native_settlement, requires_output_recovery_pause,
+                                requires_request_budget_pause)
+    if result.get("peer_input_error"):
+        return {"round": rounds, "action": "stop", "kind": "peer_execution_error"}
+    paused = result.get("peer_input_pause")
+    if not requires_execution_pause(paused):
+        return {}
+    kind = ("request_budget_exhausted" if requires_request_budget_pause(paused) else
+            "provider_authorization_required" if is_provider_authorization_denial(
+                paused.get("error_envelope")) else
+            "native_execution_unconfirmed" if requires_native_settlement(paused) else
+            "output_recovery_required" if requires_output_recovery_pause(paused) else
+            "provider_backoff")
+    return {"round": rounds, "action": "stop", "kind": kind}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LegionService/1.0"
 
@@ -3450,7 +3469,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._project_access_allowed(_single_plan["project_context"], _uid, _single_sid):
             return
         for _context_field in ("input_snapshot", "version_identity", "resource_budget",
-                               "experience_intent", "golden_task", "quality_context"):
+                               "experience_intent", "golden_task", "quality_context",
+                               "model_overrides", "directions", "capability_policy"):
             if payload.get(_context_field) not in (None, "", [], {}):
                 _single_plan[_context_field] = payload[_context_field]
         _single_source_ref = _query_source_ref(payload.get("source_ref"))
@@ -3458,8 +3478,11 @@ class Handler(BaseHTTPRequestHandler):
         _single_role = _single_role if _single_role in {"champion", "challenger"} else "champion"
         _single_plan["source_ref"] = _single_source_ref
         _single_plan["execution_role"] = _single_role
+        if isinstance(payload.get("team_policy"), dict):
+            _single_plan["team_policy"] = dict(payload["team_policy"])
         if payload.get("native_session_scope") is not None:
-            _single_plan["team_policy"] = {"native_session_scope": payload["native_session_scope"]}
+            _single_plan["team_policy"] = {**dict(_single_plan.get("team_policy") or {}),
+                                           "native_session_scope": payload["native_session_scope"]}
         full_task += LEGION._build_prelude(task, _single_plan, user_id=_uid)
         # 运行时简报下放(军团复验揪出的真缺口:run_one 单家路径漏传·6家反馈"没收到简报值"·
         # 双路径不对称)。单家也该拿到机器/网络/用户画像/验收(分工单家为空自然不拼)。
@@ -3670,6 +3693,8 @@ class Handler(BaseHTTPRequestHandler):
             from artifact_provenance import merge_artifacts as _merge_round_artifacts
             _round_artifacts = list(r.get("artifacts") or [])
             _round_elapsed = float(r.get("elapsed") or 0)
+            _round_usage = [dict(r)]
+            _round_peer_results = []
             # 同一请求的前轮运行事实不能被后一次 run_one 覆盖；沿用原列表和记录。
             _round_attempts = {
                 field: list(r[field]) if isinstance(r.get(field), list) else []
@@ -3729,6 +3754,30 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 if _requested_depth == "quick" and r.get("status") == "done" and final.strip():
                     break
+                # Consume only a member's explicit request; ordinary short answers do no extra work.
+                if isinstance((r.get("orchestration_request") or {}).get("need_peer"), dict):
+                    peer_result = LEGION._run_requested_peer(
+                        task, _single_plan, r, task_id=key, team_id=_single_qhash,
+                        user_id=_uid, conversation_id=_single_sid,
+                        cb=lambda event: _single_send("step", event), runtime_brief=_brief,
+                        project_packet=_single_project_context,
+                        _provider_results=lambda: [*_round_usage, *_round_peer_results],
+                        cancel_check=_single_cancel)
+                    if peer_result:
+                        _round_peer_results.append(peer_result)
+                        if not peer_result.get("retained_peer_input"):
+                            _round_elapsed += float(peer_result.get("elapsed") or 0)
+                    if r.get("peer_input_error"):
+                        r["pilot"] = _peer_stop_pilot(r, rounds)
+                        break
+                    if r.get("peer_input_pause") or (peer_result and
+                            __import__("error_envelope").requires_execution_pause(peer_result)):
+                        r["peer_input_pause"] = r.get("peer_input_pause") or peer_result
+                        r["pilot"] = _peer_stop_pilot(r, rounds)
+                        break
+                    if _single_cancel():
+                        r.update(status="cancelled", cancelled=True)
+                        break
                 # 根修(2026-09-02):run_state 漏 scope_goal_met 是短答案被误判续跑 5 轮的
                 # 真根因——统一走 LEGION._pilot_run_state(_is_delivered 结构化事实·全档位
                 # 覆盖,不止 quick;quick 早停快路径保留在上方)。
@@ -3776,6 +3825,7 @@ class Handler(BaseHTTPRequestHandler):
                             + f"\n\n【续跑指引】{nxt}")
                 if _terminal_absent:
                     cur_task += LEGION._native_terminal_message_context({key: _terminal_absent})
+                previous_result = r
                 r = LEGION.run_one(key, cur_task, qhash=_single_qhash, cb=cb, user_id=_uid,
                                    conversation_id=_single_sid, runtime_brief=_brief,
                                    task_facts={"goal": task, "role": task, "task_id": key,
@@ -3785,8 +3835,10 @@ class Handler(BaseHTTPRequestHandler):
                                                "project_context": _single_project_context},
                                    preferred_model=str(payload.get("model") or "") or None,
                                    preferred_appid=str(payload.get("appid") or "") or None,
-                                   cancel_check=_single_cancel,
+                                   cancel_check=_single_cancel, _continuation_result=previous_result,
+                                   _provider_results=lambda: [*_round_usage, *_round_peer_results],
                                    execution_depth=_requested_depth)
+                _round_usage.append(dict(r))
                 _current_recovery = _recovery_reference(r)
                 if _current_recovery is not None:
                     _round_recovery = _current_recovery
@@ -3814,6 +3866,12 @@ class Handler(BaseHTTPRequestHandler):
                 r["artifacts"] = [a for a in _round_artifacts
                                   if not a.get("path") or os.path.isfile(a["path"])]
             r["elapsed"] = _round_elapsed
+            if _round_peer_results:
+                import token_telemetry
+                r["peer_results"] = list(_round_peer_results)
+                r["usage"] = token_telemetry.summarize([
+                    *_round_usage, *(row for row in _round_peer_results
+                                      if not row.get("retained_peer_input"))])
             r["persistent_rounds"] = rounds
             if not _single_finish(r):
                 return  # 不让迟到结果覆盖 ProjectContext、session 或 final。
@@ -3928,7 +3986,9 @@ class Handler(BaseHTTPRequestHandler):
             "initial_plan_sha256": _canonical_sha256(plan), "captured_at": time.time(),
             "request_team_policy": {
                 key: deepcopy(_request_team_policy[key])
-                for key in ("min_agents", "max_agents") if key in _request_team_policy
+                for key in ("min_agents", "max_agents", "candidate_harnesses", "max_parallel",
+                            "max_failover", "contract_repair_rounds", "continuous_coordination")
+                if key in _request_team_policy
             },
         }
         _version_identity = _source_version_identity()
@@ -4379,60 +4439,75 @@ class Handler(BaseHTTPRequestHandler):
                             cb({"agent": "legion", "t": "classification", "stage": "classified",
                                 "status": "done", "decision": "needs_harness", "mode": "auto",
                                 "reason": str(_quick_result.get("reason") or "需要 Harness 完成")[:200],
-                                "x": "任务需要工具、持续现场或更深推理·进入 Harness 编排"})
-                            cb({"agent": "legion", "t": "reason",
-                                "x": "军团总指挥正在读现场·自动判断该并行比最佳 / 接力加工 / 首脑统筹…"})
-                            # 规划期心跳：只有非 simple 才进入完整规划；simple 单家快答不能再被覆盖。
-                            import threading as _th2
-                            _plan_hb = _th2.Event()
-                            def _plan_hb_thread():
-                                _pi = 0
-                                while not _plan_hb.wait(2.5):
-                                    _pi += 1
-                                    try:
-                                        cb({"agent": "legion", "t": "reason", "status": "running",
-                                            "x": f"总指挥读现场中…(已 {_pi*2.5:.0f}s·判断队形与分工)"})
-                                    except Exception:
-                                        pass
-                            _th2.Thread(target=_plan_hb_thread, daemon=True).start()
-                            # 规划期可中断（2026-09-19）：评估是同步 LLM 子进程调用
-                            # （单模型 90s×多模型重试），此前取消令牌只在执行层生效——
-                            # 评估期点停止要干等到评估结束（实测 198s+ 还在跑）。改为：
-                            # 规划放后台线程，主线程 0.5s 轮询取消令牌；命中即不等规划
-                            # 结果，置 cancelled 标记走统一取消终态。
-                            _plan_box = {}
-                            def _plan_worker():
-                                try:
-                                    _plan_box["plan"] = LEGION.plan_request_with_model(
-                                        question, _plan.get("attachments") or [],
-                                        candidate_harnesses=list(_candidate_pool) or None,
-                                        request_context=_plan,
-                                        user_id=_uid, conversation_id=str(sid),
-                                        cancel_check=lambda: LEGION.is_cancelled(_team_id))
-                                except Exception as _e:
-                                    _plan_box["plan"] = {"ok": False,
-                                                         "error": f"planner_call:{type(_e).__name__}"}
-                            _plan_thread = _th2.Thread(target=_plan_worker, daemon=True)
-                            _plan_thread.start()
-                            _planned_cancelled = False
-                            while True:
-                                _plan_thread.join(timeout=0.5)
-                                if not _plan_thread.is_alive():
-                                    break
-                                if LEGION.is_cancelled(_team_id):
-                                    _planned_cancelled = True
-                                    cb({"agent": "legion", "t": "reason", "status": "cancelled",
-                                        "x": "用户已停止·评估中止"})
-                                    break
-                            if _planned_cancelled:
-                                # 评估期取消终态：cancelled out 走与执行期取消同款
-                                # 保存/final 链路（task_outcome.attach 补 cancelled 标记）
-                                _auto_plan = {"ok": False, "error": "用户停止"}
-                                _plan["planning_cancelled"] = True
+                                "x": "任务需要原生工具或持续工作·先由适任主创实做"})
+                            import collaboration_runtime as _author_runtime
+                            # A declared candidate scope belongs to the existing
+                            # planner and owner binding. Only an unscoped request
+                            # may start directly with the initial author.
+                            _declared_scope = ((_plan.get("team_policy") or {}).get("candidate_harnesses")
+                                               if isinstance(_plan.get("team_policy"), dict) else None)
+                            _author_binding = ({} if _declared_scope is not None else
+                                _author_runtime.bind_initial_author_request(
+                                    question, _plan, valid=set(LEGION._harness_keys()),
+                                    runnable=set(LEGION._aigc_ready().get("runnable_clis") or [])))
+                            if _author_binding.get("bound"):
+                                _plan = dict(_author_binding["plan"])
+                                mode = "single"
+                                _auto_plan = {"ok": False, "reason": _author_binding["source"]}
+                                cb({"agent": "legion", "t": "mode_selected", "stage": "classified",
+                                    "status": "done", "mode": "single", "owner": _author_binding["owner"],
+                                    "selection_source": _author_binding["source"], "planner_attempts": [],
+                                    "reason": "先执行完整用户目标；组织方式由主创依据实际现场提出，不预先选队形",
+                                    "x": f"{_author_binding['owner']} 接手实做；保留本单可增援成员范围"})
+                            elif _author_binding.get("error"):
+                                _finish_planning_failure(
+                                    {"ok": False, "error": _author_binding["error"],
+                                     "blocked_before_native": True, "execution_calls": 0}, _plan, "auto")
+                                return
                             else:
-                                _auto_plan = _plan_box.get("plan") or {"ok": False,
-                                                                       "error": "planner_no_result"}
-                            _plan_hb.set()
+                                # An explicit organization retains its original planning path.
+                                import threading as _th2
+                                _plan_hb = _th2.Event()
+                                def _plan_hb_thread():
+                                    _pi = 0
+                                    while not _plan_hb.wait(2.5):
+                                        _pi += 1
+                                        try:
+                                            cb({"agent": "legion", "t": "reason", "status": "running",
+                                                "x": f"读取显式组织现场…(已 {_pi*2.5:.0f}s)"})
+                                        except Exception:
+                                            pass
+                                _th2.Thread(target=_plan_hb_thread, daemon=True).start()
+                                _plan_box = {}
+                                def _plan_worker():
+                                    try:
+                                        _plan_box["plan"] = LEGION.plan_request_with_model(
+                                            question, _plan.get("attachments") or [],
+                                            candidate_harnesses=list(_candidate_pool) or None,
+                                            request_context=_plan,
+                                            user_id=_uid, conversation_id=str(sid),
+                                            cancel_check=lambda: LEGION.is_cancelled(_team_id))
+                                    except Exception as _e:
+                                        _plan_box["plan"] = {"ok": False,
+                                                             "error": f"planner_call:{type(_e).__name__}"}
+                                _plan_thread = _th2.Thread(target=_plan_worker, daemon=True)
+                                _plan_thread.start()
+                                while True:
+                                    _plan_thread.join(timeout=0.5)
+                                    if not _plan_thread.is_alive():
+                                        break
+                                    if LEGION.is_cancelled(_team_id):
+                                        _planned_cancelled = True
+                                        cb({"agent": "legion", "t": "reason", "status": "cancelled",
+                                            "x": "用户已停止·评估中止"})
+                                        break
+                                if _planned_cancelled:
+                                    _auto_plan = {"ok": False, "error": "用户停止"}
+                                    _plan["planning_cancelled"] = True
+                                else:
+                                    _auto_plan = _plan_box.get("plan") or {"ok": False,
+                                                                           "error": "planner_no_result"}
+                                _plan_hb.set()
                     if _planned_cancelled:
                         _finish_cancelled("planning", "用户在评估阶段停止", _plan)
                         return
@@ -4529,22 +4604,24 @@ class Handler(BaseHTTPRequestHandler):
                                 _solo_task = _solo_task + (
                                     "\n\n【本对话最近历史·只读上下文·请自然续接,不要重新问已回答的信息】\n\n"
                                     + _hctx)
-                            # ★快答方向→最快资源映射(用户 2026-09-01 loop 真跑揪出核心痛点"简单题不该慢"):
-                            # planner 把简单题判为"快答"方向是对的·但它对"快答"固定偏好选 codex(实测
-                            # 1+1/你好/HTTP 全选 codex)·即使 codex speed 画像已标"中"也不改→codex 走子进程
-                            # 简单题 20-24s·而 light 快家(cc/hermes/penguin)仅 8s。这不是替模型判断答案·是
-                            # "快答=速度优先"这个【方向语义】的资源落实(同 resolve_assignments 按方向配模型):
-                            # 方向=快答时·若选中家不是 light 快家·改派最快的 light 家。非快答方向(写代码/深推理/
-                            # 中文/生图等需专长)一律尊重 planner 选的家·不改。context not control:模型判性质·父层据性质配对口资源。
-                            if str(_solo_dir).strip() in ("快答", "fast", "quick"):
+                            # The planner/binder selected this member from the request's candidate
+                            # context. Quick describes depth, not permission to replace that choice
+                            # with a hardcoded light member outside the candidate/model configuration.
+                            # An unlocked quick suggestion may still use the established fast remap,
+                            # restricted to the actual candidate pool and runnable declarations.
+                            if (not bool(((_plan.get("tasks") or {}).get(_solo_task_id) or {}).get("assignment_locked"))
+                                    and str(_solo_dir).strip() in ("快答", "fast", "quick")):
                                 try:
-                                    _am = LEGION._autonomy_matrix()
-                                    if str(_am.get(_solo_key, {}).get("cost_class")) != "light":
-                                        _fast = [k for k in ("cc", "hermes", "penguin")
-                                                 if str(_am.get(k, {}).get("cost_class")) == "light"
-                                                 and k in set(LEGION._aigc_ready().get("runnable_clis", []))]
-                                        if _fast:
-                                            _solo_key = _fast[0]
+                                    _quick_matrix = LEGION._autonomy_matrix()
+                                    _quick_ready = set(LEGION._aigc_ready().get("runnable_clis", []))
+                                    if _candidate_pool:
+                                        _quick_ready &= _candidate_pool
+                                    if str(_quick_matrix.get(_solo_key, {}).get("cost_class")) != "light":
+                                        _quick_member = next((key for key in ("cc", "hermes", "penguin")
+                                            if str(_quick_matrix.get(key, {}).get("cost_class")) == "light"
+                                            and key in _quick_ready), "")
+                                        if _quick_member:
+                                            _solo_key = _quick_member
                                 except Exception:
                                     pass
                             # ★按活的性质选模型也要落到 solo(用户 2026-09-01 真跑揪出:solo 只传
@@ -4556,7 +4633,9 @@ class Handler(BaseHTTPRequestHandler):
                             try:
                                 import model_registry as _mr
                                 _solo_as = _mr.resolve_assignments(
-                                    {"directions": {_solo_key: _solo_dir}}, [_solo_key]).get(_solo_key, {})
+                                    {**_plan, "directions": {
+                                        **dict(_plan.get("directions") or {}), _solo_key: _solo_dir}},
+                                    [_solo_key]).get(_solo_key, {})
                             except Exception:
                                 _solo_as = {}
                             try:
@@ -4611,7 +4690,7 @@ class Handler(BaseHTTPRequestHandler):
                             # 快执行不跳过任务事实：初次和补位都用同一逻辑节点的 begin/finish，
                             # 与普通执行路径共享代次、结果和取消语义，不留空 team 或假 pending。
                             _solo_runs = []
-                            def _run_solo_attempt(_owner, _assignment):
+                            def _run_solo_attempt(_owner, _assignment, continuation=None):
                                 _node = (_plan.get("tasks") or {}).get(_solo_task_id)
                                 _node = dict(_node) if isinstance(_node, dict) else {}
                                 _bound_node = {**_node, "task": _solo_task,
@@ -4652,7 +4731,9 @@ class Handler(BaseHTTPRequestHandler):
                                         capability_policy=_solo_capability,
                                         cancel_check=lambda: LEGION._request_cancelled(
                                             _team_id, _solo_task_id, _owner),
-                                        execution_depth=_solo_depth)
+                                        execution_depth=_solo_depth, _continuation_result=continuation,
+                                        _model_selection_source=str(_assignment.get("source") or ""),
+                                        _provider_results=lambda: list(_solo_runs))
                                 except BaseException as _exc:
                                     TEAMS.finish_attempt(
                                         _team_id, _solo_task_id, _attempt,
@@ -4671,7 +4752,8 @@ class Handler(BaseHTTPRequestHandler):
                             #   light 快家接力(hermes/penguin)·最多试 2 家·用户仍拿到答案(铁律0"一家坏了
                             #   别家补位"·solo 不能是白卷豁免口)。前置:run_one 内部已先穷尽换模型自愈。
                             _solo_tried = [_solo_key]
-                            if _r.get("status") not in {"done", "cancelled"} and not _r.get("cancelled"):
+                            if (_r.get("status") not in {"done", "cancelled"} and not _r.get("cancelled")
+                                    and not __import__("error_envelope").requires_execution_pause(_r)):
                                 try:
                                     _am = LEGION._autonomy_matrix()
                                     _ready = set(LEGION._aigc_ready().get("runnable_clis", []))
@@ -4690,7 +4772,9 @@ class Handler(BaseHTTPRequestHandler):
                                         try:
                                             import model_registry as _mr2
                                             _fb_as = _mr2.resolve_assignments(
-                                                {"directions": {_fbk: _solo_dir}}, [_fbk]).get(_fbk, {})
+                                                {**_plan, "directions": {
+                                                    **dict(_plan.get("directions") or {}), _fbk: _solo_dir}},
+                                                [_fbk]).get(_fbk, {})
                                         except Exception:
                                             _fb_as = {}
                                         # 原运行已结束，补位是同一节点的新代次，不覆盖旧结果历史。
@@ -4698,7 +4782,9 @@ class Handler(BaseHTTPRequestHandler):
                                                           reason="solo_failover")
                                         _r2 = _run_solo_attempt(_fbk, _fb_as)
                                         _solo_tried.append(_fbk)
-                                        if _r2.get("status") == "done":
+                                        if (_r2.get("status") in {"done", "cancelled"}
+                                                or _r2.get("cancelled")
+                                                or __import__("error_envelope").requires_execution_pause(_r2)):
                                             _r = _r2
                                             break
                                         _r = _r2
@@ -4720,12 +4806,67 @@ class Handler(BaseHTTPRequestHandler):
                                         _solo_milestone.update([_r])
                                 except Exception:
                                     pass
+                            _solo_peer_results = []
+                            _solo_as = _fb_as if len(_solo_tried) > 1 else _solo_as
+                            import legion_pilot as _solo_pilot
+                            try:
+                                _solo_pilot_on = bool(LEGION.pilot_settings(_uid_s).get("enabled"))
+                            except Exception:
+                                _solo_pilot_on = False
+                            for _peer_round in range(1, 6):
+                                if (not _solo_pilot_on or _solo_depth == "quick"
+                                        or not isinstance((_r.get("orchestration_request") or {}).get("need_peer"), dict)
+                                        or __import__("error_envelope").requires_execution_pause(_r)
+                                        or LEGION._request_cancelled(_team_id, _solo_task_id, _solo_owner)):
+                                    break
+                                _peer_result = LEGION._run_requested_peer(
+                                    question, _plan, _r, task_id=_solo_task_id, team_id=_team_id,
+                                    user_id=_uid_s, conversation_id=str(sid), cb=cb,
+                                    runtime_brief=_solo_brief, project_packet=_solo_packet,
+                                    _provider_results=lambda: list(_solo_runs),
+                                    cancel_check=lambda: LEGION._request_cancelled(
+                                        _team_id, _solo_task_id, _solo_owner))
+                                if _peer_result:
+                                    _solo_peer_results.append(_peer_result)
+                                    if not _peer_result.get("retained_peer_input"):
+                                        _solo_runs.append(_peer_result)
+                                if _r.get("peer_input_error"):
+                                    _r["pilot"] = _peer_stop_pilot(_r, _peer_round)
+                                    break
+                                if (_r.get("peer_input_pause") or (_peer_result and
+                                        __import__("error_envelope").requires_execution_pause(_peer_result))):
+                                    _r["peer_input_pause"] = _r.get("peer_input_pause") or _peer_result
+                                    _r["pilot"] = _peer_stop_pilot(_r, _peer_round)
+                                    break
+                                if _solo_pilot.evaluate(str(_r.get("final") or ""),
+                                                       LEGION._pilot_run_state(_r), _uid_s).get("action") != "continue":
+                                    break
+                                if not _peer_result or LEGION._request_cancelled(
+                                        _team_id, _solo_task_id, _solo_owner):
+                                    break
+                                TEAMS.reopen_task(_team_id, _solo_task_id, agent=_solo_owner,
+                                                  reason="requested_peer_input_returned")
+                                _previous = _r
+                                _r = _run_solo_attempt(_solo_owner, _solo_as, continuation=_previous)
+                                from artifact_provenance import merge_artifacts as _merge_solo_artifacts
+                                _r["artifacts"] = _merge_solo_artifacts(
+                                    _previous.get("artifacts"), _r.get("artifacts"))
+                                _r.update(key=_solo_task_id, task_id=_solo_task_id,
+                                          harness=_solo_owner, assigned_harness=_solo_owner)
+                                if _solo_context:
+                                    _solo_packet = _solo_context.record_result(
+                                        _team_id, _solo_task_id, _r, assigned_harness=_solo_owner)
+                            if _solo_peer_results:
+                                _r["peer_results"] = _solo_peer_results
                             _solo_out = {"results": [_r], "solo": True, "captain": _solo_owner,
                                          "team_id": _team_id,
                                          "task_assignments": {_solo_task_id: _solo_owner},
                                          "assignment_decisions": list(_solo_bound.get("decisions") or []),
                                          "execution_depth": _solo_depth, "solo_tried": _solo_tried,
                                          "delivery_contract": dict(_plan.get("delivery_contract") or {})}
+                            _peer_stop = _peer_stop_pilot(_r, _peer_round)
+                            if _peer_stop:
+                                _solo_out["pilot"] = _peer_stop
                             # 共用普通 dispatch 的原生用量汇总；补位消耗同样保留，不把未知报成零。
                             import token_telemetry as _solo_usage
                             _solo_out["usage"] = _solo_usage.summarize(_solo_runs)
@@ -4739,12 +4880,15 @@ class Handler(BaseHTTPRequestHandler):
                             _solo_out["completion"] = {"delivered": _solo_out["delivered_count"],
                                                        "total": _solo_out["total"],
                                                        "status": (_solo_out.get("outcome") or {}).get("status")}
+                            if _peer_stop:
+                                _solo_out["status"] = (_solo_out.get("outcome") or {}).get("status", "partial")
                             # 阶段2·快路径账本回写(P0-A·2026-09-02):预判 simple 的 solo 落定后记账
                             # (一次自交付=good;失败/靠补位=bad)。连败≥3零成功→fastpath_healthy 转 False
                             # →预判自动停用退规划器(数据长出来的阈值·预判器恢复即重启)。
                             try:
                                 __import__("quick_pred").record_fastpath(
-                                    ok=(_r.get("status") == "done" and len(_solo_tried) == 1))
+                                    ok=((_solo_out.get("outcome") or {}).get("status") == "completed"
+                                        and len(_solo_tried) == 1))
                             except Exception:
                                 pass
                             try:
@@ -4983,6 +5127,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 对外保留用户选的执行模式。orchestrate 在 core 内以首脑计划+DAG波次执行，
                 # 不能因底层复用并行执行器而在最终结果里丢成 pk。
                 out["execution_mode"] = mode
+                if isinstance(_plan.get("initial_author"), dict):
+                    out["initial_author"] = deepcopy(_plan["initial_author"])
                 out.setdefault("question", question)
                 out.setdefault("team_id", _team_id)
                 # since_ts:主动扫本次派活期间新产生的文件(codex等写了代码/文件但final只回摘要

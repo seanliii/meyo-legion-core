@@ -42,8 +42,12 @@ def patch_exec(fake_iso):
         yield
 
 
-def test_aigc_health_distinguishes_deploy_secret_from_local_fallback(tmp_path):
+def test_aigc_health_distinguishes_deploy_secret_from_local_fallback(tmp_path, monkeypatch):
     """个人 models.json 可供本地开发，但不能被 health 冒充成可上线凭证。"""
+    # 该用例核验凭据来源；不能读前一用例的 90s 探活缓存，或让后台
+    # CLI 探活跨出本例的临时环境。monkeypatch 在结束后恢复原对象。
+    monkeypatch.setattr(L, "_AIGC_READY_CACHE", {"data": None, "ts": 0.0})
+    monkeypatch.setattr(L, "_swr_bg_refresh", lambda *args, **kwargs: None)
     local_catalog = tmp_path / ".claude/skills/aigc-model-router/models.json"
     local_catalog.parent.mkdir(parents=True)
     local_catalog.write_text('{"programming":{"candidates":[{"appids":["local-app"]}]}}')
@@ -334,6 +338,21 @@ def test_responses_bridge_forwards_scoped_prompt_cache_key(monkeypatch):
     assert captured["prompt_cache_key"] == "scoped-key", captured
 
 
+def test_author_graph_permissions_are_context_not_a_required_workflow():
+    H = _load_registry()
+    facts = {"orchestration": {"author_role": {"may_propose_task_graph": True}}}
+    full = H._legion_prompt("Original complete objective", H.HarnessCtx(
+        execution_depth="standard", task_facts=facts))
+    ordinary = H._legion_prompt("Original complete objective", H.HarnessCtx(execution_depth="standard"))
+    quick = H._legion_prompt("好", H.HarnessCtx(execution_depth="quick", task_facts=facts))
+    auxiliary = H._legion_prompt("Inspect an observation", H.HarnessCtx(
+        execution_depth="standard", task_facts={**facts, "native_read_only": True}))
+    assert "coordinate task_updates/next_plan" in full
+    assert "options, not required stages" in full and "effect unverified" not in ordinary
+    assert "No extra permission or budget is granted" in full
+    assert all("coordinate task_updates/next_plan" not in prompt for prompt in (ordinary, quick, auxiliary))
+
+
 def test_shared_prompt_budget_preserves_goal_and_latest_context(monkeypatch):
     """所有内置/外部家共用的 prompt 边界应在首发前限窗，并保留目标首尾与关键现场。"""
     H = _load_registry()
@@ -373,6 +392,84 @@ def test_quick_prompt_is_small_and_does_not_duplicate_project_context(monkeypatc
     assert quick_prompt.count("PROJECT-OBJECTIVE-UNIQUE") == 1
     assert quick_ctx.context_budget_report["sections"]["protocol"]["original"] < 500
     assert H._prompt_upper_bound(quick_prompt) < H._prompt_upper_bound(full_prompt) * .35
+
+
+def test_standard_prompt_folds_exact_objective_copies_without_mutating_context(monkeypatch):
+    H = _load_registry()
+    monkeypatch.setenv("LEGION_HARNESS_INPUT_BUDGET", "90000")
+    objective = "ORIGINAL-GOAL-HEAD " + "原文" * 300 + " ORIGINAL-GOAL-TAIL"
+    facts = {"goal": objective, "role": objective, "task_id": "delivery",
+             "resource_budget": {"operator_observation": {"max_input_tokens": 524288}},
+             "upstream_results": [{"final_sha256": "peer-input-hash"}]}
+    project = {"objective": objective, "task_view": {"current": {"role": "distinct task"}},
+               "packet_path": "/project/packet.json", "snapshot_sha256": "original-snapshot"}
+    before_facts, before_project = __import__("copy").deepcopy(facts), __import__("copy").deepcopy(project)
+    ctx = H.HarnessCtx(task_facts=facts, project_context=project,
+                       capability_policy={"native_read_only": True})
+    prompt = H._legion_prompt("Current task with peer reply and failure evidence", ctx)
+    report = ctx.context_budget_report
+    assert prompt.count(objective) == 1
+    for value in ("ORIGINAL-GOAL-HEAD", "ORIGINAL-GOAL-TAIL", "distinct task",
+                  "peer-input-hash", "max_input_tokens", "524288", "native_read_only",
+                  "Current task with peer reply and failure evidence", "original-snapshot"):
+        assert value in prompt
+    assert facts == before_facts and project == before_project
+    assert report["deduplicated_fields"] == {"task_facts": ["goal", "role"]}
+    assert report["deduplicated_bytes"] > len(objective.encode("utf-8")) * 2
+    assert report["final_estimated_tokens"] == len(prompt.encode("utf-8"))
+    assert report["original_estimated_tokens"] - report["final_estimated_tokens"] == report["deduplicated_bytes"]
+
+
+@pytest.mark.parametrize(("goal", "role"), [
+    ("new continuation", "old project"),
+    ("old project", "independent peer role"),
+    ("", ""),
+])
+def test_standard_prompt_keeps_distinct_goal_and_task_role(goal, role):
+    H = _load_registry()
+    project = {"objective": "old project"}
+    facts = {"goal": goal, "role": role, "upstream_results": [{"final_sha256": "unique-peer"}]}
+    ctx = H.HarnessCtx(task_facts=facts, project_context=project)
+    prompt = H._legion_prompt("resume task", ctx)
+    facts_text = prompt.split("\n\nTASK_FACTS_JSON\n", 1)[1].split("\n\n", 1)[0]
+    sent = __import__("json").loads(facts_text)
+    for key, value in (("goal", goal), ("role", role)):
+        if value and value == project["objective"]:
+            assert key not in sent
+        else:
+            assert sent[key] == value
+    assert sent["upstream_results"][0]["final_sha256"] == "unique-peer"
+    assert project["objective"] in prompt
+    if goal and goal != project["objective"]:
+        assert goal in prompt
+    if role and role != project["objective"]:
+        assert role in prompt
+
+
+@pytest.mark.parametrize("facts_json", [
+    '{"goal": "same objective", "other": 1}',
+    '{"goal": "same objective", broken}',
+])
+def test_prompt_folding_leaves_unknown_section_serializations_unchanged(facts_json):
+    H = _load_registry()
+    facts = "\n\nTASK_FACTS_JSON\n" + facts_json
+    project = '\n\nPROJECT_CONTEXT_JSON\n{"objective":"same objective"}'
+    sections = [("task_facts", facts, 8, .4), ("project_context", project, 22, .55)]
+    prompt, report = H._budget_prompt_sections(sections, H.HarnessCtx())
+    assert prompt == facts + project
+    assert "deduplicated_fields" not in report
+
+
+def test_prompt_folding_never_changes_over_budget_projection(monkeypatch):
+    H = _load_registry()
+    monkeypatch.setenv("LEGION_HARNESS_INPUT_BUDGET", "4096")
+    objective = "GOAL-HEAD " + "复杂现场" * 2000 + " GOAL-TAIL"
+    ctx = H.HarnessCtx(task_facts={"goal": objective, "role": objective},
+                       project_context={"objective": objective})
+    prompt = H._legion_prompt(objective, ctx)
+    assert ctx.context_budget_report["degraded"] is True
+    assert "deduplicated_fields" not in ctx.context_budget_report
+    assert "GOAL-HEAD" in prompt and "GOAL-TAIL" in prompt
 
 
 def test_execution_depth_round_trips_through_env(monkeypatch):

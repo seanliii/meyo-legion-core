@@ -138,6 +138,65 @@ def test_autocommit_skips_non_git_directory(tmp_path, monkeypatch):
     assert result["reason"] == "not_a_git_repo"
 
 
+def test_unadjudicated_candidates_remain_available_to_persistent_continuation(monkeypatch):
+    """An empty selected final must not erase real candidate evidence on resume."""
+    from copy import deepcopy
+    import legion_core
+    import legion_pilot
+
+    rounds = []
+    verdicts = iter([
+        {"action": "continue", "kind": "fixture_continue", "next_action": "continue original work"},
+        {"action": "stop", "kind": "fixture_stop"},
+    ])
+    rows = [
+        {"key": "alpha", "task_id": "alpha", "status": "done", "final": "candidate alpha evidence"},
+        {"key": "beta", "task_id": "beta", "status": "done", "final": "candidate beta evidence"},
+    ]
+    def fake_dispatch(question, plan=None, cb=None, **kwargs):
+        rounds.append(deepcopy(plan))
+        return {"execution_mode": "pk", "results": deepcopy(rows), "winner": "",
+                "selection": {"source": "unadjudicated_candidates"},
+                "delivered_count": 2, "total": 2, "outcome": {"status": "completed"}}
+
+    monkeypatch.setattr(legion_core, "dispatch", fake_dispatch)
+    monkeypatch.setattr(legion_pilot, "evaluate", lambda *a, **kw: next(verdicts))
+    monkeypatch.setattr(legion_core, "_collect_benchmark_refs", lambda *a, **kw: [])
+    monkeypatch.setattr(legion_core, "_autocommit_delivery", lambda *a, **kw: {"status": "skipped"})
+    monkeypatch.setattr(legion_core, "_plan_empty_continuation", lambda q, p, rp, tid, g, **kw:
+                        ({**p, "tasks": {"followup": {"task": "continue"}}}, None))
+    out = legion_core.dispatch_persistent(
+        "preserve distinct candidate evidence", plan={"tasks": {"alpha": {"task": "original"}}},
+        mode="pk", max_rounds=2, qhash="__ut_unadjudicated_continue")
+    assert len(rounds) == 2
+    context = rounds[1].get("conversation_context") or ""
+    assert "candidate alpha evidence" in context
+    assert "candidate beta evidence" in context
+    assert "未裁决" in context
+    assert out["selection"]["source"] == "unadjudicated_candidates"
+    assert legion_core._winner_final(out) == ""
+    assert [row["final"] for row in out["results"]] == [row["final"] for row in rows]
+
+
+def test_unadjudicated_context_is_bounded_and_does_not_include_supporting_or_failed(monkeypatch):
+    import legion_core
+
+    rows = [{"task_id": f"candidate-{index}", "status": "done", "final": str(index) * 2000}
+            for index in range(14)]
+    rows.extend([
+        {"task_id": "private-support", "supporting_context": True, "status": "done", "final": "not a candidate"},
+        {"task_id": "review", "verification_role": "critic", "status": "done", "final": "not a candidate"},
+        {"task_id": "failed", "status": "error", "final": "not a candidate"},
+    ])
+    snapshot = legion_core._persistent_candidate_context({"results": rows})
+    assert "未裁决" in snapshot and "非最终结论" in snapshot
+    assert "candidate-0:" in snapshot and "candidate-11:" in snapshot
+    assert "candidate-12:" not in snapshot and "另有 2 条候选" in snapshot
+    assert "正文已截断" in snapshot
+    assert "not a candidate" not in snapshot
+    assert len(snapshot) < 3000
+
+
 def test_persistent_loop_injects_world_standard_and_diagnostics(monkeypatch):
     """首轮缺参照时注入研究 context；结果带 diagnostics；无交付不提交。"""
     import legion_core
