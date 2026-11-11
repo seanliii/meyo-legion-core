@@ -115,6 +115,7 @@ def run_harness(key, task, **kw):
     monkeypatch.setenv("MEYO_ORCH_DIR", str(shim))
     events = []
     ready = threading.Event()
+    budget_timing = {}
 
     def progress(event):
         events.append(event)
@@ -124,12 +125,26 @@ def run_harness(key, task, **kw):
             ready.set()
 
     if stop == "timeout":
-        # Synchronize startup only; the real parent's explicit deadline then expires.
-        monkeypatch.setattr(stack.core, "_pgroup_cpu_seconds",
-                            lambda group: (ready.wait(5), 0)[1])
+        # Arm a real parent deadline only after the native retry reached its pump.
+        # Worker startup retains its ordinary 10s allowance; no mocked clock or
+        # synthetic expiry may replace RuntimeLease's actual deadline decision.
+        original_lease = stack.registry.RuntimeLease
+
+        class ReadyBudgetLease(original_lease):
+            def expired(self):
+                if ready.is_set() and "armed_at" not in budget_timing:
+                    budget_timing["armed_at"] = time.monotonic()
+                    self.deadline = min(self.deadline, budget_timing["armed_at"] + .2)
+                    budget_timing["deadline"] = self.deadline
+                reason = super().expired()
+                if reason == "runtime_budget":
+                    budget_timing["expired_at"] = time.monotonic()
+                return reason
+
+        monkeypatch.setattr(stack.registry, "RuntimeLease", ReadyBudgetLease)
     result = stack.core._run_harness_isolated(
         "__ut_terminal", "offline cancellation fixture", "__native_recovery",
-        .5 if stop == "timeout" else 10,
+        10,
         model_override="fixture-model", appid_override="fixture-only",
         session_id="fixture-session", user_id="alice",
         project_context={"repo_root": str(stack.project), "user_id": "alice"},
@@ -140,7 +155,8 @@ def run_harness(key, task, **kw):
         with pytest.raises(ProcessLookupError):
             os.kill(int(pidfile.read_text()), 0)
         assert calls.read_text().splitlines() == ["call"]
-    return SimpleNamespace(result=result, events=events, stopped=stopped, ready=ready)
+    return SimpleNamespace(result=result, events=events, stopped=stopped, ready=ready,
+                           budget_timing=budget_timing)
 
 
 @pytest.mark.parametrize("stop", ["cancelled", "timeout"])
@@ -148,6 +164,9 @@ def test_real_worker_drains_native_and_keeps_parent_stop(stack, monkeypatch, sto
     run = invoke_native(stack, monkeypatch, stop=stop)
     result = run.result
     assert run.ready.is_set(), result
+    if stop == "timeout":
+        assert run.budget_timing["armed_at"] < run.budget_timing["deadline"]
+        assert run.budget_timing["expired_at"] >= run.budget_timing["deadline"]
     assert run.stopped.read_text() == "SIGTERM drained"
     assert result["status"] == stop and result.get("ok") is not True
     assert bool(result.get("cancelled")) is (stop == "cancelled")

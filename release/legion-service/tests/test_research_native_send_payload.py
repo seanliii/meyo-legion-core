@@ -241,7 +241,10 @@ def test_visual_tool_examples_preserve_receipts_at_actual_native_send(send_stack
     if attached:
         image = stack.project / "attached.png"
         image.write_bytes(b"fixture; prompt construction does not inspect image content")
-        plan["attachments"] = [{"path": str(image)}]
+        plan["attachments"] = [{"path": str(image), "orig_name": "原始视觉参考.png",
+                                "description": "保留这份参考的来源，读取后再判断画面",
+                                "source_ref": {"reference_id": "visual-reference-one",
+                                               "origin": "user_upload"}}]
     full_task = QUESTION + stack.core._build_prelude(QUESTION, plan, user_id="alice")
     result = stack.core._run_core_inprocess(
         "__ut_terminal", full_task, "capture-image-example", timeout_s=20,
@@ -255,6 +258,22 @@ def test_visual_tool_examples_preserve_receipts_at_actual_native_send(send_stack
     assert f'see_image:  python3.12 {media_cli!r} --json see_image "PATH" "QUESTION"' in sent
     if attached:
         assert str(image) in sent
-        assert f"图片: python3.12 {media_cli!r} --json see_image 'PATH' 'QUESTION'" in sent
+        # Assert the attachment contract at the actual native send, separately
+        # from the general tool catalog's JSON-receipt example above.
+        attachment_context = sent.split("【用户上传的文件·请根据任务自主选择工具读取/分析】", 1)[1]
+        rows = [json.loads(line[2:]) for line in attachment_context.splitlines()
+                if line.startswith("- {")]
+        row, = rows
+        original = plan["attachments"][0]
+        assert row["path"] == str(image) and row["name"] == original["orig_name"]
+        assert row["description"] == original["description"]
+        assert row["source_ref"] == original["source_ref"]
+        assert row["availability"] == "file_present" and row["content_read"] == "not_performed"
+        assert "优先使用本家原生看图工具（Codex 为 view_image）" in attachment_context
+        assert "以本次模型的图片输入声明和实际工具结果为准" in attachment_context
+        assert "没有原生图片输入时" in attachment_context
+        assert "已获授权且绑定可用的视觉工具" in attachment_context
+        assert "see_image 不自动复用本次原生模型，不默认调用未绑定的识图通路" in attachment_context
+        assert "--json see_image" not in attachment_context
         assert "可用工具(已配好key,直接调·不要让用户再配置)" not in sent
         assert "工具入口不是授权或可用性证明；配置与可用性以本次工具结果为准" in sent
