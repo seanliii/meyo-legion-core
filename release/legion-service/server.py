@@ -4487,6 +4487,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "status": "done", "decision": "needs_harness", "mode": "auto",
                                 "reason": str(_quick_result.get("reason") or "需要 Harness 完成")[:200],
                                 "x": "任务需要原生工具或持续工作·先由适任主创实做"})
+                            # 要给人玩、给人看的作品先写明成品标准；有第二家可用时，
+                            # 收口前由不参与创作的成员按标准打开实物评审。
+                            __import__("product_bar").apply(
+                                question, _plan, reviewers_available=len(set(
+                                    LEGION._aigc_ready().get("runnable_clis") or [])) >= 2)
                             import collaboration_runtime as _author_runtime
                             # A declared candidate scope belongs to the existing
                             # planner and owner binding. Only an unscoped request

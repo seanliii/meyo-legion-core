@@ -5727,9 +5727,14 @@ def _build_runtime_brief(question: str, plan: dict, user_id: str = "") -> str:
     # 【没给也不再留空】——给一条通用兜底标尺。这不是编造具体标准(那会误导·仍是 context not
     # control),而是把"交付物会被真实用户当最终成品使用"这个现场事实说清,让各家有个自检基准,
     # 不至于"没标尺就差不多得了"。判断达标没·判断权仍在 harness 自己(下方明说可自判可澄清)。
-    if plan.get("acceptance"):
+    # 要给人玩、给人看的作品：通用标尺只换来“能运行”的半成品，这里给成品标准全文(不截断)。
+    import product_bar as _product_bar
+    _product = _product_bar.is_product_request(question, plan)
+    if _product:
+        lines.append(_product_bar.brief())
+    if plan.get("acceptance") and not (_product and _product_bar.is_default(plan["acceptance"])):
         lines.append(f"- 验收标准（按此自检再交）：{str(plan['acceptance'])[:300]}")
-    else:
+    elif not _product:
         lines.append("- 验收标尺（无明确标准时的通用基准·你自己据此自检）：交付物会被真实用户"
                      "当【最终成品】直接使用/双击打开/下载，因此要完整可用、不是半成品或提纲；"
                      "该给真文件就给真文件(网页/表格/PDF/代码夹/图),该有下一步就写清下一步。"

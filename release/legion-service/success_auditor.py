@@ -316,7 +316,9 @@ def build_prompt(question: str, plan: dict, candidates: list[dict]) -> tuple[str
     snapshots = [_candidate_snapshot(row, alias, budget)
                  for alias, row, budget in zip(candidate_aliases, usable, candidate_allocations)]
     contract = plan.get("delivery_contract") if isinstance(plan.get("delivery_contract"), dict) else {}
-    criteria = list(contract.get("acceptance") or [])
+    # 与 profile() 一致：验收条件既可能在交付契约里，也可能直接挂在计划上。
+    _acceptance = contract.get("acceptance") or plan.get("acceptance") or []
+    criteria = [_acceptance] if isinstance(_acceptance, str) else list(_acceptance)
     verification = plan.get("verification") if isinstance(plan.get("verification"), dict) else {}
     criteria.extend(str(item) for item in verification.get("criteria") or [] if str(item).strip())
     quality_profile = profile(plan, len(usable))
