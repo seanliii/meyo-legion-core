@@ -2453,6 +2453,7 @@ def _build_failure_context(prev: str, attempt: int, key: str, model: Optional[st
 # 按真实成功数据放到330s:仍能杀真正永久卡死(网关永不返回·会拖到330s但最终释放)·
 # 又给慢网关足够空间不误杀。配合流式心跳(有输出的家更早刷新)·双保险。
 _IDLE_TIMEOUT = float(os.environ.get("LEGION_IDLE_TIMEOUT", "330"))
+_NO_ACTION_TIMEOUT = float(os.environ.get("LEGION_NO_ACTION_TIMEOUT", "1200"))
 # 兼容显式设置的总预算；未设置时不另加总时长限制。
 _TOTAL_CAP = float(os.environ.get("LEGION_TOTAL_CAP", "0"))
 # CPU 活动阈值:两次采样间进程组累计CPU时间增量 > 此值(秒)= 在烧CPU = 在推进。
@@ -3137,7 +3138,7 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
 
     out_lines: list[str] = []
     err_buf: list[str] = []
-    state = {"last": time.time()}
+    state = {"last": time.time(), "last_action": time.time()}
     lock = threading.Lock()
     runtime_observations = {}
 
@@ -3184,6 +3185,7 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
                         if _a:
                             with lock:
                                 state["act"] = {"x": _a, "ts": time.time()}
+                                state["last_action"] = time.time()
                         if progress_cb:
                             progress_cb(ev)
                     except Exception:
@@ -3193,6 +3195,7 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
                 lease.observe()
                 with lock:
                     state["last"] = time.time()
+                    state["last_action"] = time.time()
                 with lock:
                     sink.append(ln)
         except Exception:
@@ -3294,6 +3297,14 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
             kill_reason = ("调用方显式执行预算已用完" if _expired == "runtime_budget" else
                            f"连续 {idle_limit:g}s 无真实活动且原生调用预算已结束")
             break
+        # CPU 采样会给挂住的子进程（如断网的包安装）无限续租；没有任何新动作和输出太久即按卡住处理。
+        if _NO_ACTION_TIMEOUT > 0:
+            with lock:
+                _quiet = now - state["last_action"]
+            if _quiet >= _NO_ACTION_TIMEOUT:
+                _fail_kind = "idle_stall"
+                kill_reason = f"连续 {_NO_ACTION_TIMEOUT:g}s 没有新的工具动作或输出"
+                break
         time.sleep(0.1)
 
     if kill_reason is not None:

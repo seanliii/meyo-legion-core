@@ -4500,8 +4500,13 @@ class Handler(BaseHTTPRequestHandler):
                                                if isinstance(_plan.get("team_policy"), dict) else None)
                             # 部署里绑了不同模型的成员时，需要实做的任务由它们各自独立完成，
                             # 收口再由不参与创作的成员匿名比选——并集命中率高于任何单家。
+                            # 续做已有项目时各家拿到的是同一个项目目录，并行会互相覆盖文件；
+                            # 这时由一家主创续做，另一家按作品标准评审。
+                            _project_scope = _plan.get("project_context") or {}
+                            _shared_workspace = isinstance(_project_scope, dict) and bool(
+                                _project_scope.get("repo_root") or _project_scope.get("workspace_root"))
                             try:
-                                _union_authors = ([] if _declared_scope is not None else
+                                _union_authors = ([] if _declared_scope is not None or _shared_workspace else
                                                   LEGION.auto_union_authors(_plan, _candidate_pool))
                             except Exception:
                                 _union_authors = []
@@ -4512,8 +4517,12 @@ class Handler(BaseHTTPRequestHandler):
                             if _union_authors:
                                 if not isinstance(_plan.get("success_audit"), dict):
                                     _plan["success_audit"] = {"enabled": True}
+                                # 自动计划随后会被标成规划器产出，未锁定的任务键会被重新评分改派；
+                                # 并集的意义就是这几家各用自己的模型做，必须锁定到本人。
                                 _auto_plan = {"ok": True, "suggested_mode": "pk",
-                                              "tasks": {key: question for key in _union_authors},
+                                              "tasks": {key: {"task": question, "assigned_harness": key,
+                                                              "assignment_locked": True}
+                                                        for key in _union_authors},
                                               "reason": "异构并集：" + "、".join(_union_authors)
                                                         + " 各用自己的模型独立完成同一目标，收口匿名比选",
                                               "via": "auto_union_authors"}
