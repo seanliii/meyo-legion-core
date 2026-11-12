@@ -3830,6 +3830,7 @@ function renderLegionAnswer(results, data, msgEl){
   const m=msgEl||newLegionMsg();
   _renderModeFacts(m,data||{},true);
   m._memberDeliveryFinal=true;
+  _finishArtifactStatus(m,data);
   const ans=m.querySelector('.legion-answers');
   const done=results.filter(r=>r.status==='done'&&!_looksInternalFailure(r));
   const failed=results.filter(r=>_looksInternalFailure(r));
@@ -4226,6 +4227,36 @@ function _loadMemberDeliveries(msgEl){
     finally{if(msgEl._memberDeliveryRead===readToken){msgEl._memberDeliveryLoading=false;if(msgEl._memberDeliveryAgain){msgEl._memberDeliveryAgain=false;if(current())_loadMemberDeliveries(msgEl);}}}
   })();
 }
+function _appendArtifactStatus(row,msgEl,data){
+  // 事件中的计划属于当时记录；与本轮现在是否还在执行分开显示。
+  if(data.next_action){
+    const plan=document.createElement('div');plan.className='as-d artifact-recorded-plan';
+    plan.textContent='当时计划：'+data.next_action;row.appendChild(plan);
+  }
+  if(data.in_progress){
+    const status=document.createElement('div');status.className='as-d artifact-current-state';
+    status.dataset.executionId=msgEl._replay?.executionId||'';
+    const terminal=msgEl._artifactTerminal;
+    status.textContent=terminal?.executionId===status.dataset.executionId?terminal.text:
+      '任务仍在继续…';
+    row.appendChild(status);
+  }
+}
+function _finishArtifactStatus(msgEl,data={},event='final'){
+  const d=data||{},out=d.outcome||{};
+  const stopped=d.cancelled||d.status==='cancelled'||out.status==='cancelled';
+  const failed=event==='error'||d.error||['error','failed'].includes(d.status)||['error','failed'].includes(out.status);
+  const text=stopped?'本轮已停止；已生成的产物保留。':failed?
+    '本轮出错；已生成的产物保留。':'本轮已结束；已生成的产物保留，交付情况以本轮结果为准。';
+  const executionId=msgEl._replay?.executionId||'';
+  msgEl._artifactTerminal={executionId,text};
+  const scroll=_captureProgressScroll(msgEl);
+  try{
+    msgEl.querySelectorAll('.artifact-current-state').forEach(status=>{
+      if(status.dataset.executionId===executionId)status.textContent=text;
+    });
+  }finally{_restoreProgressScroll(msgEl,scroll);}
+}
 function _renderTerminalError(msgEl,data){
   const scroll=_captureProgressScroll(msgEl);
   try{
@@ -4245,7 +4276,8 @@ function _renderTerminalError(msgEl,data){
     });
   }finally{_restoreProgressScroll(msgEl,scroll);}
 }
-function _markReplayTerminal(msgEl,eid,data){
+function _markReplayTerminal(msgEl,eid,data,event='final'){
+  _finishArtifactStatus(msgEl,data,event);
   msgEl._memberDeliveryFinal=true;msgEl._memberDeliveryRead=null;
   msgEl._memberDeliveryLoading=false;msgEl._memberDeliveryAgain=false;
   const entry=msgEl._replay||_bindReplayCard(msgEl,data.team_id||liveTeamId);
@@ -4275,7 +4307,7 @@ function applyLiveEvent(ev,d,msgEl,state){
     renderLegionAnswer(d.results||[],d,msgEl);msgEl.querySelector('.progress').style.display='none';if(d.session)curSession=d.session.sid;if(d.source_ref?.url)consumeQuerySource();notifyDone(d);try{sessionStorage.removeItem('legion_live_v2');}catch(e){}liveTeamId='';return;
   }
   if(ev==='error'){
-    _markReplayTerminal(msgEl,eid,d);
+    _markReplayTerminal(msgEl,eid,d,'error');
     _renderTerminalError(msgEl,d);
     try{sessionStorage.removeItem('legion_live_v2');}catch(e){}
     liveTeamId='';return;
@@ -4364,7 +4396,7 @@ function applyLiveEvent(ev,d,msgEl,state){
     const _k=d.url.replace(/^\/(home-outputs|auto-outputs|outputs|media)\//,'').split('?')[0];
     if(msgEl._seenArtUrls.has(_k))return;
     msgEl._seenArtUrls.add(_k);
-    const av=document.createElement('div');av.className='proc-step';const desc=d.description?`<div class="as-d">${esc(d.description)}</div>`:'';const next=d.next_action?`<div class="as-d">接下来：${esc(d.next_action)}</div>`:(d.in_progress?`<div class="as-d">任务仍在继续…</div>`:'');const verb=d.t==='artifact_recovered'?'已保留，交给接力家复验':'产出';av.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${_stepPurpose(d)}</span> ${verb} ↓${desc}`+artifactHTML({name:d.name||d.url,url:d.url,bytes:d.bytes,kind:d.ext||'',provenance:d.provenance||{},lineage:d.lineage||{}})+next;targetProc.appendChild(av);hydrateArtifacts(av);return;}
+    const av=document.createElement('div');av.className='proc-step';const desc=d.description?`<div class="as-d">${esc(d.description)}</div>`:'';const verb=d.t==='artifact_recovered'?'已保留，交给接力家复验':'产出';av.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${_stepPurpose(d)}</span> ${verb} ↓${desc}`+artifactHTML({name:d.name||d.url,url:d.url,bytes:d.bytes,kind:d.ext||'',provenance:d.provenance||{},lineage:d.lineage||{}});_appendArtifactStatus(av,msgEl,d);targetProc.appendChild(av);hydrateArtifacts(av);return;}
   // PK 生命周期:更新 lane 状态
   if(isPKMode&&agentKey){
     if(d.t==='task_completed')pkUpdateStatus(msgEl,agentKey,`✓ 完成`,'done');
@@ -4591,9 +4623,8 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
             msgEl._seenArtUrls.add(_k);
             const av=document.createElement('div');av.className='proc-step';
             const desc=d.description?`<div class="as-d">${esc(d.description)}</div>`:'';
-            const next=d.next_action?`<div class="as-d">接下来：${esc(d.next_action)}</div>`:(d.in_progress?`<div class="as-d">任务仍在继续…</div>`:'');
             const verb=d.t==='artifact_recovered'?'已保留，交给接力家复验':'产出';
-            av.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${esc(_stepPurpose(d))}</span> ${verb} ↓${desc}`+artifactHTML({name:d.name||d.url,url:d.url,bytes:d.bytes,kind:d.ext||'',provenance:d.provenance||{},lineage:d.lineage||{}})+next;
+            av.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${esc(_stepPurpose(d))}</span> ${verb} ↓${desc}`+artifactHTML({name:d.name||d.url,url:d.url,bytes:d.bytes,kind:d.ext||'',provenance:d.provenance||{},lineage:d.lineage||{}});_appendArtifactStatus(av,msgEl,d);
             targetProc.appendChild(av);
             hydrateArtifacts(av);
             continue;
@@ -4638,7 +4669,7 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
           }
           }finally{_restoreProgressScroll(msgEl,scroll);}
         }else if(ev==='error'){
-          _markReplayTerminal(msgEl,eid,d);
+          _markReplayTerminal(msgEl,eid,d,'error');
           _renderTerminalError(msgEl,d);
           try{sessionStorage.removeItem('legion_live_v2');}catch(_e){}liveTeamId='';
         }else if(ev==='final'){d=_finalDeliveryData(d);finalData=d;

@@ -130,7 +130,7 @@ async function screen(mode, requestedMode = "auto") {
   });
   const functions = ["_scrollAtLatest", "_processScrollState", "_captureProgressScroll", "_restoreProgressScroll", "_syncProcessJump", "_syncProcessProgress", "_renderRuntimePulse", "newLegionMsg",
     "_renderLegionHeartbeat", "_renderAgentHeartbeat", "_finalDeliveryData",
-    "_deliveryDisplay", "_turnSignature", "_markReplayTerminal", "notifyDone",
+    "_deliveryDisplay", "_turnSignature", "_appendArtifactStatus", "_finishArtifactStatus", "_markReplayTerminal", "notifyDone",
     "_renderProductMilestone", "_renderToolStep", "_loadMemberDeliveries", "_renderTerminalError", "_syncProcessMode", "_upgradeMsgMode", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "_finishResume", "_handoffLiveStream", "resumeLiveV2", "send"];
   vm.runInContext([html.match(/^const _PHASE_LABELS=.*$/m)[0], html.match(/^const _PRODUCT_MILESTONES=.*$/m)[0], ...functions.map(pageFunction)].join("\n"), context);
   let sending;
@@ -188,6 +188,73 @@ async function screen(mode, requestedMode = "auto") {
     async close() { if (pendingRead) pendingRead({ done: true }); await sending; },
   };
 }
+
+const artifactRecord = () => freezeRecord({t:'artifact_ready',agent:'codex',url:'/outputs/fixture-game.html',
+  name:'原作品.html',description:'原始说明：任务仍在继续，等最终导出确认',next_action:'等最终导出确认 <原文>',in_progress:true});
+const artifactTerminals = [
+  ['error',{status:'error',error:'真实错误'},/本轮出错/],
+  ['cancel',{cancelled:true,outcome:{status:'cancelled'}},/本轮已停止/],
+  ['final',{outcome:{status:'partial'}},/本轮已结束/],
+];
+function artifactFixture(ui) {
+  ui.context.artifactHTML = a => `<div class="artifact"><a href="${a.url}">原文件</a><button class="artifact-preview">查看</button></div>`;
+}
+for(const mode of ['live','resume'])for(const [terminal,data,label] of artifactTerminals)for(const withPlan of [false,true])
+test(`artifact 当前状态：${mode}/${terminal}/plan=${withPlan} 只结束动态提示，保留原文节点和按钮`,async()=>{
+  const ui=await screen(mode);artifactFixture(ui);
+  const record=freezeRecord({...artifactRecord(),next_action:withPlan?artifactRecord().next_action:''}),before=JSON.stringify(record);
+  try {
+    await ui.event(record);
+    const status=ui.message.querySelector('.artifact-current-state');
+    assert.ok(status,'artifact must have a distinct current-state node');
+    assert.match(status.textContent,/仍在继续/);
+    const row=status.parentNode,button=row.querySelector('.artifact-preview'),link=row.querySelector('a');
+    const plan=row.querySelector('.artifact-recorded-plan');
+    if(withPlan)assert.equal(plan.textContent,'当时计划：'+record.next_action);else assert.equal(plan,null);
+    const markup=row.innerHTML;let clicks=0;button.addEventListener('click',()=>clicks++);
+    ui.proc.scrollTop=67;
+    if(terminal==='error')await ui.error(data);else await ui.final(data);
+    assert.equal(ui.message.querySelector('.artifact-current-state'),status);
+    assert.match(status.textContent,label);assert.doesNotMatch(status.textContent,/仍在继续|导出完成|验证通过/);
+    assert.equal(row.innerHTML,markup);assert.equal(row.querySelector('.artifact-preview'),button);
+    assert.ok(row.innerHTML.includes(record.description),'historical description must not be rewritten');
+    assert.equal(link.getAttribute('href'),record.url);button.dispatch('click');assert.equal(clicks,1);
+    if(withPlan)assert.equal(plan.textContent,'当时计划：'+record.next_action);
+    assert.equal(ui.proc.scrollTop,67);assert.equal(JSON.stringify(record),before);
+  } finally {await ui.close();}
+});
+
+for(const [terminal,data,label] of artifactTerminals)
+test(`artifact 历史重放：${terminal} 快照之后读取旧 in_progress，不复活且不改其他运行任务`,async()=>{
+  const ui=await terminalProcess();artifactFixture(ui);
+  const record=artifactRecord(),before=JSON.stringify(record);
+  try {
+    // Use the actual saved-answer renderer, then the actual paged history GET.
+    answerScreen([],data,ui.message);
+    ui.context.fetch=async()=>({ok:true,json:async()=>({team_id:'__ut_saved',last_event_id:1,
+      events:[{event_id:1,ts:1,event:'step',data:record}]})});
+    await ui.context._loadHistoryProcess(ui.message);
+    const status=ui.message.querySelector('.artifact-current-state');assert.ok(status);
+    assert.match(status.textContent,label);assert.doesNotMatch(status.textContent,/仍在继续/);
+    assert.equal(ui.message.querySelector('.artifact-recorded-plan').textContent,'当时计划：'+record.next_action);
+    assert.equal(ui.context.liveTeamId,'__ut_other_running');assert.equal(ui.context.running,true);
+    assert.equal(ui.context.lastEventId,999);assert.equal(JSON.stringify(record),before);
+  } finally {await ui.close();}
+});
+
+test('artifact 新执行代次不会把旧产物的错误状态改成运行或完成',async()=>{
+  const ui=await screen('resume');artifactFixture(ui);
+  try {
+    await ui.event(artifactRecord());await ui.error({error:'上一轮出错'});
+    const old=ui.message.querySelector('.artifact-current-state');assert.ok(old);
+    ui.context.applyLiveEvent('meta',{team_id:'__ut_team',sid:'__ut_sid'},ui.message,{eventId:10});
+    await ui.event({...artifactRecord(),url:'/outputs/new-game.html'},11);
+    const states=ui.message.querySelectorAll('.artifact-current-state');assert.equal(states.length,2);
+    assert.match(states[0].textContent,/本轮出错/);assert.match(states[1].textContent,/仍在继续/);
+    await ui.final({results:[]},12);
+    assert.match(states[0].textContent,/本轮出错/);assert.match(states[1].textContent,/本轮已结束/);
+  } finally {await ui.close();}
+});
 
 for(const mode of ['live','resume'])for(const completed of [false,true])test(`${mode}: terminal error preserves returned members and invalidates pending reads (${completed})`,async()=>{
   const ui=await screen(mode),{context,message}=ui;
@@ -621,22 +688,23 @@ function freezeRecord(value) {
   return value;
 }
 
-function answerScreen(results, data) {
+function answerScreen(results, data, existingMessage = null) {
   freezeRecord(results); freezeRecord(data);
-  const message = new Element();
-  message.innerHTML = '<div class="legion-answers"></div><span class="st"></span><div class="next"></div>';
+  const message = existingMessage || new Element();
+  if (!existingMessage) message.innerHTML = '<div class="legion-answers"></div><span class="st"></span><div class="next"></div>';
   const context = vm.createContext({
     document: { createElement: (tag) => new Element(tag) },
-    nameOf: (name) => name, colorOf: () => "#5b8cff",
+    nameOf: (name) => name, colorOf: () => "#5b8cff", _avatarIndex: () => 0,
     rich: (text) => String(text), _usageBrief: () => "未上报", _num: String,
-    _renderModeFacts() {}, hydrateArtifacts() {},
+    _renderModeFacts() {}, hydrateArtifacts() {}, _syncProcessProgress() {}, _renderMilestones() {},
+    _captureProgressScroll() { return null; }, _restoreProgressScroll() {},
     fetch() { throw new Error("产物渲染测试不允许访问网络"); },
   });
   vm.runInContext([
     "esc", "_artifactPresentationRole", "_chooseVisibleDeliveries",
     "_artifactPurpose", "_artifactSizeLabel", "_toolLabel", "artifactHTML",
     "_looksInternalFailure", "_isVisualArtifact", "_requestedPpt",
-    "_bindResultTabs", "_deliveryDisplay", "_planningFailureHTML", "_taskFailureHTML", "renderLegionAnswer",
+    "_bindResultTabs", "_deliveryDisplay", "_planningFailureHTML", "_taskFailureHTML", "_finishArtifactStatus", "renderLegionAnswer",
   ].map(pageFunction).join("\n"), context);
   context.renderLegionAnswer(results, data, message);
   const answers = message.querySelector(".legion-answers");

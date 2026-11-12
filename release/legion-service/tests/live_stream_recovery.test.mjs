@@ -64,7 +64,7 @@ function fixture(){
       throw new Error('unexpected HTTP path');
     },
   });
-  const functions=['_replayEntry','_bindReplayCard','_canAttachTeam','saveLive','_markReplayTerminal',
+  const functions=['_replayEntry','_bindReplayCard','_canAttachTeam','saveLive','_finishArtifactStatus','_markReplayTerminal',
     'applyLiveEvent','_renderTerminalError','_finishResume','_handoffLiveStream','resumeLiveV2','attachExternalLive',
     '_syncSessionOnce','cancelLegion','send'];
   vm.runInContext(functions.map(pageFunction).join('\n'),context);
