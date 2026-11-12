@@ -494,9 +494,14 @@ async def _transparent_responses(request, binding):
         else:
             body["max_output_tokens"] = binding.max_output_tokens
             raw_body = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    headers = _end_to_end_headers(request.headers, request=True)
+    headers = httpx.Headers(_end_to_end_headers(request.headers, request=True))
     headers.update(dict(binding.http_headers))
     headers["Authorization"] = f"Bearer {binding.api_key}"
+    # aiter_raw below preserves the wire representation. HTTPX's own default
+    # gzip/br/deflate advertisement must not stand in for the native client's
+    # decoder support: Codex's SSE reader may consume these bytes as UTF-8.
+    # Preserve an explicit downstream/operator value, including an empty one.
+    headers.setdefault("Accept-Encoding", "identity")
     timeout = (httpx.Timeout(binding.timeout_s, read=binding.stream_idle_timeout_ms / 1000)
                if binding.stream_idle_timeout_ms is not None else binding.timeout_s)
     client = httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False)

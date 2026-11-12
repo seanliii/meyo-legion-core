@@ -4,6 +4,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, ExitStack
 import copy
+import gzip
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,18 +48,20 @@ def payload():
 
 
 @contextmanager
-def provider():
+def provider(*, sse_gzip_if_accepted=False):
     seen, files = [], {}
     state = {"upload_status": 200, "get_status": 200, "response_status": 200}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
-        def reply(self, status, data, content_type="application/json"):
+        def reply(self, status, data, content_type="application/json", encoding=None):
             raw = data if isinstance(data, bytes) else json.dumps(data).encode()
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(raw)))
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
             self.end_headers()
             self.wfile.write(raw)
 
@@ -106,7 +109,10 @@ def provider():
                     "usage": {"input_tokens": 9, "output_tokens": 4, "total_tokens": 13}}}]
             data = "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n"
                            for event in events).encode()
-            self.reply(200, data, "text/event-stream")
+            compressed = sse_gzip_if_accepted and "gzip" in (self.headers.get("Accept-Encoding") or "")
+            entry["response_compressed"] = compressed
+            self.reply(200, gzip.compress(data) if compressed else data, "text/event-stream",
+                       "gzip" if compressed else None)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
