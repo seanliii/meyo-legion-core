@@ -15,6 +15,9 @@ import sys
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
 KEY_ENV = "MEYO_PERSONAL_PROVIDER_KEY"
+MEMBER_KEY_ENV = "MEYO_PERSONAL_MEMBER_KEY_"
+MEMBER_BINDINGS_ENV = "LEGION_MEMBER_MODEL_BINDINGS"
+MEMBER_PROTOCOLS = ("responses", "anthropic-messages", "openai-completions", "cursor-agent")
 MODEL_PROFILE_ENV = ("MEYO_PERSONAL_STATE_DIR", "LEGION_PERSONAL_OWNER")
 _MODEL_CONTEXT_OPTIONS = ("context_window", "model_auto_compact_token_limit")
 _MODEL_PROFILE_OPTIONS = ("input_modalities", "image_file_cache", *_MODEL_CONTEXT_OPTIONS)
@@ -358,6 +361,21 @@ def environment(state_dir: Path | str, inherited: dict | None = None) -> tuple[d
             "model": provider["model"], "base_url": provider["base_url"], "api_key_env": KEY_ENV,
             **{name: provider[name] for name in _MODEL_PROFILE_OPTIONS if name in provider},
         })
+    members = _member_models(root)
+    if members:
+        # Each member gets only its own declared candidate. Keys stay in private
+        # environment slots; the declaration itself carries names, not values.
+        profiles = _model_profiles(root)
+        declared = {}
+        for index, (member, choice) in enumerate(sorted(members.items())):
+            if choice["profile"] not in profiles:
+                raise ValueError("成员模型绑定引用了不存在的候选；未启动")
+            provider = _profile_binding(profiles[choice["profile"]])
+            slot = f"{MEMBER_KEY_ENV}{index}"
+            env[slot] = provider["api_key"]
+            declared[member] = {"model": provider["model"], "base_url": provider["base_url"],
+                                "api_key_env": slot, "protocol": choice["protocol"]}
+        env[MEMBER_BINDINGS_ENV] = json.dumps(declared)
     return env, config
 
 
@@ -623,6 +641,83 @@ def activate_model_profile(state_dir: Path | str, profile_id: str) -> dict:
             "note": "仅保存运行绑定；须在无活任务的维护窗口按原方式重启生效；未验证模型调用"}
 
 
+def _member_id(value: str) -> str:
+    if (not isinstance(value, str) or value == "codex"
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", value)):
+        raise ValueError("成员 ID 需为1至64位小写字母、数字、下划线、点或横线；"
+                         "Codex 使用当前模型配置，不在此绑定")
+    return value
+
+
+def _member_models(root: Path) -> dict:
+    """Member -> saved candidate + wire protocol. It names candidates, never keys."""
+    path = root / "secrets/member-models.json"
+    if not path.exists() and not path.is_symlink():
+        return {}
+    members = _read(path)
+    for member, choice in members.items():
+        _member_id(member)
+        if (not isinstance(choice, dict) or set(choice) != {"profile", "protocol"}
+                or choice["protocol"] not in MEMBER_PROTOCOLS):
+            raise ValueError("成员模型绑定格式无效")
+        _profile_id(choice["profile"])
+    return members
+
+
+def bind_member_model(state_dir: Path | str, member: str, profile_id: str, protocol: str) -> dict:
+    """Give one member its own saved candidate; no other member or default changes."""
+    root = _root(state_dir)
+    member, profile_id = _member_id(member), _profile_id(profile_id)
+    if protocol not in MEMBER_PROTOCOLS:
+        raise ValueError("协议需为 responses、anthropic-messages、openai-completions 或 cursor-agent")
+    with _locked(root):
+        _configuration(root)
+        profiles = _model_profiles(root)
+        if profile_id not in profiles:
+            raise ValueError("模型配置 ID 不存在；未修改成员绑定")
+        binding = _profile_binding(profiles[profile_id])
+        from model_registry import CURSOR_AGENT_BASE_URL, member_protocol_matches_address
+        if not member_protocol_matches_address(protocol, binding["base_url"]):
+            raise ValueError(f"cursor-agent 只能绑定地址为 {CURSOR_AGENT_BASE_URL} 的候选，"
+                             "该地址的候选也只能用 cursor-agent；未修改成员绑定")
+        members = _member_models(root)
+        members[member] = {"profile": profile_id, "protocol": protocol}
+        _write(root / "secrets/member-models.json", _json_bytes(members))
+    return {"bound": True, "member": member, "id": profile_id, "model": binding["model"],
+            "base_url": binding["base_url"], "protocol": protocol, "provider_verified": False,
+            "note": "仅保存成员绑定；须在无活任务的维护窗口按原方式重启生效；未验证模型调用"}
+
+
+def unbind_member_model(state_dir: Path | str, member: str) -> dict:
+    root = _root(state_dir)
+    member = _member_id(member)
+    with _locked(root):
+        _configuration(root)
+        members = _member_models(root)
+        removed = members.pop(member, None) is not None
+        if removed:
+            _write(root / "secrets/member-models.json", _json_bytes(members))
+    return {"unbound": removed, "member": member,
+            "note": "须在无活任务的维护窗口按原方式重启生效" if removed else "该成员没有绑定；未修改"}
+
+
+def list_member_models(state_dir: Path | str) -> dict:
+    """Names and addresses only; never a key."""
+    root = _root(state_dir)
+    with _locked(root):
+        _configuration(root)
+        profiles = _model_profiles(root)
+        rows = []
+        for member, choice in sorted(_member_models(root).items()):
+            saved = profiles.get(choice["profile"])
+            binding = _profile_binding(saved) if saved is not None else None
+            rows.append({"member": member, "id": choice["profile"], "protocol": choice["protocol"],
+                         "model": binding["model"] if binding else None,
+                         "base_url": binding["base_url"] if binding else None,
+                         "candidate_present": binding is not None})
+        return {"members": rows}
+
+
 def configure_capabilities(state_dir: Path | str, tool_ids: list[str]) -> dict:
     """Explicit local-owner grant; never enable future/unlisted actions implicitly."""
     from native_capability_host import declared_capability_actions, validate_ids
@@ -675,7 +770,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="军团本地实例：初始化、配置和启动原服务")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("init", "configure-model", "save-model-profile", "list-model-profiles",
-                 "activate-model-profile", "configure-capabilities", "configure-goals",
+                 "activate-model-profile", "bind-member-model", "unbind-member-model",
+                 "list-member-models", "install-member", "configure-capabilities", "configure-goals",
                  "configure-public-origin", "configure-devices", "configure-mobile",
                  "reap-devices", "dsh-config", "check", "serve"):
         command = commands.add_parser(name)
@@ -701,6 +797,14 @@ def main(argv=None) -> int:
                                  help="已核实的省略 detail 语义；不声明则省略 detail 的图片保持 inline")
         elif name == "activate-model-profile":
             command.add_argument("--id", required=True, help="明确选择已保存的候选")
+        elif name == "install-member":
+            command.add_argument("--member", required=True, help="成员目录里的 ID，例如 pi、qwen-code")
+        elif name in ("bind-member-model", "unbind-member-model"):
+            command.add_argument("--member", required=True, help="成员 ID，例如 cc、pi；不含 codex")
+            if name == "bind-member-model":
+                command.add_argument("--id", required=True, help="已保存的候选 ID")
+                command.add_argument("--protocol", required=True, choices=MEMBER_PROTOCOLS,
+                                     help="该候选地址实际提供的协议；不猜测、不转换")
         elif name == "configure-capabilities":
             command.add_argument("--tool", action="append", default=[],
                                  help="明确授权的 external_capability 或 local_mcp 工具 ID，可重复")
@@ -764,12 +868,25 @@ def main(argv=None) -> int:
             result = list_model_profiles(args.state_dir)
         elif args.command == "activate-model-profile":
             result = activate_model_profile(args.state_dir, args.id)
+        elif args.command == "bind-member-model":
+            result = bind_member_model(args.state_dir, args.member, args.id, args.protocol)
+        elif args.command == "unbind-member-model":
+            result = unbind_member_model(args.state_dir, args.member)
+        elif args.command == "list-member-models":
+            result = list_member_models(args.state_dir)
         else:
             env, config = environment(args.state_dir)
             # Set all state/credential sources before importing the existing service.
             os.environ.clear()
             os.environ.update(env)
-            if args.command == "reap-devices":
+            if args.command == "install-member":
+                # 装进本实例自己的 repos/ 与 runtimes/；不调用模型，也不替它绑定模型。
+                import external_agent_registry
+                report = external_agent_registry.install(_member_id(args.member), confirm=True)
+                result = {"member": args.member, "ok": bool(report.get("ok")),
+                          "error": str(report.get("error") or "")[:400],
+                          "note": "只完成安装；仍需 bind-member-model 并重启服务后才进入派单池"}
+            elif args.command == "reap-devices":
                 if "mobile" in config:
                     import agentbay_mobile
                     result = agentbay_mobile.reap(config["user"])
@@ -802,7 +919,8 @@ def main(argv=None) -> int:
                     server.main()
                     return 0
         print(json.dumps(result, ensure_ascii=False))
-        return 1 if args.command == "reap-devices" and result.get("ok") is False else 0
+        return 1 if (args.command in ("reap-devices", "install-member")
+                     and result.get("ok") is False) else 0
     except (ValueError, OSError, UnicodeError):
         print("本地配置不可用：请核对实例目录、用户、端口和私有文件权限；未改用其它凭据。",
               file=sys.stderr)

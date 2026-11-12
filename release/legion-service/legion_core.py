@@ -2598,10 +2598,18 @@ def _explicit_provider_binding(key: str, binding: Optional[dict] = None) -> Opti
     """Private execution configuration; never put credentials in task context."""
     if binding is not None:
         return dict(binding)
-    if key == "codex" and os.environ.get("LEGION_CODEX_TRANSPORT", "").strip().lower() == "responses":
+    if os.environ.get("LEGION_CODEX_TRANSPORT", "").strip().lower() == "responses":
         import model_registry
-        return model_registry.explicit_responses_binding()
+        if key == "codex":
+            return model_registry.explicit_responses_binding()
+        # 其他成员只用自己声明的绑定（含协议）；没有声明就没有绑定，不借 Codex 的授权。
+        return model_registry.explicit_member_bindings().get(key)
     return None
+
+
+def _binding_protocol(provider_binding: Optional[dict]) -> str:
+    """Declared wire protocol of this binding; Codex's own binding is Responses."""
+    return str((provider_binding or {}).get("protocol") or "responses")
 
 
 def _provider_configuration_error(key: str) -> dict:
@@ -2670,7 +2678,7 @@ def _run_core_inprocess(key: str, task: str, qhash: str,
             project_context=project_context or {}, peer_source_context="",
             stable_context=_stable_prelude(execution_depth),
             prompt_cache_key=_hr.prompt_cache_key(user_id, session_id or f"{key}:{qhash}", key),
-            model_protocol="responses" if provider_binding else "")
+            model_protocol=_binding_protocol(provider_binding) if provider_binding else "")
         runtime_env = _runtime_context_env(runtime_brief, task_facts, capability_policy,
                                            task_memory, project_context, prior_attempts, key=key, qhash=qhash)
         ctx.context_refs = json.loads(runtime_env["MEYO_CONTEXT_REFS_JSON"])
@@ -2682,8 +2690,8 @@ def _run_core_inprocess(key: str, task: str, qhash: str,
         if provider_binding:
             runtime_env.update(MEYO_UNIFIED_MODEL=model_override, MEYO_UNIFIED_APPID=appid,
                                AIGC_APPID=appid, MEYO_UNIFIED_GATEWAY=gateway,
-                               MEYO_MODEL_PROTOCOL="responses", LEGION_CODEX_TRANSPORT="responses",
-                               MEYO_FALLBACK_MODELS="[]")
+                               MEYO_MODEL_PROTOCOL=_binding_protocol(provider_binding),
+                               LEGION_CODEX_TRANSPORT="responses", MEYO_FALLBACK_MODELS="[]")
     except Exception as exc:
         return {"key": key, "status": "error", "final": "", "elapsed": round(time.time()-t0, 2), "error": f"HarnessCtx:{exc}"}
     # 设进程内事件 sink + per-call runtime env。后者由 harness_registry._run_live 合并到
@@ -2833,7 +2841,7 @@ def _run_external_inprocess(key: str, task: str, qhash: str,
             project_context=project_context or {}, peer_source_context="",
             stable_context=_stable_prelude(execution_depth),
             prompt_cache_key=_hr.prompt_cache_key(user_id, session_id or f"{key}:{qhash}", key),
-            model_protocol="responses" if provider_binding else "")
+            model_protocol=_binding_protocol(provider_binding) if provider_binding else "")
         deadline = _runtime_deadline(timeout_s)
     except Exception as exc:
         return {"key": key, "status": "error", "final": "", "elapsed": round(time.time()-t0, 2),
@@ -2854,7 +2862,8 @@ def _run_external_inprocess(key: str, task: str, qhash: str,
            "MEYO_DIRECTION": direction, "MEYO_EXECUTION_DEPTH": execution_depth,
            "MEYO_TASK_IDEMPOTENCY_KEY": str((task_facts or {}).get("idempotency_key") or "")}
     if provider_binding:
-        env.update(MEYO_UNIFIED_MODEL=model_override, MEYO_MODEL_PROTOCOL="responses",
+        env.update(MEYO_UNIFIED_MODEL=model_override,
+                   MEYO_MODEL_PROTOCOL=_binding_protocol(provider_binding),
                    LEGION_CODEX_TRANSPORT="responses", MEYO_FALLBACK_MODELS="[]")
     try:
         env.update(_runtime_context_env(runtime_brief, task_facts, capability_policy,
@@ -3030,7 +3039,8 @@ def _run_harness_isolated(key: str, task: str, qhash: str, timeout_s: float,
                    MEYO_UNIFIED_APPID=provider_binding["api_key"],
                    AIGC_APPID=provider_binding["api_key"],
                    MEYO_UNIFIED_GATEWAY=provider_binding["base_url"],
-                   MEYO_MODEL_PROTOCOL="responses", LEGION_CODEX_TRANSPORT="responses")
+                   MEYO_MODEL_PROTOCOL=_binding_protocol(provider_binding),
+                   LEGION_CODEX_TRANSPORT="responses")
     # 权限下放(2026-08-28·先 penguin 一家):把 session/记忆单元 + 本单已试模型 + 前几轮
     # 结构化结果通过 env 下放给 harness,让已 ctx 化的 adapter(HarnessCtx.from_env)拿到,
     # 自己决定续 session/避开坏模型/看着失败换招。老家(未 ctx 化)不读这些 env,行为零变。
@@ -7972,6 +7982,11 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
         env_default = os.environ.get("LEGION_DEFAULT_KEYS", "").strip()
         if env_default:
             keys = [k.strip() for k in env_default.split(",") if k.strip() in valid]
+        elif isinstance(_candidate_harnesses, (list, tuple)) and _candidate_harnesses:
+            # 用户/调用方点名的成员就是本单队伍：按点名顺序取其中当前可跑的，
+            # 不再用内置五家的固定名单过滤掉动态接入的成员。
+            keys = list(dict.fromkeys(str(k) for k in _candidate_harnesses
+                                      if str(k) in valid and str(k) in runnable))
         else:
             fast_order = ["codex", "hermes", "cc", "jcode", "penguin"]
             keys = [k for k in fast_order if k in valid and k in runnable]
@@ -12666,6 +12681,64 @@ def _probe_appid_only() -> dict:
     return out
 
 
+def _deployment_unbound_members(clis: dict) -> list:
+    """部署实例没有公司密钥池：装好但没有自己模型绑定的成员不进派单池。
+
+    只陈述事实(谁装了却没绑定)·不替它借别家的授权；绑定后按原方式重启即进池。
+    """
+    if not _personal_responses_planner_enabled():
+        return []
+    import model_registry as _bound_models
+    unbound = []
+    for key, installed in clis.items():
+        if not installed:
+            continue
+        status = _bound_models.explicit_responses_status(key)
+        if not (status and status.get("configured")):
+            unbound.append(key)
+    return sorted(unbound)
+
+
+def auto_union_authors(plan: Optional[dict] = None, candidate_pool=None) -> list:
+    """自动模式的并集队伍：绑了不同模型的可跑成员，各自独立完成同一个用户目标。
+
+    只在部署实例里、且至少两家成员绑定的模型互不相同时成立——同一个模型跑两遍不是异构，
+    不值得多花一份钱。返回按可跑顺序去重后的主创名单；不足两家返回空列表(调用方保持单主创)。
+    LEGION_AUTO_UNION_AUTHORS 控制主创数(默认 2·上限 3·设为 1 即关闭)；
+    多出来的可跑成员留给收口时的独立审计，不占主创名额。
+    """
+    try:
+        limit = min(3, int(os.environ.get("LEGION_AUTO_UNION_AUTHORS", "2")))
+    except (TypeError, ValueError):
+        limit = 2
+    if limit < 2 or not _personal_responses_planner_enabled():
+        return []
+    source = plan if isinstance(plan, dict) else {}
+    policy = source.get("team_policy") if isinstance(source.get("team_policy"), dict) else {}
+    try:
+        limit = min(limit, int(policy.get("max_agents", limit)))
+    except (TypeError, ValueError):
+        return []
+    if limit < 2 or source.get("solo") is True:
+        return []
+    valid = set(_harness_keys())
+    pool = set(candidate_pool or [])
+    authors, seen_models = [], set()
+    for key in _aigc_ready().get("runnable_clis") or []:
+        key = str(key)
+        if key not in valid or (pool and key not in pool):
+            continue
+        try:
+            model = str((_explicit_provider_binding(key) or {}).get("model") or "").strip().lower()
+        except ValueError:
+            return []
+        if not model or model in seen_models:
+            continue
+        seen_models.add(model)
+        authors.append(key)
+    return authors[:limit] if len(authors) >= 2 else []
+
+
 def _aigc_ready(force: bool = False, cached_only: bool = False) -> dict:
     """探测军团出答案的真实依赖:AIGC 网关配置(appid) + CLI 家是否在。
 
@@ -12727,6 +12800,8 @@ def _aigc_ready(force: bool = False, cached_only: bool = False) -> dict:
         # appid 探测是秒级(读 env + local models.json)·占位分支也做全·保持 health 契约真实
         # (只有慢的 runnable_clis 用占位·appid 字段不延后)。
         _ap = _probe_appid_only()
+        # 占位也不把没有绑定的成员放进部署实例的派单池(同下方真实探测的口径)。
+        _all -= set(_deployment_unbound_members({k: True for k in _all}))
         _ap.update({"clis": {k: True for k in _all}, "runnable_clis": sorted(_all), "warming": True})
         return _ap
     import shutil
@@ -12814,6 +12889,11 @@ def _aigc_ready(force: bool = False, cached_only: bool = False) -> dict:
         _results = list(_ex.map(lambda k: (k, _dep_ok(k)), adapter_keys))
     for _k, _ok in _results:
         out["clis"][_k] = _ok
+    _unbound = _deployment_unbound_members(out["clis"])
+    for _k in _unbound:
+        out["clis"][_k] = False
+    if _unbound:
+        out["unbound_members"] = _unbound
     out["runnable_clis"] = [k for k, v in out["clis"].items() if v]
     _AIGC_READY_CACHE["data"] = out
     _AIGC_READY_CACHE["ts"] = time.time()
@@ -13277,6 +13357,17 @@ def health(probe_gateway: bool = False, fast: bool = False) -> dict:
         import shutil
         executable = bool(shutil.which("codex"))
         configured = explicit["configured"]
+        # Members with their own declared binding join the same scoped view.
+        # Their installed state comes from the existing probe cache; health
+        # itself never starts a cold probe or a model call.
+        try:
+            bound_members = sorted(model_registry.explicit_member_bindings())
+        except ValueError:
+            bound_members = []
+        member_clis = {}
+        if bound_members:
+            probed = _aigc_ready(cached_only=True).get("clis") or {}
+            member_clis = {member: bool(probed.get(member)) for member in bound_members}
         # This contribution is scoped to the configured member. It neither
         # grants another member its key nor rewrites the legacy execution pool.
         # Check current config before any old health cache; no model probe here.
@@ -13286,11 +13377,12 @@ def health(probe_gateway: bool = False, fast: bool = False) -> dict:
             "harness_count": len(_HARNESS_LIST_CACHE.get("data") or []),
             "aigc": {"appid_configured": configured, "appid_deployable": configured,
                      "appid_source": "operator_binding" if configured else None,
-                     "clis": {"codex": executable},
-                     "runnable_clis": ["codex"] if executable else [],
+                     "clis": {"codex": executable, **member_clis},
+                     "runnable_clis": [*(["codex"] if executable else []),
+                                       *[member for member, ok in member_clis.items() if ok]],
                      "provider_verified": False, "warming": False},
             "ready_to_serve": bool(_ORCH_OK and configured and executable),
-            "warming": False, "readiness_scope": ["codex"],
+            "warming": False, "readiness_scope": ["codex", *bound_members],
             "readiness_basis": "configuration_and_executable", "provider_verified": False,
             "fallback_model": {"model": explicit["model"],
                                "reason": "已配置·未验证模型调用" if configured else "当前无有效模型配置"},

@@ -393,10 +393,11 @@ def _catalog_models(direction: str = "programming") -> dict:
 def list_models(direction: str = "programming", *, harness_key: str = "") -> dict:
     """Overlay the named member's configuration without making it a global default."""
     status = explicit_responses_status(harness_key or "codex")
-    if harness_key == "codex" and status is not None:
+    if harness_key and status is not None:
         rows = ([{**status, "usable": True, "stable": False,
                   "stability": "已配置·未验证", "stability_icon": "•",
-                  "note": "当前 Codex 配置；尚未验证模型调用"}]
+                  "note": ("当前 Codex 配置；尚未验证模型调用" if harness_key == "codex"
+                           else "当前成员配置；尚未验证模型调用")}]
                 if status["configured"] and direction in
                 ("programming", "general_chat_high_coverage") else [])
         return {"direction": direction, "harness": harness_key, "candidates": rows,
@@ -863,10 +864,76 @@ def explicit_responses_binding(environment: dict | None = None) -> dict:
     return {"model": model, "base_url": endpoint["base_url"], "api_key": key, **extra}
 
 
+MEMBER_BINDINGS_ENV = "LEGION_MEMBER_MODEL_BINDINGS"
+MEMBER_PROTOCOLS = ("responses", "anthropic-messages", "openai-completions", "cursor-agent")
+# cursor-agent 不是模型接口：密钥交给官方 Cursor SDK 驱动 Cursor 代理，地址只作“这是 Cursor 密钥”的声明。
+CURSOR_AGENT_BASE_URL = "https://api.cursor.com"
+
+
+def member_protocol_matches_address(protocol: str, base_url: str) -> bool:
+    """A Cursor key is only ever declared against Cursor, and only for cursor-agent."""
+    is_cursor = str(base_url or "").rstrip("/") == CURSOR_AGENT_BASE_URL
+    return is_cursor == (protocol == "cursor-agent")
+
+
+def explicit_member_bindings(environment: dict | None = None) -> dict:
+    """Operator-declared bindings for members other than Codex.
+
+    A member only ever receives its own declared provider; there is no shared
+    pool and no fallback between members. Private return values belong only in
+    execution arguments/environment, not plans, prompts or public catalogs.
+    """
+    source = os.environ if environment is None else environment
+    raw = source.get(MEMBER_BINDINGS_ENV)
+    if not raw:
+        return {}
+    try:
+        declared = json.loads(raw)
+        if not isinstance(declared, dict):
+            raise ValueError()
+        bindings = {}
+        for member, config in declared.items():
+            if (not isinstance(member, str) or member == "codex"
+                    or not _re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", member)
+                    or not isinstance(config, dict)
+                    or set(config) != {"model", "base_url", "api_key_env", "protocol"}
+                    or config["protocol"] not in MEMBER_PROTOCOLS
+                    or not isinstance(config["api_key_env"], str)):
+                raise ValueError()
+            # The shared validator checks the model name, an https (or loopback)
+            # base URL without embedded credentials, and a present private key.
+            provider = explicit_responses_binding({
+                "LEGION_CODEX_RESPONSES_BINDING": json.dumps({
+                    name: config[name] for name in ("model", "base_url", "api_key_env")}),
+                config["api_key_env"]: source.get(config["api_key_env"]),
+            })
+            if not member_protocol_matches_address(config["protocol"], provider["base_url"]):
+                raise ValueError()
+            bindings[member] = {"model": provider["model"], "base_url": provider["base_url"],
+                                "api_key": provider["api_key"], "protocol": config["protocol"]}
+        return bindings
+    except (TypeError, ValueError):
+        raise ValueError("成员模型绑定无效；每个成员需要完整的 "
+                         "model/base_url/api_key_env/protocol 及对应授权") from None
+
+
 def explicit_responses_status(harness_key: str) -> dict | None:
     """Current allowlisted projection, never a cached credential or runtime verdict."""
-    if harness_key != "codex" or os.environ.get("LEGION_CODEX_TRANSPORT", "").strip().lower() != "responses":
+    if os.environ.get("LEGION_CODEX_TRANSPORT", "").strip().lower() != "responses":
         return None
+    if harness_key != "codex":
+        # Other members are scoped to their own declaration. An absent or broken
+        # declaration leaves the member unbound; it never borrows Codex's key.
+        try:
+            binding = explicit_member_bindings().get(harness_key)
+        except ValueError:
+            return None
+        if binding is None:
+            return None
+        return {"model": binding["model"], "display_name": binding["model"],
+                "source": "operator_binding", "harnesses": [harness_key],
+                "configured": True, "verified": False, "provider_verified": False,
+                "protocol": binding["protocol"]}
     status = {"model": None, "display_name": None, "source": "operator_binding",
               "harnesses": ["codex"], "configured": False, "verified": False,
               "provider_verified": False}

@@ -56,6 +56,76 @@ MEYO="/绝对路径/个人版源码/meyo.py"
 按个人实例原有方式正常停止并重新启动服务（原 `serve` 入口）；不要并行启动第二个实例。
 旧原生断点的提供方绑定限制仍保留，不保证历史能跨提供方继续。
 
+## 给其他成员各绑一个候选
+
+`secrets/model.json` 只属于 Codex。其他成员（例如 `cc`、`pi`）要进入派单池，
+需要各自绑定一个已保存的候选，并声明该地址实际提供的协议；不猜测、不转换协议。
+
+```sh
+# 模型接口协议三选一：responses / anthropic-messages / openai-completions
+# （Cursor 密钥不是模型接口，用 cursor-agent，见下文“用 Cursor 的模型当成员”）
+"$PYTHON" -I "$MEYO" bind-member-model --state-dir "$STATE" \
+  --member cc --id "已保存的候选ID" --protocol anthropic-messages
+
+"$PYTHON" -I "$MEYO" list-member-models --state-dir "$STATE"
+"$PYTHON" -I "$MEYO" unbind-member-model --state-dir "$STATE" --member cc
+```
+
+- 绑定保存在实例的 `secrets/member-models.json`，只记成员、候选 ID 和协议，
+  不含密钥；列表只输出成员、候选 ID、协议、model、base_url。
+- 每个成员只拿到自己的那份授权：不与 Codex 或其他成员共用，失败后也不换用别家的密钥。
+- 部署实例里，已安装但没有绑定的成员不进派单池；绑定后在无活任务的维护窗口
+  按原方式重启即生效。成员 ID 为小写字母、数字、`_`、`.`、`-`；`codex` 不在此绑定。
+- Claude Code 绑定 `anthropic-messages` 后由原生命令行直连该地址；
+  同一实例若另行配置了本机路由（`LEGION_CCR_BASE_URL`），以本机路由为准。
+- 绑定不等于提供方可用：不调用模型、不探测云端。启动时若绑定引用的候选不存在，
+  服务拒绝启动并说明原因。
+
+### 先把成员装进本实例
+
+成员目录里的外部成员（例如 `pi`、`qwen-code`）用同一个入口安装到本实例自己的
+`repos/` 与 `runtimes/`，不调用模型，也不替它绑定模型：
+
+```sh
+"$PYTHON" -I "$MEYO" install-member --state-dir "$STATE" --member pi
+```
+
+安装需要该成员声明的运行环境（多数为 Node 20 以上）并会联网下载；失败时返回码非零并给出原因。
+装好后仍需 `bind-member-model` 并重启，才进入派单池。
+
+### 用 Cursor 的模型当成员
+
+Cursor 的 API 密钥不是模型接口，不能给 Codex、Claude Code、pi 这些成员当模型地址用。
+它驱动的是 Cursor 自己的代理（官方 `@cursor/sdk`，本地运行时：代理循环和文件读写在本机任务目录里，
+模型推理走 Cursor 托管的模型）。目录里为此提供三个成员位：`cursor-claude`、`cursor-gpt`、`cursor-gemini`，
+各绑一个不同的模型即可参与并集。
+
+```sh
+# 地址固定为 https://api.cursor.com（只作“这是 Cursor 密钥”的声明），model 填 Cursor 的模型 ID。
+"$PYTHON" -I "$MEYO" save-model-profile --state-dir "$STATE" --id cursor-claude \
+  --model "Cursor 模型 ID" --base-url https://api.cursor.com --api-key-file "私有密钥文件"
+"$PYTHON" -I "$MEYO" install-member --state-dir "$STATE" --member cursor-claude
+"$PYTHON" -I "$MEYO" bind-member-model --state-dir "$STATE" \
+  --member cursor-claude --id cursor-claude --protocol cursor-agent
+```
+
+- `cursor-agent` 只能绑定地址为 `https://api.cursor.com` 的候选，该地址的候选也只能用 `cursor-agent`。
+- 需要 Node 22.13 以上。可用的模型 ID 因账号而异；费用按 Cursor 的计费规则记在密钥所属账号上。
+- 密钥只经环境变量交给成员进程，进程取出后即从自身环境删除：不进命令行、不写入任务目录、不出现在输出里。
+- 同一会话再次派给同一成员时接着上次的 Cursor 对话做；对话状态存在任务目录的 `.sessions/` 下，不随成品导出。
+- 无人值守时代理直接执行命令和改文件，不逐次询问。主机装有 `bubblewrap` 时可设
+  `LEGION_CURSOR_SANDBOX=1` 启用 SDK 沙箱（写入限于任务目录，默认禁止联网）。
+
+### 绑了不同模型的成员会一起做同一个任务
+
+自动模式下，需要实做的任务不再只交给一位主创：实例里至少有两家可跑成员、
+且它们绑定的模型互不相同时，默认由两家各用自己的模型独立完成同一目标；
+还有第三家可跑成员时，由它在收口时匿名比选。同一个模型绑给两家不算异构，仍按单主创执行。
+
+- `LEGION_AUTO_UNION_AUTHORS` 控制同时创作的家数：默认 2，上限 3，设为 1 即恢复单主创。
+- 请求里点名成员、限定 `max_agents` 为 1 或声明 `solo` 时，以请求为准。
+- 多一家就多一份模型费用与并发占用；小内存主机建议保持默认的 2。
+
 ## 已确认的看图能力
 
 支持 Responses 协议不代表模型能看图。操作员在核实具体模型与提供方后，

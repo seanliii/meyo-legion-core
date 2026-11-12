@@ -530,6 +530,17 @@ def _credentials(item: dict, env: dict[str, str] | None = None, *,
     spec = item.get("credentials") or {}
     any_of = [str(name) for name in spec.get("any_of") or []]
     all_of = [str(name) for name in spec.get("all_of") or []]
+    # 部署实例：成员自己的显式模型绑定就是它的凭据(执行时由父层按次下发)；
+    # 没有绑定的成员仍按原规则如实报缺凭据，不借别家的授权。
+    if merged.get("LEGION_CODEX_TRANSPORT", "").strip().lower() == "responses":
+        try:
+            import model_registry as _bound_models
+            if item.get("key") in _bound_models.explicit_member_bindings(merged):
+                return {"ready": True, "missing": [], "source": "member_binding",
+                        "accepted": sorted(set(any_of + all_of)),
+                        "signup_url": spec.get("signup_url"), "help": spec.get("help", "")}
+        except (ImportError, ValueError):
+            pass
     missing_all = [name for name in all_of if not merged.get(name)]
     any_ok = not any_of or any(merged.get(name) for name in any_of)
     missing = missing_all + ([] if any_ok else any_of)
@@ -1309,6 +1320,14 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
     # 军团派活的 CLI 子进程永远不该继承这个变量——spawn 前一律剥掉,一次修全部家。
     run_env = _strip_dead_proxy({**os.environ, **(env or {})})
     run_env.pop("ELECTRON_RUN_AS_NODE", None)
+    # 成员子进程只带本次下发给它的授权：其他成员的私有槽位和绑定声明不随环境下传；
+    # 这家有自己的显式绑定时，Codex 的那份也不下传。
+    _own_binding = bool((env or {}).get("MEYO_MODEL_PROTOCOL"))
+    for _name in list(run_env):
+        if (_name.startswith("MEYO_PERSONAL_MEMBER_KEY_") or _name == "LEGION_MEMBER_MODEL_BINDINGS"
+                or (_own_binding and _name in ("MEYO_PERSONAL_PROVIDER_KEY",
+                                               "LEGION_CODEX_RESPONSES_BINDING"))):
+            run_env.pop(_name, None)
     appid = run_env.get("MEYO_UNIFIED_APPID") or run_env.get("AIGC_APPID") or ""
     if not appid:
         try:
@@ -1349,7 +1368,10 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
     compat = item.get("model_compat") or {}
     if model in compat:
         model = str(compat[model])
-    context = _context(item, cwd, {"task": task, "model": model, "appid": appid,
+    # 成员显式绑定声明的协议(没有声明=既有 Chat Completions 网关)；模板用 {model_api} 取原生 API 名。
+    model_api = {"responses": "openai-responses", "anthropic-messages": "anthropic-messages"}.get(
+        str(run_env.get("MEYO_MODEL_PROTOCOL") or ""), "openai-completions")
+    context = _context(item, cwd, {"task": task, "model": model, "appid": appid, "model_api": model_api,
                                    "gateway": gateway, "session_id": _safe_key(native_session_id) or "external",
                                    "session_dir": session_dir,
                                    "user_id": str(runtime_context.get("user_id") or "default"),

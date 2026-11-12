@@ -2675,6 +2675,17 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
                                            "scope": "harness", "tool": "cc-router",
                                            "code": "cc-router-config", "message": _message},
                         "elapsed": round(_t.time() - t0, 1), "model_used": ctx.model}
+        # 成员自己的显式绑定(部署实例·无本机 router)：声明为 Anthropic 协议的地址由原生 CLI
+        # 直连；只用本次 ctx 里这家自己的 model/授权/地址，不借本机 router 或别家的授权。
+        _direct_anthropic = (not _deployment_ccr_url
+                             and getattr(ctx, "model_protocol", "") == "anthropic-messages")
+        if _direct_anthropic and not (ctx.model and ctx.appid and ctx.gateway):
+            _message = "Claude Code 的成员模型绑定不完整：需要 model、授权和 Anthropic 协议地址；未启动原生调用"
+            return {"final": "", "status": "error", "error": _message,
+                    "fail_kind": "model_config",
+                    "error_envelope": {"category": "model_config", "retryable": False,
+                                       "scope": "request", "message": _message},
+                    "elapsed": round(_t.time() - t0, 1), "model_used": ctx.model}
         # headless(-p)默认不放行工具 → cc 想抓网页/跑 bash 却调不动,只能回"我会去做"就交差。
         # 军团是用户自己的受控环境,放行工具权限,cc 才能真调工具(WebFetch/Bash)干活而非说空话。
         # 根因3 修复:见 CLAUDE.md「军团为什么不智能」。可用 env 关掉(默认开)。
@@ -2688,6 +2699,8 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
                "--include-partial-messages"]
         if _deployment_ccr_model:
             cmd += ["--model", _deployment_ccr_model]
+        elif _direct_anthropic:
+            cmd += ["--model", ctx.model]
         # ★ --bare 彻底跳过 hooks/LSP/plugin/auto-memory/CLAUDE.md自动加载/keychain(官方 minimal mode)。
         # 用户 2026-09-01 loop 真跑揪出:旧 --settings {"hooks":{}} 只是【叠加】一个空 hooks 来源·挡不住
         # 用户级/项目级已有的 hook(实测 cc --resume 仍触发 SessionStart:resume hook·final 被 hook_started
@@ -2768,6 +2781,17 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
             _cc_env["SHELL"] = "/bin/bash"
             # 清除继承的直连 key，避免与 router 认证混用；ctx.appid 属于上游 provider。
             _cc_env.pop("ANTHROPIC_API_KEY", None)
+        elif _direct_anthropic:
+            _cc_env["ANTHROPIC_BASE_URL"] = str(ctx.gateway).rstrip("/")
+            _cc_env["ANTHROPIC_AUTH_TOKEN"] = ctx.appid
+            _cc_env["SHELL"] = "/bin/bash"
+            _cc_env.pop("ANTHROPIC_API_KEY", None)
+            # 这家的子进程只带自己的授权：别家成员与 Codex 的私有槽位不随环境下传。
+            for _name in list(_cc_env):
+                if (_name.startswith("MEYO_PERSONAL_MEMBER_KEY_")
+                        or _name in ("MEYO_PERSONAL_PROVIDER_KEY", "LEGION_CODEX_RESPONSES_BINDING",
+                                     "LEGION_MEMBER_MODEL_BINDINGS")):
+                    _cc_env.pop(_name, None)
         # ★本地 cc-router(ANTHROPIC_BASE_URL)死代理检测+降级(铁律0·2026-09-02 真跑钉死):
         #   cc 的 claude 子进程继承 ANTHROPIC_BASE_URL=127.0.0.1:3456(用户装的本机 cc-router)。
         #   router 半死(健康检查 OK 但 /v1/messages 30s 无响应)→claude 全程纯等·user CPU 仅 0.85s·

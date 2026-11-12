@@ -824,6 +824,7 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
 
         def _reader():
             last_activity = 0.0
+            last_stream_kind = None
             try:
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -847,6 +848,16 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
                         records.append(record)
                         event = _event_from_json(record, "cli")
                         if event_cb and event:
+                            # 逐字流式增量(同一种事件连续几千条)不是新步骤：完整记录仍在
+                            # records 里用于取终稿，展示通道同类事件每秒最多报一次。
+                            now = time.monotonic()
+                            stream_kind = (event.get("kind") if event.get("t") == "harness_event"
+                                           and not event.get("native_session_id") else None)
+                            if stream_kind and stream_kind == last_stream_kind and now - last_activity < 1:
+                                continue
+                            last_stream_kind = stream_kind
+                            if stream_kind:
+                                last_activity = now
                             event_cb(event)
                     except Exception:
                         if event_cb and line.strip():

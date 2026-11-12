@@ -152,3 +152,33 @@ def test_wrapper_native_cleanup_is_distinct_from_scope_cleanup(
         cleanup_group(peer.pid)
         peer.wait(timeout=3)
         registry.unregister(peer.pid)
+
+
+def test_token_stream_is_shown_as_one_ongoing_step_not_thousands(runtime, tmp_path):
+    """A member streaming its answer token by token is one step in progress.
+
+    Every record still reaches the transport result; only the display channel is
+    spared the repeats, and distinct events (tools, turn boundaries) are never dropped.
+    """
+    transport = importlib.import_module("external_agent_transports")
+    code = (
+        "import json\n"
+        "emit=lambda **k: print(json.dumps(k),flush=True)\n"
+        "emit(type='turn_start')\n"
+        "[emit(type='message_update',delta='x') for _ in range(400)]\n"
+        "emit(type='tool_execution_start',toolName='write',toolCallId='c1',args={'path':'a'})\n"
+        "emit(type='tool_execution_end',toolName='write',toolCallId='c1',result='ok',isError=False)\n"
+        "[emit(type='message_update',delta='y') for _ in range(400)]\n"
+        "emit(type='turn_end')\n"
+    )
+    spec = {"command": [sys.executable, "-c", code], "streaming_protocol": "json-events"}
+    seen = []
+    result = transport.run_cli(spec, {"workdir": str(tmp_path)}, dict(os.environ), 20,
+                               event_cb=seen.append)
+    assert result["returncode"] == 0
+    kinds = [event.get("kind") or event.get("t") for event in seen]
+    assert 2 <= kinds.count("message_update") <= 6, kinds.count("message_update")
+    assert kinds.count("turn_start") == 1 and kinds.count("turn_end") == 1
+    assert [event["t"] for event in seen if event["t"].startswith("tool_")] == ["tool_started", "tool_end"]
+    order = [kind for kind in kinds if kind != "message_update"]
+    assert order == ["turn_start", "tool_started", "tool_end", "turn_end"]

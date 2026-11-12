@@ -4493,11 +4493,26 @@ class Handler(BaseHTTPRequestHandler):
                             # may start directly with the initial author.
                             _declared_scope = ((_plan.get("team_policy") or {}).get("candidate_harnesses")
                                                if isinstance(_plan.get("team_policy"), dict) else None)
-                            _author_binding = ({} if _declared_scope is not None else
+                            # 部署里绑了不同模型的成员时，需要实做的任务由它们各自独立完成，
+                            # 收口再由不参与创作的成员匿名比选——并集命中率高于任何单家。
+                            try:
+                                _union_authors = ([] if _declared_scope is not None else
+                                                  LEGION.auto_union_authors(_plan, _candidate_pool))
+                            except Exception:
+                                _union_authors = []
+                            _author_binding = ({} if _declared_scope is not None or _union_authors else
                                 _author_runtime.bind_initial_author_request(
                                     question, _plan, valid=set(LEGION._harness_keys()),
                                     runnable=set(LEGION._aigc_ready().get("runnable_clis") or [])))
-                            if _author_binding.get("bound"):
+                            if _union_authors:
+                                if not isinstance(_plan.get("success_audit"), dict):
+                                    _plan["success_audit"] = {"enabled": True}
+                                _auto_plan = {"ok": True, "suggested_mode": "pk",
+                                              "tasks": {key: question for key in _union_authors},
+                                              "reason": "异构并集：" + "、".join(_union_authors)
+                                                        + " 各用自己的模型独立完成同一目标，收口匿名比选",
+                                              "via": "auto_union_authors"}
+                            elif _author_binding.get("bound"):
                                 _plan = dict(_author_binding["plan"])
                                 mode = "single"
                                 _auto_plan = {"ok": False, "reason": _author_binding["source"]}
