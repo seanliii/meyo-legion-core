@@ -1296,6 +1296,16 @@ test("历史轮次：相同任务的八条原记录不折叠成两张卡，也�
   assert.equal(context._teamReplay.get("__ut_team_1").msgEl, pairs[7][1]);
 });
 
+test('运行中会话快照展示原记录模式；缺失时不猜实际模式',()=>{
+  const {context}=historyScreen();context.setTimeout=()=>{};
+  const seen=[];context._renderModeFacts=(card,data,final)=>seen.push({recorded:card._recordedMode,final});
+  for(const mode of ['relay','']){
+    const [,card]=context.renderSessionTurn({team_id:'__ut_live_'+mode,question:'feedback',status:'running',mode},-1);
+    assert.equal(card._recordedMode,mode);
+    assert.deepEqual(seen.at(-1),{recorded:mode,final:undefined});
+  }
+});
+
 test("历史轮次：同一轮更新仍复用原卡和气泡，在线未编号卡可被快照接管", () => {
   const screen = historyScreen();
   const turn = { question: "same", result: {

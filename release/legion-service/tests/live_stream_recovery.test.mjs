@@ -35,13 +35,14 @@ function fixture(){
     clearTimeout(id){timers.delete(id);},
     sessionStorage:{setItem:(k,v)=>storage.set(k,v),getItem:k=>storage.get(k),removeItem:k=>storage.delete(k)},
     $:s=>s==='#send'?sendButton:s==='#modeSelect'?{value:'auto'}:null,
-    newLegionMsg(){const parts=new Map(['.progress','.pt','.st','.proc-detail','.legion-answers'].map(s=>[s,node()]));
+    newLegionMsg(){const parts=new Map(['.progress','.pt','.st','.proc-detail','.legion-answers',':scope > .who > .la-badge'].map(s=>[s,node()]));
       const card={...node(),_pkMode:false,_pkLanes:{},querySelector:s=>parts.get(s),
         querySelectorAll:()=>[],previousElementSibling:null};cards.push(card);return card;},
     _loadMemberDeliveries(card){card.memberRead=true;},
     _captureProgressScroll:card=>({top:card.querySelector('.proc-detail').scrollTop}),
     _restoreProgressScroll:(card,s)=>{card.querySelector('.proc-detail').scrollTop=s.top;},
     _syncProcessProgress:(card,steps)=>{card._replaySteps=steps;},
+    _syncProcessMode:(card,mode)=>{card._resolvedMode=mode;},
     _renderToolStep:()=>true,_renderProductMilestone:()=>false,_renderRuntimePulse:()=>false,
     nameOf:x=>x,esc:x=>String(x),_stepPurpose:()=>'',
     _finalDeliveryData:x=>x,_turnSignature:x=>JSON.stringify(x),
@@ -65,7 +66,7 @@ function fixture(){
     },
   });
   const functions=['_replayEntry','_bindReplayCard','_canAttachTeam','saveLive','_finishArtifactStatus','_markReplayTerminal',
-    'applyLiveEvent','_renderTerminalError','_finishResume','_handoffLiveStream','resumeLiveV2','attachExternalLive',
+    'applyLiveEvent','_renderModeFacts','_renderTerminalError','_finishResume','_handoffLiveStream','resumeLiveV2','attachExternalLive',
     '_syncSessionOnce','cancelLegion','send'];
   vm.runInContext(functions.map(pageFunction).join('\n'),context);
   return {context,cards,requests,timers,storage,sendButton,q,
@@ -78,6 +79,32 @@ function fixture(){
   };
 }
 async function accepted(ui){const run=await ui.start();await ui.event('meta',{team_id:'team-A',sid:'session-A'},1);return run;}
+
+test('feedback mode from meta survives tool events and polling; next execution does not inherit it',async()=>{
+  const ui=fixture(),run=await ui.start();
+  await ui.event('meta',{team_id:'team-A',sid:'session-A',selected_mode:'relay'},1);
+  const card=ui.cards[0],badge=card.querySelector(':scope > .who > .la-badge');
+  assert.match(badge.textContent,/已选模式：接力/);
+  await ui.event('step',{t:'tool_started',agent:'codex'},2);
+  await ui.close();await run.promise;await flush();
+  assert.match(badge.textContent,/已选模式：接力/);assert.equal(card._resolvedMode,'relay');
+  assert.match(card.querySelector('.st').textContent,/已接回原任务/);
+  card._recordedMode='relay';
+  ui.context.applyLiveEvent('meta',{team_id:'team-A',sid:'session-A',mode:'pk'},card,{eventId:10});
+  assert.match(badge.textContent,/等待模式确定/);
+  assert.doesNotMatch(badge.textContent,/接力|已选模式：PK/);
+});
+
+test('poll recovery consumes explicit feedback meta mode without guessing from member count',async()=>{
+  const ui=fixture();
+  ui.setPoll(()=>({team_id:'team-A',events:[
+    {event_id:1,event:'meta',data:{team_id:'team-A',sid:'session-A',selected_mode:'orchestrate'}},
+    {event_id:2,event:'step',data:{t:'tool_started',agent:'codex',mode:'pk'}}]}));
+  ui.context.attachExternalLive('team-A','feedback',{active:true,execution_id:'event:1'});
+  await flush();
+  const card=ui.cards[0];assert.match(card.querySelector(':scope > .who > .la-badge').textContent,/已选模式：首脑/);
+  assert.equal(card._resolvedMode,'orchestrate');assertWaiting(ui);
+});
 function assertWaiting(ui){assert.equal(ui.context.running,true);assert.equal(ui.sendButton.disabled,true);
   assert.match(ui.context.document.title,/⏳/);assert.equal(ui.cards[0].querySelector('.progress').style.display,'flex');}
 

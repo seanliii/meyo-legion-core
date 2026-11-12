@@ -10903,7 +10903,7 @@ def dispatch(  # pyright: ignore[reportGeneralTypeIssues] -- 统一 DAG 调度�
     return out
 
 
-def _no_progress(current: str, previous: str) -> bool:
+def _no_progress(current: str, previous: str, *, current_failure=(), previous_failure=()) -> bool:
     """续跑转圈检测(依据 CC pilot_v2.py:28"连续真转圈才刹车" + DeepSeek
     repeat-tool-reminder:监视重复·只提醒/结束不否决)。不是语义门:只在两轮输出【规范化后完全相同】
     才算无新进展(不做模糊相似度猜测·避免误伤合理迭代);让循环提前收尾而不是白跑到6轮。
@@ -10911,7 +10911,68 @@ def _no_progress(current: str, previous: str) -> bool:
     def norm(s):
         return " ".join(str(s or "").lower().split())
     a, b = norm(current), norm(previous)
+    # Empty replies alone are unknown. A repeated, explicit execution failure
+    # is evidence even without a reply; a changed failure must get its own turn.
+    if current_failure or previous_failure:
+        return a == b and bool(current_failure and current_failure == previous_failure)
     return bool(a and b and a == b)
+
+
+def _persistent_progress_facts(results: list, packet: dict) -> dict:
+    """Request-local comparison facts, never a new quality or retry policy.
+
+    Hash full result/error content rather than UI excerpts. Export URLs and
+    tool event IDs are receipts, not progress. Keep only hashes in the loop;
+    original errors, tools, artifacts and checkpoints remain in their results.
+    """
+    import hashlib
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            default=str).encode("utf-8")).hexdigest()
+
+    artifacts, tools, failures = set(), set(), []
+
+    def observe_artifacts(rows):
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("sha256"):
+                artifacts.add(("sha256", str(row["sha256"]).lower()))
+            elif row.get("path"):
+                # Legacy path-only observations can establish a new file, but
+                # cannot establish changed content at the same path.
+                artifacts.add(("path", str(row["path"])))
+
+    observe_artifacts(packet.get("artifacts"))
+    receipt_fields = {"id", "call_id", "tool_call_id", "ts", "timestamp", "started_at",
+                      "finished_at", "duration_ms", "elapsed", "ms"}
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or row.get("key") or "")
+        if (not _is_delivered(row)
+                and (row.get("error") or row.get("error_envelope") or row.get("fail_kind"))):
+            failures.append((task_id, digest({key: row.get(key) for key in
+                ("status", "final", "error", "fail_kind", "error_envelope")})))
+        observe_artifacts(row.get("artifacts"))
+        observe_artifacts(row.get("discovered_artifacts"))
+        native = row.get("native_facts") or {}
+        for result in native.get("tool_results") or []:
+            if isinstance(result, dict):
+                content = {key: value for key, value in result.items() if key not in receipt_fields}
+                if content:
+                    tools.add((task_id, "native", digest(content)))
+        for action in row.get("tool_trace") or []:
+            if isinstance(action, dict) and action.get("t") in {"tool_end", "tool_timeout"}:
+                # A heartbeat, tool start, or a harness_step displaying an
+                # execution error is not a completed tool observation.
+                content = {key: action[key] for key in ("t", "tool", "ok", "status", "brief")
+                           if key in action}
+                tools.add((task_id, "trace", digest(content)))
+    return {"failures": tuple(sorted(failures)), "artifacts": frozenset(artifacts),
+            "tools": frozenset(tools)}
 
 
 def _baseline_snapshot(question: str, ordered: list) -> dict | None:
@@ -11475,6 +11536,7 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         _author_request_policy.update(deepcopy(_request_snapshot))
     trajectory: list[str] = []   # 前几轮真实轨迹(winner final 摘要)·下一轮回流给军团·不失忆
     previous_full_final: str | None = None
+    previous_failures = ()
     # per-key 跨轮轨迹(cc 复验揪出的真缺口·2026-08-28):旧版跨轮续跑只回流【全军团 winner】的
     # final 到 conversation_context——每家看到的是"上轮最佳产出"(常是别家),看不到"我自己上一轮
     # 干到哪"。续跑续的是别家残片而非自己的轨迹。这里额外按 key 累积每家自己上一轮的产出,通过
@@ -11772,9 +11834,16 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         if out.get("coordination_incomplete") and not out.get("cancelled"):
             return incomplete_coordination(out, out.get("coordination") or {}, rounds)
         final = _winner_final(out)
+        progress_facts = _persistent_progress_facts(
+            out.get("results") or [], round_plan.get("project_context") or {})
         same_full_final = (previous_full_final is not None
-                           and _no_progress(final, previous_full_final))
+                           and _no_progress(final, previous_full_final,
+                                            current_failure=progress_facts["failures"],
+                                            previous_failure=previous_failures))
+        repeated_failure = bool(progress_facts["failures"]
+                                and progress_facts["failures"] == previous_failures)
         previous_full_final = final
+        previous_failures = progress_facts["failures"]
         # An empty selected final is deliberate for unresolved candidates; it
         # must not erase their factual evidence from a later continuation.
         trajectory_fact = final[:1500] if final else _persistent_candidate_context(out)
@@ -12216,9 +12285,8 @@ def dispatch_persistent(question: str, plan: dict | None = None,
         # artifact hash/gap关闭/合法 owner 变化,2 轮后强制 root-cause/rebind 而非继续
         # claim/release——不是直接停(那是掩盖),是换路径;再无进展由 max_rounds 收口。
         _fp_packet = round_plan.get("project_context") or {}
-        _fp_artifacts = frozenset(
-            (str(row.get("path") or ""), str(row.get("sha256") or ""))
-            for row in (_fp_packet.get("artifacts") or []) if isinstance(row, dict))
+        _fp_artifacts = progress_facts["artifacts"]
+        _fp_tools = progress_facts["tools"]
         _fp_open_gaps = frozenset(
             str(row.get("dimension") or row.get("gap") or "")
             for row in (_fp_packet.get("gap_plan") or [])
@@ -12228,16 +12296,20 @@ def dispatch_persistent(question: str, plan: dict | None = None,
             (str(row.get("task_id") or row.get("key") or ""),
              str(row.get("assigned_harness") or row.get("harness") or ""))
             for row in (out.get("results") or []))
-        _progress_fp = (_fp_artifacts, _fp_open_gaps, _fp_owners)
+        _new_artifacts = _new_tools = 0
         if _prev_progress_fp is not None and rounds > 1:
-            _no_new_artifact = _fp_artifacts <= _prev_progress_fp[0]
+            _new_artifacts = len(_fp_artifacts - _prev_progress_fp[0])
+            _new_tools = len(_fp_tools - _prev_progress_fp[3])
             _no_gap_closed = _fp_open_gaps >= _prev_progress_fp[1]
             _no_owner_change = (not _fp_owners) or _fp_owners == _prev_progress_fp[2]
-            if _no_new_artifact and _no_gap_closed and _no_owner_change:
+            if not _new_artifacts and not _new_tools and _no_gap_closed and _no_owner_change:
                 _stagnant_rounds += 1
             else:
                 _stagnant_rounds = 0
-        _prev_progress_fp = _progress_fp
+            # Re-exporting a file/result seen two rounds ago is still old work.
+            _fp_artifacts |= _prev_progress_fp[0]
+            _fp_tools |= _prev_progress_fp[3]
+        _prev_progress_fp = (_fp_artifacts, _fp_open_gaps, _fp_owners, _fp_tools)
         out["progress_stagnant_rounds"] = _stagnant_rounds
         if (_stagnant_rounds >= 2 and _captain_requests_continue
                 and coordination.get("source") != "native_author_proposal"):
@@ -12263,11 +12335,14 @@ def dispatch_persistent(question: str, plan: dict | None = None,
             "delivery_return_ready": delivery_return_ready,
             "scope_goal_met": scope_goal_met,
             "scope_goal_met_source": scope_goal_met_source,
-            "scope_progressed": bool(delivered_count or _art_count),
+            "scope_progressed": bool(delivered_count or _new_artifacts or _new_tools),
             "verification_incomplete": _verification_open,
             "contract_incomplete": _contract_open,
             "open_gaps": list((round_plan.get("project_context") or {}).get("open_gaps") or []),
             "stagnant_rounds": _stagnant_rounds,
+            "failure_repeated": repeated_failure,
+            "new_artifact_count": _new_artifacts,
+            "new_tool_result_count": _new_tools,
             "reference_facts": _quality_facts.benchmark_snapshot(round_plan),
             "benchmark_ref_count": _quality_facts.benchmark_snapshot(round_plan)["reference_count"],
             "captain_coordination": coordination,
@@ -12302,6 +12377,9 @@ def dispatch_persistent(question: str, plan: dict | None = None,
             "artifact_count": _art_count,
             "open_gaps": len(run_state.get("open_gaps") or []),
             "stagnant_rounds": _stagnant_rounds,
+            "failure_repeated": repeated_failure,
+            "new_artifact_count": _new_artifacts,
+            "new_tool_result_count": _new_tools,
             "references_recorded": run_state["benchmark_ref_count"] > 0,
             "reference_analysis_count": len(run_state["reference_facts"]["analysis"]),
             "benchmark_ref_count": run_state["benchmark_ref_count"],
@@ -12337,9 +12415,12 @@ def dispatch_persistent(question: str, plan: dict | None = None,
                 and not _captain_requests_continue and not _terminal_resume):
             out["persistent_rounds"] = rounds
             out["persistent_stalled"] = True
+            out["pilot"] = {"round": rounds, "action": "stop", "kind": "persistent_stalled",
+                            "reason": "连续两轮失败或产出相同，且没有新的执行结果；已停止原样续跑，保留成果和恢复现场。"}
+            out["persistent_diagnostics"][-1].update(action="stop", kind="persistent_stalled")
             if cb:
                 cb({"agent": "commander", "t": "reason",
-                    "x": f"续跑第 {rounds} 轮和上轮产出一致(无新进展)→ 提前收尾交付当前成果(不空转)"})
+                    "x": f"续跑第 {rounds} 轮：{out['pilot']['reason']}"})
             return out
         _native_reopen = set(_native_requests) | _terminal_resume
         if _native_reopen and rounds < max_rounds:

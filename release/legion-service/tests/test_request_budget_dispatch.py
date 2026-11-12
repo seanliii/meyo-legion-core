@@ -115,6 +115,48 @@ def test_harness_scoped_failures_still_allow_a_real_relay(graph, envelope):
     assert len(case.rounds) == 1
 
 
+@pytest.mark.parametrize("new_tool_result", [False, True])
+def test_persistent_failure_progress_through_real_run_one_and_stores(graph, new_tool_result):
+    """Same provider/cursor/export: no CLI/model/network, real orchestration and stores."""
+    case = graph
+
+    def answer(call):
+        result = _failed(case, call["key"], PROCESS, artifact=True, call=call)
+        if new_tool_result:
+            result["native_facts"]["tool_results"] = [{
+                "type": "command_execution", "id": "native-call", "command": "check fixture",
+                "status": "completed", "exit_code": 0,
+                "aggregated_output": f"new observation {len(case.native_calls)}",
+            }]
+        return result
+
+    case.answer = answer
+    team = "__ut_persistent_native_failure_progress_" + str(new_tool_result)
+    out = _execute(case, "persistent", team)
+    expected_calls = 3 if new_tool_result else 2
+    assert len(case.native_calls) == len(case.rounds) == expected_calls
+    assert all(call["key"] == ORIGINAL for call in case.native_calls)
+    assert all(call["provider"] == case.native_calls[0]["provider"] for call in case.native_calls)
+    assert all(call["session_id"] == case.native_calls[0]["session_id"] for call in case.native_calls)
+    row = _rows(out)["A"]
+    assert row["status"] == "error" and row["error_envelope"] == PROCESS
+    assert row["workdir"] == str(case.work) and row["artifacts"]
+    assert row["native_checkpoint"]["session_id"] == "__ut_cursor_" + ORIGINAL
+    assert all(call["checkpoint"] == row["native_checkpoint"] for call in case.native_calls[1:])
+    assert (case.work / (ORIGINAL + ".txt")).read_text() == "file from " + ORIGINAL
+    memory = case.tm.load(case.native_calls[-1]["memory_id"], ORIGINAL)
+    assert memory["native_checkpoint"] == row["native_checkpoint"]
+    assert memory["error_envelope"] == PROCESS and memory["workdir"] == str(case.work)
+    saved = case.teams.load(team)["tasks"]["A"]
+    assert saved["attempt_seq"] == expected_calls and saved["active_attempt"] is None
+    assert saved["result"]["artifacts"] == row["artifacts"]
+    if new_tool_result:
+        assert out["persistent_capped"] is True and not out.get("persistent_stalled")
+    else:
+        assert out["persistent_stalled"] is True and not out.get("persistent_capped")
+        assert out["pilot"]["action"] == "stop" and out["pilot"]["kind"] == "persistent_stalled"
+
+
 @pytest.mark.parametrize("entry", ["dispatch", "persistent"])
 @pytest.mark.parametrize("pause", [RATE_LIMIT, BUDGET], ids=["provider-backoff", "request-budget"])
 def test_failed_relay_new_pause_reaches_original_result_and_both_persistent_stores(graph, entry, pause):

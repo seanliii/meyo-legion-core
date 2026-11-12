@@ -1989,6 +1989,8 @@ function renderSessionTurn(t,index=-1,bindReplay=true){
   if(entry&&bindReplay){_bindReplayCard(lm,teamId);entry.userEl=m;}
   const res=r.results||t.results||[];
   if((t.status==='running'||r.status==='running')&&teamId){
+    lm._recordedMode=t.mode||r.mode||'';
+    _renderModeFacts(lm,r);
     if(!bindReplay){
       lm.querySelector('.st').textContent='历史记录：当时仍在运行';
       lm.querySelector('.progress').style.display='none';
@@ -2022,7 +2024,10 @@ function attachExternalLive(teamId, question, facts={}){
     msgEl=newLegionMsg(_liveMode);_bindReplayCard(msgEl,teamId);
   }
   // 模式事实跟随执行代次；同 team 的新执行不能继承上轮 final/规划失败。
-  if(facts.execution_id&&facts.execution_id!==entry.executionId)delete msgEl._executionModeFacts;
+  if(facts.execution_id&&facts.execution_id!==entry.executionId){
+    delete msgEl._executionModeFacts;
+    if(entry.executionId)delete msgEl._recordedMode;
+  }
   entry.executionId=facts.execution_id||entry.executionId;
   entry.cursor=Math.max(entry.cursor,Number(facts.replay_after||0));
   entry.complete=false;msgEl._memberDeliveryFinal=false;lastEventId=entry.cursor;
@@ -3008,6 +3013,7 @@ function _renderModeFacts(msgEl,data={},final=false){
   const facts=msgEl._executionModeFacts||(msgEl._executionModeFacts={});
   if(typeof data.execution_mode==='string')facts.actual=data.execution_mode;
   if(data.t==='mode_selected'&&labels[data.mode])facts.selected=data.mode;
+  if(typeof data.selected_mode==='string'&&labels[data.selected_mode])facts.selected=data.selected_mode;
   const error=data.planner_error||data.outcome?.planner_error;
   if(typeof error==='string'&&error)facts.plannerError=error;
   if(data.outcome?.failure_stage==='planning')facts.planningFailed=true;
@@ -4297,8 +4303,12 @@ function applyLiveEvent(ev,d,msgEl,state){
     liveTeamId=d.team_id||liveTeamId;if(d.sid)curSession=d.sid;
     if(_resumeCtx?.msgEl===msgEl)_resumeCtx.sid=curSession;
     entry=_bindReplayCard(msgEl,liveTeamId);
-    if(entry&&entry.executionId!=='event:'+eid)delete msgEl._executionModeFacts;
+    if(entry&&entry.executionId!=='event:'+eid){
+      delete msgEl._executionModeFacts;
+      if(entry.executionId)delete msgEl._recordedMode;
+    }
     if(entry){entry.cursor=eid;entry.executionId='event:'+eid;entry.complete=false;}
+    _renderModeFacts(msgEl,d);
     lastEventId=eid;saveLive();return;
   }
   if(eid){if(entry)entry.cursor=eid;if(!history){lastEventId=eid;saveLive();}}
@@ -4479,7 +4489,7 @@ async function resumeLiveV2(){
     if(ctx.firstPoll&&!ctx.entry.complete)_loadMemberDeliveries(ctx.msgEl);
     ctx.firstPoll=false;
     if(ctx.entry.complete){_finishResume(ctx);return true;}
-    ctx.msgEl.querySelector('.st').textContent='正在同步原任务；尚未收到本轮结束回执。';
+    ctx.msgEl.querySelector('.st').textContent='已接回原任务；尚未收到本轮结束回执。';
     ctx.inFlight=false;_resumeTimer=setTimeout(()=>{if(current())resumeLiveV2();},1500);return true;
   }catch(e){
     if(!current())return false;

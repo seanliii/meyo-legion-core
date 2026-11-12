@@ -428,8 +428,21 @@ def test_feedback_persists_one_meta_before_any_child_step_or_final(case, transpo
     assert [r["event"] for r in rows if r["event"] != "step"] == ["meta", "final"]
     assert rows[0]["data"]["team_id"] == child
     assert rows[0]["data"]["sid"] == CONVERSATION
+    assert rows[0]["data"]["selected_mode"] == "relay", "feedback's selected route must survive reload"
     lifecycle = case.teams.load(child)["stream_lifecycle"]
     assert lifecycle["start_event_id"] < lifecycle["terminal_event_id"]
+
+
+def test_feedback_meta_preserves_original_persistent_route(case):
+    seed(case, decision="complete")
+    assert send_feedback(case)[0] == 201
+    message = wait_for_feedback(case)
+    assert message["continuation"]["status"] == "completed", message
+    code, stream = case.events(team_id=message["continuation"]["team_id"])
+    assert code == 200
+    assert stream["events"][0]["event"] == "meta"
+    assert stream["events"][0]["data"]["selected_mode"] == "orchestrate"
+    assert len(case.controls) == 1 and not case.member_calls
 
 
 def test_feedback_concurrent_callbacks_share_one_persisted_stream_start(case):

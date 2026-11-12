@@ -5595,7 +5595,7 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
             with stream_lock:
                 if not stream_started:
                     started = TEAMS.append_event(
-                        child, {"team_id": child, "sid": conversation_id}, "meta")
+                        child, {"team_id": child, "sid": conversation_id, "selected_mode": mode}, "meta")
                     if started is None:
                         return None
                     stream_started = True
