@@ -97,12 +97,13 @@ async function screen(mode, requestedMode = "auto") {
     Date: { now: () => clock }, TextDecoder, AbortSignal, ci: () => root,
     setInterval: (fn) => { intervals.set(fn, fn); return fn; },
     clearInterval: (id) => intervals.delete(id),
+    setTimeout: () => 1, clearTimeout() {},
     $: (s) => s === "#chat" ? chat : s === "#modeSelect" ? {value: requestedMode} : s === "#send" ? sendButton : s === "#q" ? qEl : null,
     qEl, uploads: [], _squad: [], _SQUAD_AGENTS: [], _sessionView: 0,
     _personalSubject: "__ut_owner", _personalEpoch: 1, _personalSwitchPending: false,
     _readPersonalStatus: async () => "__ut_owner", _origTitle: "fixture",
     running: false, liveTeamId: "", lastEventId: 0, curSession: "__ut_sid",
-    _resumeCtx: null, nameOf: (name) => name,
+    _resumeCtx: null, _resumeTimer: null, _initialSourceUrl: '', querySourceConsumed: false, nameOf: (name) => name,
     esc: (s) => String(s).replaceAll("<", "&lt;"), _toolLabel: (name) => ({ name, desc: "" }),
     _stepPurpose: () => "", colorOf: () => "#123456", _avatarIndex: () => 0,
     artifactHTML: () => "<div>真实产物卡</div>", hydrateArtifacts() {},
@@ -126,7 +127,7 @@ async function screen(mode, requestedMode = "auto") {
   const functions = ["_scrollAtLatest", "_processScrollState", "_captureProgressScroll", "_restoreProgressScroll", "_syncProcessJump", "_syncProcessProgress", "_renderRuntimePulse", "newLegionMsg",
     "_renderLegionHeartbeat", "_renderAgentHeartbeat", "_finalDeliveryData",
     "_deliveryDisplay", "_turnSignature", "_markReplayTerminal", "notifyDone",
-    "_renderProductMilestone", "_renderToolStep", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "send"];
+    "_renderProductMilestone", "_renderToolStep", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "_finishResume", "_handoffLiveStream", "resumeLiveV2", "send"];
   vm.runInContext([html.match(/^const _PHASE_LABELS=.*$/m)[0], html.match(/^const _PRODUCT_MILESTONES=.*$/m)[0], ...functions.map(pageFunction)].join("\n"), context);
   let sending;
   if (mode === "live") { sending = context.send(); await new Promise(setImmediate); }

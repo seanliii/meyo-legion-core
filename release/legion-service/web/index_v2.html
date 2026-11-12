@@ -4349,10 +4349,30 @@ function _finishResume(ctx){
   running=false;const sendBtn=$('#send');if(sendBtn)sendBtn.disabled=false;
   document.title=_origTitle;
 }
+function _handoffLiveStream(msgEl,view,steps){
+  if(view!==_sessionView||!msgEl.isConnected||msgEl._replay?.complete)return;
+  // HTTP EOF/断网只结束传输，不能代替本轮 final/error，更不能再 POST 同一任务。
+  running=true;$('#send').disabled=true;document.title='⏳ 军团运行中…';
+  msgEl.querySelector('.progress').style.display='flex';
+  const teamId=msgEl.dataset.teamId||liveTeamId;
+  if(!teamId){
+    msgEl.querySelector('.st').textContent='连接中断，尚未确认任务是否已接收；请从会话列表核对，未重复派单。';
+    return;
+  }
+  const entry=_bindReplayCard(msgEl,teamId);
+  liveTeamId=teamId;lastEventId=entry.cursor;
+  msgEl.querySelector('.st').textContent='连接中断，正在读取原任务现场…';
+  msgEl.querySelector('.pt').textContent='正在恢复已保存的执行过程，可继续停止原任务…';
+  _resumeCtx={teamId,sid:curSession,view,msgEl,entry,
+    state:{steps:msgEl._replaySteps||steps,eventId:entry.cursor},firstPoll:true,inFlight:false};
+  saveLive();resumeLiveV2();
+}
 async function resumeLiveV2(){
+  // 正在消费 POST 流时，切回页面不能重建会话并废弃原卡片/滚动位置。
+  if(!_resumeCtx&&running)return false;
   // 带新 source_url 打开的入口代表一张新订单。旧 live team 即使还在 localStorage，
   // 也不能覆盖来源并把新 Query 串进旧 session；只有无新来源的普通刷新才恢复旧现场。
-  if(_initialSourceUrl&&!querySourceConsumed){try{sessionStorage.removeItem('legion_live_v2');}catch(e){}curSession=null;liveTeamId='';return false;}
+  if(!_resumeCtx&&_initialSourceUrl&&!querySourceConsumed){try{sessionStorage.removeItem('legion_live_v2');}catch(e){}curSession=null;liveTeamId='';return false;}
   if(!_resumeCtx){
     let saved;try{saved=JSON.parse(sessionStorage.getItem('legion_live_v2')||'null');}catch(e){return false;}
     if(!saved||!saved.team_id||saved.subject!==_personalSubject||saved.uid!==_personalSubject)return false;
@@ -4362,16 +4382,22 @@ async function resumeLiveV2(){
   }
   const ctx=_resumeCtx;if(!ctx||ctx.inFlight)return !!ctx;
   const current=()=>_resumeCtx===ctx&&ctx.view===_sessionView&&ctx.sid===curSession&&ctx.msgEl.isConnected;
+  if(_resumeTimer){clearTimeout(_resumeTimer);_resumeTimer=null;}
   ctx.inFlight=true;
   const after=ctx.entry.cursor;
   try{
-    const d=await(await fetch(`/api/legion/events?team_id=${encodeURIComponent(ctx.teamId)}&after=${after}`)).json();
+    const response=await fetch(`/api/legion/events?team_id=${encodeURIComponent(ctx.teamId)}&after=${after}`,{signal:AbortSignal.timeout(15000)});
     if(!current())return false;
-    const events=d.events||[];
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    const d=await response.json();
+    if(!current())return false;
+    if(d.team_id!==ctx.teamId||!Array.isArray(d.events)||d.error)throw new Error('任务过程响应不匹配');
+    const events=d.events;
     for(const rec of events){ctx.state.eventId=Number(rec.event_id||0);ctx.state.view=ctx.view;applyLiveEvent(rec.event,rec.data||{},ctx.msgEl,ctx.state);}
     if(ctx.firstPoll&&!ctx.entry.complete)_loadMemberDeliveries(ctx.msgEl);
     ctx.firstPoll=false;
     if(ctx.entry.complete){_finishResume(ctx);return true;}
+    ctx.msgEl.querySelector('.st').textContent='正在同步原任务；尚未收到本轮结束回执。';
     ctx.inFlight=false;_resumeTimer=setTimeout(()=>{if(current())resumeLiveV2();},1500);return true;
   }catch(e){
     if(!current())return false;
@@ -4431,10 +4457,15 @@ const att=uploads.filter(u=>u.path).map(u=>({path:u.path,name:u.orig_name||u.nam
     plan.captain_candidates=[..._squad];
     plan.team_policy={...(plan.team_policy||{}),candidate_harnesses:[..._squad]};
   }
-  let steps=0, finalData=null;
+  let steps=0, finalData=null, dispatchRejected=false;
   try{
     const resp=await fetch('/api/legion/dispatch',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({question:q,plan,mode:_mode,session_id:curSession,uid:clientUid,source_ref:sourceRef})});
+    if(resp.ok===false){
+      // 网关 5xx/超时也可能发生在后端已受理之后，不能据此开放重复派单。
+      dispatchRejected=resp.status>=400&&resp.status<500&&![408,499].includes(resp.status);
+      throw new Error('HTTP '+resp.status);
+    }
     const rd=resp.body.getReader();const dec=new TextDecoder();let buf='';
     while(true){const{value,done}=await rd.read();if(view!==_sessionView||!msgEl.isConnected){await rd.cancel();return;}if(done)break;buf+=dec.decode(value,{stream:true}).replace(/\r\n/g,'\n');let i;
       while((i=buf.indexOf('\n\n'))>=0){const ch=buf.slice(0,i);buf=buf.slice(i+2);
@@ -4575,6 +4606,8 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
     }
   }catch(e){if(view===_sessionView&&msgEl.isConnected)msgEl.querySelector('.st').textContent='连不上服务:'+e.message;}
   if(view!==_sessionView)return;
+  if(!dispatchRejected&&!msgEl._replay?.complete){_handoffLiveStream(msgEl,view,steps);await loadSessions();return;}
+  prog.style.display='none';
   running=false;$('#send').disabled=false;document.title=_origTitle;await loadSessions();
 }
 $('#send').onclick=send;
