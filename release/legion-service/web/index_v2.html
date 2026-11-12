@@ -4227,7 +4227,7 @@ function _loadMemberDeliveries(msgEl){
     finally{if(msgEl._memberDeliveryRead===readToken){msgEl._memberDeliveryLoading=false;if(msgEl._memberDeliveryAgain){msgEl._memberDeliveryAgain=false;if(current())_loadMemberDeliveries(msgEl);}}}
   })();
 }
-function _appendArtifactStatus(row,msgEl,data){
+function _appendArtifactStatus(row,msgEl,data,history=false){
   // 事件中的计划属于当时记录；与本轮现在是否还在执行分开显示。
   if(data.next_action){
     const plan=document.createElement('div');plan.className='as-d artifact-recorded-plan';
@@ -4237,7 +4237,9 @@ function _appendArtifactStatus(row,msgEl,data){
     const status=document.createElement('div');status.className='as-d artifact-current-state';
     status.dataset.executionId=msgEl._replay?.executionId||'';
     const terminal=msgEl._artifactTerminal;
-    status.textContent=terminal?.executionId===status.dataset.executionId?terminal.text:
+    // A saved turn already owns its terminal result. Its stream identity may
+    // arrive later from session/teams; historical steps cannot restart it.
+    status.textContent=terminal&&(history||terminal.executionId===status.dataset.executionId)?terminal.text:
       '任务仍在继续…';
     row.appendChild(status);
   }
@@ -4396,7 +4398,7 @@ function applyLiveEvent(ev,d,msgEl,state){
     const _k=d.url.replace(/^\/(home-outputs|auto-outputs|outputs|media)\//,'').split('?')[0];
     if(msgEl._seenArtUrls.has(_k))return;
     msgEl._seenArtUrls.add(_k);
-    const av=document.createElement('div');av.className='proc-step';const desc=d.description?`<div class="as-d">${esc(d.description)}</div>`:'';const verb=d.t==='artifact_recovered'?'已保留，交给接力家复验':'产出';av.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${_stepPurpose(d)}</span> ${verb} ↓${desc}`+artifactHTML({name:d.name||d.url,url:d.url,bytes:d.bytes,kind:d.ext||'',provenance:d.provenance||{},lineage:d.lineage||{}});_appendArtifactStatus(av,msgEl,d);targetProc.appendChild(av);hydrateArtifacts(av);return;}
+    const av=document.createElement('div');av.className='proc-step';const desc=d.description?`<div class="as-d">${esc(d.description)}</div>`:'';const verb=d.t==='artifact_recovered'?'已保留，交给接力家复验':'产出';av.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${_stepPurpose(d)}</span> ${verb} ↓${desc}`+artifactHTML({name:d.name||d.url,url:d.url,bytes:d.bytes,kind:d.ext||'',provenance:d.provenance||{},lineage:d.lineage||{}});_appendArtifactStatus(av,msgEl,d,history);targetProc.appendChild(av);hydrateArtifacts(av);return;}
   // PK 生命周期:更新 lane 状态
   if(isPKMode&&agentKey){
     if(d.t==='task_completed')pkUpdateStatus(msgEl,agentKey,`✓ 完成`,'done');

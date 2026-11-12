@@ -224,13 +224,16 @@ test(`artifact 当前状态：${mode}/${terminal}/plan=${withPlan} 只结束动�
   } finally {await ui.close();}
 });
 
-for(const [terminal,data,label] of artifactTerminals)
-test(`artifact 历史重放：${terminal} 快照之后读取旧 in_progress，不复活且不改其他运行任务`,async()=>{
+for(const [terminal,data,label] of artifactTerminals)for(const lateDiscovery of [false,true])
+test(`artifact 历史重放：${terminal}/laterIdentity=${lateDiscovery} 快照之后读取旧 in_progress，不复活且不改其他运行任务`,async()=>{
   const ui=await terminalProcess();artifactFixture(ui);
   const record=artifactRecord(),before=JSON.stringify(record);
   try {
     // Use the actual saved-answer renderer, then the actual paged history GET.
     answerScreen([],data,ui.message);
+    // The session snapshot can arrive before session/teams supplies the stream
+    // identity. This must not turn a known terminal historical card back on.
+    if(lateDiscovery)ui.message._replay.executionId='event:1';
     ui.context.fetch=async()=>({ok:true,json:async()=>({team_id:'__ut_saved',last_event_id:1,
       events:[{event_id:1,ts:1,event:'step',data:record}]})});
     await ui.context._loadHistoryProcess(ui.message);
