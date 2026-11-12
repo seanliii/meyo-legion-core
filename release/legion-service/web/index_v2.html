@@ -494,7 +494,7 @@ body.design-c .rail-toggle{display:inline-flex;align-items:center}
 .pk-tab.done .pt-dot{background:var(--ok);animation:none}
 .pk-tab.fail .pt-dot{background:var(--err);animation:none}
 .pk-tab .pt-badge{font-size:9px}
-.pk-panels{position:relative;flex:1;min-height:0}
+.pk-panels{position:relative;flex:1;min-height:0;overflow:hidden}
 .pk-lane{border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface2);overflow:hidden;display:none;flex-direction:column;height:100%}
 .pk-lane.active{display:flex}
 .pk-lane-head{display:flex;flex-shrink:0;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);background:var(--surface);font-size:12px}
@@ -2964,22 +2964,46 @@ function newLegionMsg(mode,followLatest=true){const m=document.createElement('di
 // (用户2026-08-31:不用用户点·军团自动选队形并在对话流展示对应现场)。只升级一次·幂等。
 function _upgradeMsgMode(msgEl,mode){
   if(!msgEl||!msgEl._autoMode||!['pk','relay','orchestrate'].includes(mode))return;
-  msgEl._autoMode=false;msgEl._resolvedMode=mode;
+  _syncProcessMode(msgEl,mode);
   const badge=msgEl.querySelector('.la-badge');
   if(badge)badge.textContent={pk:'⚔️ PK 多家并行',relay:'🔗 协作接力',orchestrate:'👑 首脑编排'}[mode];
+}
+function _syncProcessMode(msgEl,mode){
+  if(!['pk','relay','orchestrate','single','solo','direct_model'].includes(mode))return;
   const proc=msgEl.querySelector('.proc-detail');if(!proc)return;
-  if(mode==='pk'){
-    // 升级成 PK swimlanes(tab+panels):保留已有文字步骤搬进来不丢
-    const old=[...proc.children];
-    proc.className='pk-swimlanes proc-detail'+(proc.classList.contains('show')?' show':'');
-    proc.dataset.mode='pk';proc.innerHTML='<div class="pk-tabs"></div><div class="pk-panels"></div>';
-    msgEl._pkMode=true;msgEl._pkLanes={};msgEl._pkTabs={};msgEl._pkActive=null;
-  }else{
-    proc.dataset.mode=mode;   // relay/orchestrate 用普通 proc-detail·现场卡由各自 stage 函数插入
-  }
+  msgEl._autoMode=false;msgEl._resolvedMode=mode;
+  if(proc.dataset.mode===mode&&msgEl._pkMode===(mode==='pk'))return;
+  const scroll=_captureProgressScroll(msgEl);
+  try{
+    if(mode==='pk'&&!msgEl._pkMode){
+      const old=[...proc.childNodes];
+      const tabs=document.createElement('div'),panels=document.createElement('div');
+      tabs.className='pk-tabs';panels.className='pk-panels';
+      proc.replaceChildren(tabs,panels);proc.classList.add('pk-swimlanes');
+      msgEl._pkMode=true;msgEl._pkLanes={};msgEl._pkTabs={};msgEl._pkActive=null;msgEl._pkPrebuilt=false;
+      if(old.length){
+        const body=pkGetLane(msgEl,'legion');old.forEach(node=>body.appendChild(node));
+        if(scroll.panes.has(proc))scroll.panes.set(body,{...scroll.panes.get(proc)});
+      }
+    }else if(mode!=='pk'&&msgEl._pkMode){
+      // 改外壳，不重画事件或产物：保留原节点、点击处理器、折叠和用户阅读位置。
+      const active=msgEl._pkLanes[msgEl._pkActive]?.querySelector('.pk-lane-body');
+      const content=[];
+      for(const child of [...proc.childNodes]){
+        if(child.classList?.contains('pk-tabs'))continue;
+        if(child.classList?.contains('pk-panels')){
+          child.querySelectorAll('.pk-lane-body').forEach(body=>content.push(...body.childNodes));
+        }else content.push(child);
+      }
+      proc.replaceChildren(...content);proc.classList.remove('pk-swimlanes');
+      if(active&&scroll.panes.has(active))scroll.panes.set(proc,{...scroll.panes.get(active)});
+      msgEl._pkMode=false;msgEl._pkLanes={};msgEl._pkTabs={};msgEl._pkActive=null;msgEl._pkPrebuilt=false;
+    }
+    proc.dataset.mode=mode;
+  }finally{_restoreProgressScroll(msgEl,scroll);}
 }
 function _renderModeFacts(msgEl,data={},final=false){
-  // 只改徽标：不重建过程、不改变请求，也不把规划失败当成新的交付判决。
+  // 真实模式同时决定徽标与过程外壳；不改变请求，不按成员数推断队形。
   const labels={auto:'智能选择',pk:'PK',relay:'接力',orchestrate:'首脑',single:'单家',solo:'单家快路',direct_model:'模型直答'};
   const facts=msgEl._executionModeFacts||(msgEl._executionModeFacts={});
   if(typeof data.execution_mode==='string')facts.actual=data.execution_mode;
@@ -2991,6 +3015,7 @@ function _renderModeFacts(msgEl,data={},final=false){
   const requested=labels[msgEl._requestedMode],recorded=labels[msgEl._recordedMode];
   const actual=facts.actual!=='auto'&&labels[facts.actual];
   const selected=facts.selected!=='auto'&&labels[facts.selected];
+  if(actual||selected)_syncProcessMode(msgEl,actual?facts.actual:facts.selected);
   const badge=msgEl.querySelector(':scope > .who > .la-badge');if(!badge)return;
   const execution=actual?'实际：'+actual:
     !facts.final&&selected?'已选模式：'+selected:
@@ -3018,7 +3043,7 @@ function pkGetLane(msgEl,agentKey){
   agentKey=agentKey||'legion';
   if(msgEl._pkLanes[agentKey])return msgEl._pkLanes[agentKey].querySelector('.pk-lane-body');
   const tabs=swim.querySelector('.pk-tabs'),panels=swim.querySelector('.pk-panels');
-  const name=nameOf(agentKey),color=colorOf(agentKey);
+  const name=agentKey==='legion'?'军团动态':nameOf(agentKey),color=colorOf(agentKey);
   swim.classList.add('show'); // 第一家真实开始干活时才显示,避免派活瞬间空白条
   // tab:头像+名+状态点(进行中脉冲·完成绿·失败红)·可点切换
   const tab=document.createElement('div');tab.className='pk-tab';tab.dataset.agent=agentKey;
@@ -4125,6 +4150,7 @@ function _renderToolStep(d,ag,targetProc,steps){
   if(!row){row=document.createElement('div');row.className='proc-step tool-row';
     row.setAttribute('data-tool',cid);targetProc.appendChild(row);}
   const prior=row.dataset.toolName||'';const toolInfo=_toolLabel(d.tool||prior||'工具');const tool=esc(toolInfo.name),toolDesc=esc(toolInfo.desc);if(d.tool)row.dataset.toolName=d.tool;
+  row.dataset.toolEvent=d.t;delete row.dataset.toolObservation;
   if(d.t==='tool_started'){
     row.innerHTML=`<span class="ag">${esc(ag)}</span> <span class="step-why">${toolDesc}</span> <span class="tl run">🔧 ${tool} · 运行中…</span> <details class="tool-fold"><summary class="tl-b">${esc((d.args_brief||'').slice(0,80))}</summary><div class="tl-b" style="white-space:pre-wrap;word-break:break-all">${esc(String(d.args_brief||''))}</div></details>`;
   }else if(d.t==='tool_end'){
@@ -4156,7 +4182,8 @@ function _loadMemberDeliveries(msgEl){
   if(!teamId||msgEl._memberDeliveryFinal||!msgEl.isConnected)return;
   if(msgEl._memberDeliveryLoading){msgEl._memberDeliveryAgain=true;return;}
   msgEl._memberDeliveryLoading=true;
-  const current=()=>msgEl.isConnected&&!msgEl._memberDeliveryFinal&&msgEl.dataset.teamId===teamId;
+  const readToken={};msgEl._memberDeliveryRead=readToken;
+  const current=()=>msgEl.isConnected&&!msgEl._memberDeliveryFinal&&msgEl._memberDeliveryRead===readToken&&msgEl.dataset.teamId===teamId;
   const ans=msgEl.querySelector('.legion-answers');
   let note=ans.querySelector('.member-delivery-note');
   if(!note){note=document.createElement('div');note.className='member-delivery-note';note.setAttribute('role','status');ans.prepend(note);}
@@ -4196,10 +4223,31 @@ function _loadMemberDeliveries(msgEl){
       if(failed)retry(note.textContent+' 部分全文读取失败。');
       if(count){ans.parentNode.insertBefore(ans,msgEl.querySelector('.proc-detail'));_chatScroll(false);}
     }catch(e){retry('已完成成员结果读取失败（'+e.message+'），未使用截断摘要。');}
-    finally{msgEl._memberDeliveryLoading=false;if(msgEl._memberDeliveryAgain){msgEl._memberDeliveryAgain=false;if(current())_loadMemberDeliveries(msgEl);}}
+    finally{if(msgEl._memberDeliveryRead===readToken){msgEl._memberDeliveryLoading=false;if(msgEl._memberDeliveryAgain){msgEl._memberDeliveryAgain=false;if(current())_loadMemberDeliveries(msgEl);}}}
   })();
 }
+function _renderTerminalError(msgEl,data){
+  const scroll=_captureProgressScroll(msgEl);
+  try{
+    msgEl.querySelector('.st').textContent='任务出错：'+(data.error||'未知错误');
+    msgEl.querySelector('.progress').style.display='none';
+    const answers=msgEl.querySelector('.legion-answers');
+    let note=answers.querySelector('.member-delivery-note');
+    if(!note){note=document.createElement('div');note.className='member-delivery-note';note.setAttribute('role','status');answers.prepend(note);}
+    const count=msgEl._memberDeliveryCards?.size||0;
+    note.textContent=count?`本轮出错；已保留 ${count} 项已返回的完整成员结果。`:'本轮出错；尚无可读取的完整成员结果。已显示的过程与产物仍保留。';
+    // 整单 error 不是每个工具的失败回执，不把缺失的 tool_end 伪造成 failed。
+    msgEl.querySelectorAll('.tool-row').forEach(row=>{
+      if(row.dataset.toolEvent!=='tool_started')return;
+      const label=row.querySelector('.tl.run');if(!label)return;
+      row.dataset.toolObservation='terminal_unobserved';label.className='tl';
+      label.textContent=`${_toolLabel(row.dataset.toolName||'工具').name} · 未收到工具终态（本轮出错）`;
+    });
+  }finally{_restoreProgressScroll(msgEl,scroll);}
+}
 function _markReplayTerminal(msgEl,eid,data){
+  msgEl._memberDeliveryFinal=true;msgEl._memberDeliveryRead=null;
+  msgEl._memberDeliveryLoading=false;msgEl._memberDeliveryAgain=false;
   const entry=msgEl._replay||_bindReplayCard(msgEl,data.team_id||liveTeamId);
   if(entry){entry.complete=true;entry.terminalId=Number(eid||entry.cursor);entry.cursor=Math.max(entry.cursor,entry.terminalId);}
   msgEl._turnSignature=_turnSignature(data);
@@ -4228,14 +4276,11 @@ function applyLiveEvent(ev,d,msgEl,state){
   }
   if(ev==='error'){
     _markReplayTerminal(msgEl,eid,d);
-    msgEl.querySelector('.st').textContent='任务出错：'+(d.error||'未知错误');
-    msgEl.querySelector('.progress').style.display='none';
+    _renderTerminalError(msgEl,d);
     try{sessionStorage.removeItem('legion_live_v2');}catch(e){}
     liveTeamId='';return;
   }
   if(ev!=='step'||entry?.complete)return;
-  const scroll=_captureProgressScroll(msgEl);
-  try{
   if(!history)_memberDeliverySignal(d,msgEl);
   // auto 待定卡:后端定了队形就把这张卡升级成对应现场。orchestrate 靠 captain 事件识别(它的 tasklist
   // 复用 pk 执行器会带 mode:pk·会误判);relay/pk 靠 tasklist/dispatch.mode。captain 信号优先。
@@ -4244,13 +4289,16 @@ function applyLiveEvent(ev,d,msgEl,state){
     else if(d.mode&&['pk','relay'].includes(d.mode)&&['tasklist','dispatch'].includes(d.t)){_upgradeMsgMode(msgEl,d.mode);}
   }
   if(!history)_renderModeFacts(msgEl,d);
+  // 模式转换已将旧泳道阅读位置转交给新容器；随后追加本事件时以新容器为准。
+  const scroll=_captureProgressScroll(msgEl);
+  try{
   // 审批内联(用户2026-09-01:锁死单一对话流后·审批不再靠切B/C视图触发)。收到 approval/waiting_approval
   // 事件主动拉 workspace→loadWorkspace 把 pending 审批塞进当前 legion-msg 顶部(approval-inline)。
   if(!history&&(d.t==='approval'||d.status==='waiting_approval')){try{loadWorkspace();}catch(e){}}
   // 补位接力可感演出(用户2026-09-01·军团命门差异化):一家遇阻→别家接手·不埋文字流·插醒目接力卡。
   // 后端 _do_failover 发 {t:reason, failover:{failed,relay,round}}·前端识别后演成"⚠️X遇阻 → 🤝Y接手"。
   if(d.failover&&d.failover.failed&&d.failover.relay){
-    const proc=msgEl.querySelector('.proc-detail');
+    const proc=msgEl._pkMode?pkGetLane(msgEl,'legion'):msgEl.querySelector('.proc-detail');
     if(proc){const card=document.createElement('div');card.className='failover-card';
       card.innerHTML=`<span class="fo-fail">⚠️ ${esc(nameOf(d.failover.failed))} 遇阻</span><span class="fo-arrow">→</span><span class="fo-relay">🤝 ${esc(nameOf(d.failover.relay))} 接手这一单</span>`;
       proc.classList.add('show');proc.appendChild(card);msgEl._failoverSummary={failed:d.failover.failed,relay:d.failover.relay};}
@@ -4295,7 +4343,7 @@ function applyLiveEvent(ev,d,msgEl,state){
   const ag=(!isPKMode && d.captain)?nameOf(d.captain)+' · 首脑':(d.agent==='legion'?'军团':d.agent==='commander'?'军团':nameOf(d.agent));
   const agentKey=d.agent&&d.agent!=='legion'&&d.agent!=='commander'?d.agent:null;
   const proc=msgEl.querySelector('.proc-detail');
-  const targetProc=(isPKMode && agentKey)?pkGetLane(msgEl,agentKey):proc;
+  const targetProc=isPKMode?pkGetLane(msgEl,agentKey||'legion'):proc;
   if(_renderRuntimePulse(d,ag,agentKey,targetProc,msgEl))return true;
   state.steps++;_syncProcessProgress(msgEl,state.steps);
   // 动态ETA进度源:tasklist拿总数·task_completed/failed/blocked记完成数(含失败也算已结束)。
@@ -4327,9 +4375,9 @@ function applyLiveEvent(ev,d,msgEl,state){
   line.innerHTML=`<span class="ag">${esc(ag)}</span>${purpose?` <span class="step-why">${esc(purpose)}</span>`:''} ${esc((d.x||d.t||'').slice(0,800))}`;
   targetProc.appendChild(line);
   // 主状态:PK 模式显示"N 家并行";其他模式沿用具体动作词
-  if(isPKMode&&Object.keys(msgEl._pkLanes).length>0){
-    const done=Object.values(msgEl._pkLanes).filter(l=>l.querySelector('.la-status.done')).length;
-    msgEl.querySelector('.pt').textContent=`⚔️ ${Object.keys(msgEl._pkLanes).length} 家并行 · ${done} 完成 · ${state.steps}步`;
+  if(isPKMode&&Object.keys(msgEl._pkLanes).filter(k=>k!=='legion').length>0){
+    const done=Object.values(msgEl._pkLanes).filter(l=>l.dataset.agent!=='legion'&&l.querySelector('.la-status.done')).length;
+    msgEl.querySelector('.pt').textContent=`⚔️ ${Object.keys(msgEl._pkLanes).filter(k=>k!=='legion').length} 家并行 · ${done} 完成 · ${state.steps}步`;
   }else{
     const _act = d.t==='captain_bid'?'正在竞选首脑…':d.t==='captain_election'?'军团选带队的…'
       :d.t==='captain_selected'?`${ag} 当选带队`:d.t==='tool'?'调用工具…':d.t==='task_status'?(esc(d.status||'处理中'))
@@ -4482,9 +4530,9 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
         if(eid&&eid<=(msgEl._replay?.cursor||0))continue;if(eid){lastEventId=eid;if(msgEl._replay)msgEl._replay.cursor=eid;saveLive();}
         if(ev==='step'){
           if(msgEl._replay?.complete)continue;
+          _renderModeFacts(msgEl,d);
           const scroll=_captureProgressScroll(msgEl);
           try{
-          _renderModeFacts(msgEl,d);
           _memberDeliverySignal(d,msgEl);
           // 动态ETA进度源(send实时流·与resume applyLiveEvent对称):tasklist总数+任务终态完成数。
           const _ps=msgEl._progressState;
@@ -4503,7 +4551,7 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
           const ag=(!isPKMode && d.captain)?nameOf(d.captain)+' · 首脑':(d.agent==='legion'?'军团':d.agent==='commander'?'军团':nameOf(d.agent));
           const agentKey=d.agent&&d.agent!=='legion'&&d.agent!=='commander'?d.agent:null;
           // 决定这条 step 落到哪个容器:PK 且有具体 agent → 落该家泳道;否则落主 proc
-          const targetProc=(isPKMode && agentKey)?pkGetLane(msgEl,agentKey):proc;
+          const targetProc=isPKMode?pkGetLane(msgEl,agentKey||'legion'):proc;
           if(_renderRuntimePulse(d,ag,agentKey,targetProc,msgEl))continue;
           steps++;_syncProcessProgress(msgEl,steps);
           // 完整生命周期事件:任务开始/续跑/完成/失败都直接更新主状态并落进过程流。
@@ -4520,7 +4568,7 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
               if(d.t==='task_completed')pkUpdateStatus(msgEl,agentKey,`✓ 完成 ${d.artifact_count||''}产物`,'done');
               else if(d.t==='task_failed')pkUpdateStatus(msgEl,agentKey,'✗ 未完成','fail');
               else pkUpdateStatus(msgEl,agentKey,life);
-              const laneCount=Object.keys(msgEl._pkLanes).length;
+              const laneCount=Object.keys(msgEl._pkLanes).filter(k=>k!=='legion').length;
               msgEl.querySelector('.pt').textContent=`⚔️ ${laneCount} 家并行中 · ${steps}步`;
             }else{
               msgEl.querySelector('.pt').textContent=`${ag} · ${esc(d.phase||life)}${extra}`;
@@ -4582,17 +4630,17 @@ applyLiveEvent(ev,d,msgEl,{steps,eventId:eid,view});continue;
           targetProc.appendChild(line);
           // 主状态:PK 模式显示"N 家并行中"(不再被单家/首脑覆盖);其他模式沿用"哪家·phase·步数"
           const _ph=d.phase?` · ${esc(d.phase)}`:'';
-          if(isPKMode&&Object.keys(msgEl._pkLanes).length>0){
-            const done=Object.values(msgEl._pkLanes).filter(l=>l.querySelector('.la-status.done')).length;
-            msgEl.querySelector('.pt').textContent=`⚔️ ${Object.keys(msgEl._pkLanes).length} 家并行 · ${done} 完成 · ${steps}步`;
+          if(isPKMode&&Object.keys(msgEl._pkLanes).filter(k=>k!=='legion').length>0){
+            const done=Object.values(msgEl._pkLanes).filter(l=>l.dataset.agent!=='legion'&&l.querySelector('.la-status.done')).length;
+            msgEl.querySelector('.pt').textContent=`⚔️ ${Object.keys(msgEl._pkLanes).filter(k=>k!=='legion').length} 家并行 · ${done} 完成 · ${steps}步`;
           }else{
             msgEl.querySelector('.pt').textContent=d.t==='summary'?(d.x||'军团完成'):`${ag}${_ph||' · '+(d.t==='tool'?'调用工具':d.t==='task_status'?(d.status||'执行中'):'执行中')} · ${steps}步`;
           }
           }finally{_restoreProgressScroll(msgEl,scroll);}
         }else if(ev==='error'){
           _markReplayTerminal(msgEl,eid,d);
-          msgEl.querySelector('.st').textContent='任务出错：'+(d.error||'未知错误');
-          prog.style.display='none';try{sessionStorage.removeItem('legion_live_v2');}catch(_e){}liveTeamId='';
+          _renderTerminalError(msgEl,d);
+          try{sessionStorage.removeItem('legion_live_v2');}catch(_e){}liveTeamId='';
         }else if(ev==='final'){d=_finalDeliveryData(d);finalData=d;
           _markReplayTerminal(msgEl,eid,d);
           if(d.source_ref?.url)consumeQuerySource();

@@ -38,6 +38,7 @@ class Element {
   get scrollTop() { return this.top || 0; }
   set scrollTop(value) { this.top = this.measureHeight ? Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)) : value; }
   get childElementCount() { return this.children.length; }
+  get childNodes() { return this.children; }
   setAttribute(name, value) {
     this.attributes[name] = String(value);
     if (name === "class") this.className = value;
@@ -57,13 +58,16 @@ class Element {
     for (const tag of this.markup.matchAll(/<([a-z][\w-]*)\b([^>]*)>/gi)) {
       const child = new Element(tag[1]);
       for (const attr of tag[2].matchAll(/([\w-]+)="([^"]*)"/g)) child.setAttribute(attr[1], attr[2]);
-      this.children.push(child);
+      this.appendChild(child);
     }
   }
   get innerHTML() { return this.markup || ""; }
-  appendChild(child) { this.children.push(child); return child; }
-  prepend(child) { this.children.unshift(child); }
+  remove() { if(this.parentNode){const a=this.parentNode.children,i=a.indexOf(this);if(i>=0)a.splice(i,1);}this.parentNode=null; }
+  appendChild(child) { child.remove();this.children.push(child);child.parentNode=this;return child; }
+  prepend(child) { child.remove();this.children.unshift(child);child.parentNode=this; }
+  replaceChildren(...children) { for(const child of [...this.children])child.remove();this.children=[];children.forEach(child=>this.appendChild(child)); }
   insertBefore(child, reference) {
+    child.remove();child.parentNode=this;
     const index = this.children.indexOf(reference);
     if (index < 0) this.children.push(child); else this.children.splice(index, 0, child);
     return child;
@@ -114,7 +118,7 @@ async function screen(mode, requestedMode = "auto") {
       finals.push({ results, data });
       message.querySelector(".st").textContent = answerScreen(results, data).status;
     },
-    _bindReplayCard: (m) => (m._replay ||= { cursor: 0, complete: false }),
+    _bindReplayCard: (m,team) => { m.dataset.teamId=team;return (m._replay ||= { cursor: 0, complete: false }); },
     sessionStorage: { removeItem() {} },
     ...Object.fromEntries(["_chatScroll", "addUserMsg", "autosize", "_savePersonalDraft",
       "_renderModeFacts", "_memberDeliverySignal", "saveLive", "_renderMilestones"]
@@ -127,7 +131,7 @@ async function screen(mode, requestedMode = "auto") {
   const functions = ["_scrollAtLatest", "_processScrollState", "_captureProgressScroll", "_restoreProgressScroll", "_syncProcessJump", "_syncProcessProgress", "_renderRuntimePulse", "newLegionMsg",
     "_renderLegionHeartbeat", "_renderAgentHeartbeat", "_finalDeliveryData",
     "_deliveryDisplay", "_turnSignature", "_markReplayTerminal", "notifyDone",
-    "_renderProductMilestone", "_renderToolStep", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "_finishResume", "_handoffLiveStream", "resumeLiveV2", "send"];
+    "_renderProductMilestone", "_renderToolStep", "_loadMemberDeliveries", "_renderTerminalError", "_syncProcessMode", "_upgradeMsgMode", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "_finishResume", "_handoffLiveStream", "resumeLiveV2", "send"];
   vm.runInContext([html.match(/^const _PHASE_LABELS=.*$/m)[0], html.match(/^const _PRODUCT_MILESTONES=.*$/m)[0], ...functions.map(pageFunction)].join("\n"), context);
   let sending;
   if (mode === "live") { sending = context.send(); await new Promise(setImmediate); }
@@ -167,6 +171,11 @@ async function screen(mode, requestedMode = "auto") {
       }
       assert.doesNotMatch(message.querySelector(".st").textContent, /连不上服务/);
     },
+    async error(data, eventId = ++sequence) {
+      if(mode==='resume')context.applyLiveEvent('error',data,message,{...state,eventId});
+      else{const resolve=pendingRead;pendingRead=null;resolve({done:false,value:new TextEncoder().encode(`id: ${eventId}\nevent: error\ndata: ${JSON.stringify(data)}\n\n`)});await new Promise(setImmediate);}
+      assert.doesNotMatch(message.querySelector('.st').textContent,/连不上服务/);
+    },
     tick(ms) { clock = ms; for (const fn of intervals.values()) fn(); },
     finish() {
       // Exercise the real completion-fold block, not unrelated artifact rendering.
@@ -179,6 +188,87 @@ async function screen(mode, requestedMode = "auto") {
     async close() { if (pendingRead) pendingRead({ done: true }); await sending; },
   };
 }
+
+for(const mode of ['live','resume'])for(const completed of [false,true])test(`${mode}: terminal error preserves returned members and invalidates pending reads (${completed})`,async()=>{
+  const ui=await screen(mode),{context,message}=ui;
+  context.rich=text=>text;
+  const dispatch=context.fetch;let pending,reads=0;
+  context.fetch=(url,options)=>{
+    if(!url.startsWith('/api/legion/team?'))return dispatch(url,options);
+    reads++;
+    return new Promise(resolve=>{pending=resolve;});
+  };
+  context._loadMemberDeliveries(message);
+  if(completed){
+    pending({ok:true,json:async()=>({team_id:'__ut_team',tasks:{first:{status:'done',result:{status:'done',final:'already returned'}}}})});
+    await new Promise(setImmediate);
+    assert.equal(message._memberDeliveryCards.size,1);
+    context._loadMemberDeliveries(message);
+  }
+  const returned=message._memberDeliveryCards?.get('first')?.card;
+  context._loadMemberDeliveries(message); // queued reread must not escape the terminal.
+  await ui.event({t:'tool_started',call_id:'7',tool:'command',agent:'codex'});
+  await ui.event({t:'tool_started',call_id:'done',tool:'read',agent:'codex'});
+  await ui.event({t:'tool_end',call_id:'done',tool:'read',agent:'codex',ok:true});
+  await ui.error({error:'fixture whole-request error'});
+  const note=message.querySelector('.member-delivery-note');
+  assert.match(note.textContent,/本轮出错/);assert.doesNotMatch(note.textContent,/仍在运行/);
+  const text=note.textContent;
+  pending({ok:true,json:async()=>({team_id:'__ut_team',tasks:{late:{status:'done',result:{status:'done',final:'late response'}}}})});
+  await new Promise(setImmediate);
+  assert.equal(note.textContent,text);assert.equal(reads,completed?2:1);
+  assert.equal(message._memberDeliveryAgain,false);assert.equal(message._memberDeliveryFinal,true);
+  assert.equal(message._memberDeliveryCards?.has('late')||false,false);
+  if(completed){assert.equal(message._memberDeliveryCards.get('first').card,returned);assert.match(note.textContent,/保留 1 项/);}
+  const unfinished=message.querySelector('[data-tool="7"]');
+  assert.equal(unfinished.dataset.toolObservation,'terminal_unobserved');
+  assert.match(unfinished.querySelector('.tl').textContent,/未收到工具终态/);
+  assert.doesNotMatch(unfinished.querySelector('.tl').textContent,/失败|failed|运行中/);
+  assert.ok(message.querySelector('[data-tool="done"]').querySelector('.tl.ok'));
+  await ui.close();
+});
+
+for(const mode of ['live','resume'])test(`${mode}: recorded PK restores selected single without dropping nodes or handlers`,async()=>{
+  const ui=await screen(mode,'pk'),{context,message,proc}=ui;
+  vm.runInContext(pageFunction('_renderModeFacts'),context);
+  await ui.event({t:'tool_started',agent:'codex',tool:'command',call_id:'existing'});
+  const lane=message._pkLanes.codex.querySelector('.pk-lane-body');
+  const artifact=new Element('button');artifact.className='fixture-view-artifact';let clicks=0;
+  artifact.onclick=()=>clicks++;lane.appendChild(artifact);
+  scrollBox(lane);scrollBox(proc);lane.scrollTop=87;lane.dispatch('scroll');
+  const oldRow=lane.querySelector('[data-tool="existing"]');
+  await ui.event({t:'mode_selected',mode:'single',owner:'codex'});
+  assert.equal(message._pkMode,false);assert.equal(proc.dataset.mode,'single');
+  assert.equal(proc.classList.contains('pk-swimlanes'),false);
+  assert.equal(proc.querySelector('.pk-panels'),null);
+  assert.equal(proc.querySelector('[data-tool="existing"]'),oldRow);
+  assert.equal(proc.querySelector('.fixture-view-artifact'),artifact);
+  artifact.onclick();assert.equal(clicks,1);assert.equal(proc.scrollTop,87);
+  await ui.event({t:'tasklist',mode:'pk',tasks:[]}); // Internal executor hint is not a new selected mode.
+  assert.equal(message._pkMode,false);
+  await ui.close();
+});
+
+for(const mode of ['live','resume'])test(`${mode}: PK system events stay inside their own lane rather than squeezing member panels`,async()=>{
+  const ui=await screen(mode,'pk'),{message,proc}=ui;
+  await ui.event({t:'tool_started',agent:'codex',tool:'command',call_id:'author'});
+  const author=message._pkLanes.codex.querySelector('.pk-lane-body');
+  const artifact=new Element('button');author.appendChild(artifact);
+  for(let i=0;i<12;i++)await ui.event({t:'tool_started',agent:'legion',tool:'coordination',call_id:'system-'+i});
+  assert.deepEqual(proc.children.map(child=>child.className),['pk-tabs','pk-panels']);
+  assert.equal(author.children.includes(artifact),true);
+  assert.equal(message._pkLanes.legion.querySelectorAll('.tool-row').length,12);
+  assert.equal(message._pkActive,'codex');
+  await ui.close();
+});
+
+test('auto-to-PK presentation moves existing process nodes instead of clearing them',async()=>{
+  const ui=await screen('resume'),{context,message,proc}=ui;
+  const original=new Element('button');let clicks=0;original.onclick=()=>clicks++;proc.appendChild(original);
+  context._upgradeMsgMode(message,'pk');
+  assert.equal(message._pkLanes.legion.querySelector('.pk-lane-body').children.includes(original),true);
+  original.onclick();assert.equal(clicks,1);
+});
 
 // Deterministic geometry at the DOM boundary, running the actual SSE consumer/renderers.
 // This verifies scroll behavior, not browser layout or screenshot appearance.

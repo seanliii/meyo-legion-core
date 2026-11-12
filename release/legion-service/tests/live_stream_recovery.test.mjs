@@ -16,10 +16,11 @@ function pageFunction(name){
   throw new Error(name);
 }
 const flush=()=>new Promise(setImmediate);
-function node(){return {style:{},dataset:{},textContent:'',disabled:false,isConnected:true,
+function node(){return {style:{},dataset:{},children:[],textContent:'',disabled:false,isConnected:true,
   scrollTop:87,scrollHeight:1200,clientHeight:300,addEventListener(){},
   classList:{contains:()=>false,add(){},remove(){},toggle(){}},
-  appendChild(){},querySelector:()=>null};}
+  appendChild(child){this.children.push(child);},prepend(child){this.children.unshift(child);},setAttribute(){},
+  querySelector(selector){return this.children.find(child=>'.'+child.className===selector)||null;}};}
 function fixture(){
   const cards=[],requests=[],timers=new Map(),storage=new Map(),sendButton=node(),q={value:'continue project'};
   let reader,resolveRead,rejectRead,nextTimer=0,poll=()=>({team_id:'team-A',events:[],last_event_id:1});
@@ -64,7 +65,7 @@ function fixture(){
     },
   });
   const functions=['_replayEntry','_bindReplayCard','_canAttachTeam','saveLive','_markReplayTerminal',
-    'applyLiveEvent','_finishResume','_handoffLiveStream','resumeLiveV2','attachExternalLive',
+    'applyLiveEvent','_renderTerminalError','_finishResume','_handoffLiveStream','resumeLiveV2','attachExternalLive',
     '_syncSessionOnce','cancelLegion','send'];
   vm.runInContext(functions.map(pageFunction).join('\n'),context);
   return {context,cards,requests,timers,storage,sendButton,q,
