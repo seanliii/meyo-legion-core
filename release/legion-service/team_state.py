@@ -912,7 +912,8 @@ def list_auto_resumable(now: float | None = None) -> list[dict]:
             continue  # The parent owns the original turn, not this child's later user requests.
         if policy.get("auto_resume") is not True and not continuation:
             continue
-        if any(str(item.get("key") or "") == "__all__" for item in state.get("cancel_requests") or []):
+        if (any(str(item.get("key") or "") == "__all__" for item in state.get("cancel_requests") or [])
+                and not continuation_after_cancel(state, continuation)):
             continue
         if _resume_lease_active(state, current):
             continue
@@ -1182,12 +1183,17 @@ def update_assignment(team_id: str, task_id: str, harness: str, *, reason: str =
 
 
 def request_cancel(team_id: str, key: str = "", reason: str = "用户停止",
-                   scope: str = "") -> bool:
+                   scope: str = "", *, source_team_id: str = "", source_sequence: int = 0) -> bool:
     """Persist cancellation with an explicit all/task/harness scope."""
     with _state_lock(team_id):
         state = load(team_id)
         if not state:
             return False
+        source = ({"source_team_id": source_team_id, "source_sequence": source_sequence}
+                  if source_team_id and source_sequence else {})
+        if source and any(all(row.get(k) == v for k, v in source.items())
+                          for row in state.get("cancel_requests") or []):
+            return True  # HTTP and progress may observe the same parent Stop.
         now = time.time()
         target = key or "__all__"
         if target == "__all__":
@@ -1197,8 +1203,10 @@ def request_cancel(team_id: str, key: str = "", reason: str = "用户停止",
         else:
             effective_scope = "task" if target in (state.get("tasks") or {}) else "harness"
         message = str(reason or "用户停止")[:200]
+        state["cancel_sequence"] = int(state.get("cancel_sequence") or 0) + 1
         state.setdefault("cancel_requests", []).append(
-            {"key": target, "scope": effective_scope, "reason": message, "ts": now})
+            {"key": target, "scope": effective_scope, "reason": message, "ts": now,
+             "sequence": state["cancel_sequence"], **source})
         state["cancel_requests"] = state["cancel_requests"][-50:]
         state["events"].append({"t": "cancel_requested", "key": target,
                                 "scope": effective_scope, "reason": message, "ts": now})
@@ -1308,7 +1316,18 @@ def send_message(team_id: str, sender: str, recipient: str, text: str,
                 "conversation_id": str(state.get("conversation_id") or team_id),
                 "source_team_id": team_id, "team_id": f"feedback_{suffix}",
                 "text_sha256": digest, "status": "pending",
+                "cancel_boundaries": {team_id: cancellation_boundary(state)},
             }
+            # Capture the latest existing child while accepting this new user
+            # action. A later Stop changes its boundary; wall-clock order is not
+            # used, and old held messages are returned above without migration.
+            for old in reversed(state.get("mailboxes", {}).get(recipient, [])):
+                previous = old.get("continuation") or {}
+                child = load(str(previous.get("team_id") or "")) if previous else None
+                if child:
+                    project_context.require_owner(child, user_id, continuation["conversation_id"])
+                    continuation["cancel_boundaries"][child["team_id"]] = cancellation_boundary(child)
+                    break
         state["message_seq"] = int(state.get("message_seq", 0)) + 1
         body = str(text or "")
         refs = list(artifact_refs or [])
@@ -1333,6 +1352,24 @@ def send_message(team_id: str, sender: str, recipient: str, text: str,
         return msg
 
 
+def cancellation_boundary(state: dict) -> dict:
+    """Ordered Stop facts, including legacy rows, without rewriting their ledger."""
+    import hashlib
+    return {"sequence": int(state.get("cancel_sequence") or 0),
+            "sha256": hashlib.sha256(json.dumps(state.get("cancel_requests") or [],
+                ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+
+
+def continuation_after_cancel(state: dict, message: dict | None) -> bool:
+    """Only a saved owner action accepted after the currently recorded Stops."""
+    request = (message or {}).get("continuation") or {}
+    return bool(request.get("status") in {"pending", "running"}
+                and request.get("user_id") == state.get("user_id")
+                and request.get("conversation_id") == state.get("conversation_id")
+                and (request.get("cancel_boundaries") or {}).get(state.get("team_id"))
+                == cancellation_boundary(state))
+
+
 def pending_continuation(state: dict) -> dict | None:
     """An authenticated user action, not read_at, feedback text or an observation."""
     for message in (state.get("mailboxes") or {}).get("commander", []):
@@ -1354,6 +1391,12 @@ def record_continuation(team_id: str, request_id: str, *, owner: str = "", **fac
         for message in (state.get("mailboxes") or {}).get("commander", []):
             request = message.get("continuation") or {}
             if request.get("request_id") == request_id:
+                if owner and facts.get("status") == "running":
+                    from legion_contracts import resume_facts_from_state
+                    admission = resume_facts_from_state(state, lease_owner=owner)
+                    selected = (admission.get("continuation") or {}).get("continuation") or {}
+                    if not admission["eligible"] or selected.get("request_id") != request_id:
+                        return False
                 request.update({key: value for key, value in facts.items()
                                 if key in {"status", "reason", "started_at", "returned_at"}})
                 _write(state)

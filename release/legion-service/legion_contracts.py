@@ -461,7 +461,11 @@ def resume_facts_from_state(state: dict, *, explicit: bool = False,
     admitted = bool(lease_owner and lease.get("owner") == lease_owner)
     if team_state._resume_lease_active(state, current) and not admitted:
         return {**facts, "reason": "active_resume_lease"}
-    if team_state._cancel_request_for(state, "commander", {"assigned_harness": captain}):
+    after_cancel = team_state.continuation_after_cancel(state, continuation)
+    if (continuation and (continuation.get("continuation") or {}).get("cancel_boundaries")
+            and not after_cancel):
+        return {**facts, "reason": "cancelled_after_feedback"}
+    if team_state._cancel_request_for(state, "commander", {"assigned_harness": captain}) and not after_cancel:
         return {**facts, "reason": "cancelled"}
     if any(task.get("active_attempt") is not None
            and float(task.get("lease_expires_at") or 0) > current
@@ -472,7 +476,7 @@ def resume_facts_from_state(state: dict, *, explicit: bool = False,
     terminal = team_state._resume_terminal_result(state)
     if terminal.get("_resume_receipt_unavailable"):
         return {**facts, "reason": "terminal_resume_receipt_unavailable"}
-    if terminal.get("cancelled"):
+    if terminal.get("cancelled") and not after_cancel:
         return {**facts, "reason": "cancelled"}
     # Coordination pauses are not business nodes. Read the actual terminal
     # receipt, not its missing-action label or a model's natural-language claim.
@@ -497,13 +501,17 @@ def resume_facts_from_state(state: dict, *, explicit: bool = False,
         budget_stop = (isinstance(envelope, dict) and envelope.get("retryable") is False
                        and envelope.get("category") in ("runtime_budget", "native_iteration_budget")
                        and row.get("status") not in ("done", "ok", "success", "completed"))
-        return requires_execution_pause(row) or budget_stop
+        # Stop may coexist with an unsettled native turn or a provider/budget
+        # hold. A new feedback action supersedes only cancellation itself.
+        pause_row = {**row, "status": "error"} if isinstance(row, dict) and row.get("status") == "cancelled" else row
+        return requires_execution_pause(pause_row) or budget_stop
 
     if any(paused(row) for row in control_results):
         return {**facts, "reason": "coordination_execution_paused"}
     # A newly admitted coordinator must not bypass an existing request pause.
     if (persistent or continuation) and any(
-            paused(task.get("result")) or (task.get("result") or {}).get("status") == "cancelled"
+            paused(task.get("result")) or (
+                (task.get("result") or {}).get("status") == "cancelled" and not after_cancel)
             for task in (state.get("tasks") or {}).values()):
         return {**facts, "reason": "execution_paused"}
     if continuation:
@@ -515,7 +523,8 @@ def resume_facts_from_state(state: dict, *, explicit: bool = False,
             if not child:
                 continue
             project_context.require_owner(child, uid, sid)
-            if (team_state._cancel_request_for(child, "commander", {})
+            if ((team_state._cancel_request_for(child, "commander", {})
+                 and not team_state.continuation_after_cancel(child, continuation))
                     or any(paused(task.get("result"))
                            for task in (child.get("tasks") or {}).values())
                     or paused(team_state._resume_terminal_result(child))):
@@ -590,11 +599,19 @@ def _resumable_status(task: dict) -> bool:
     return False
 
 
-def resume_plan_from_state(state: Any, *, include_completed: bool = False) -> tuple[dict, str]:
+def resume_plan_from_state(state: Any, *, include_completed: bool = False,
+                           feedback: dict | None = None) -> tuple[dict, str]:
     """从持久 TeamState 重建只含未完成节点的计划；已完成依赖已在状态与产物引用中保留。"""
     state = state if isinstance(state, dict) else {}
     stored_tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
     pending = {key for key, task in stored_tasks.items() if _resumable_status(task)}
+    if feedback is not None:
+        import team_state
+        if not team_state.continuation_after_cancel(state, feedback):
+            raise ValueError("feedback_cancellation_boundary_changed")
+        # Project cancelled nodes into the NEW invocation, retaining native lane,
+        # criteria and capabilities. Never reopen/write the old cancelled tasks.
+        pending |= {key for key, task in stored_tasks.items() if task.get("status") == "cancelled"}
     held = retained_resume_results(state, include_completed=include_completed)
     if include_completed:
         pending |= set(held)

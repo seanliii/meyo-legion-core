@@ -3293,8 +3293,23 @@ class Handler(BaseHTTPRequestHandler):
             requested_scope = str(payload.get("scope") or "")
             if key and requested_scope not in {"task", "harness"}:
                 requested_scope = "task" if key in (state.get("tasks") or {}) else "harness"
-            out = LEGION.request_cancel(team_id, key or None, reason, scope=requested_scope)
             TEAMS.request_cancel(team_id, key=key, reason=reason, scope=requested_scope)
+            out = LEGION.request_cancel(team_id, key or None, reason, scope=requested_scope)
+            # A new Stop also reaches an admitted feedback invocation, including
+            # the interval before its dispatcher has created the child state.
+            cancelled_state = TEAMS.load(team_id) or {}
+            for message in cancelled_state.get("mailboxes", {}).get("commander", []):
+                request = message.get("continuation") or {}
+                if request.get("status") != "running" or not request.get("team_id"):
+                    continue
+                child = request["team_id"]
+                for stop in _feedback_cancel_requests(cancelled_state, message):
+                    stop_key = str(stop.get("key") or "")
+                    stop_key = "" if stop_key == "__all__" else stop_key
+                    stop_reason, stop_scope = stop.get("reason") or "用户停止", stop.get("scope") or ""
+                    TEAMS.request_cancel(child, key=stop_key, reason=stop_reason, scope=stop_scope,
+                                         source_team_id=team_id, source_sequence=int(stop.get("sequence") or 0))
+                    LEGION.request_cancel(child, stop_key or None, stop_reason, scope=stop_scope)
             self._send_json({**out, "team_id": team_id, "key": key or None})
         elif parsed.path == "/api/legion/session_append":
             # 对已有 session 再跑一轮军团并追加(持续生成内容·继续对话的服务端形式)
@@ -5383,6 +5398,26 @@ _feedback_workers: set[str] = set()
 _feedback_workers_lock = threading.Lock()
 
 
+def _feedback_cancel_requests(state: dict, message: dict) -> list[dict]:
+    """Forward only Stops recorded after this owned invocation was accepted."""
+    import hashlib
+    request = message.get("continuation") or {}
+    team_id = str(state.get("team_id") or "")
+    suffix = hashlib.sha256((team_id + "\0" + str(request.get("request_id") or "")).encode()).hexdigest()[:20]
+    if (request.get("source_team_id") != team_id
+            or request.get("user_id") != state.get("user_id")
+            or request.get("conversation_id") != state.get("conversation_id")
+            or request.get("team_id") != "feedback_" + suffix):
+        return []
+    child = TEAMS.load(request["team_id"])
+    if child and (child.get("user_id") != state.get("user_id")
+                  or child.get("conversation_id") != state.get("conversation_id")):
+        return []
+    boundary = (request.get("cancel_boundaries") or {}).get(team_id)
+    return [stop for stop in state.get("cancel_requests") or []
+            if boundary is None or int(stop.get("sequence") or 0) > int(boundary.get("sequence") or 0)]
+
+
 def _schedule_feedback_resume(team_id: str, user_id: str, conversation_id: str):
     """Wake the existing recovery entry; at most one local waiter per team."""
     with _feedback_workers_lock:
@@ -5478,7 +5513,8 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
                 return recovered
             out = recovered["result"]
     else:
-        plan, mode = resume_plan_from_state(state, include_completed=True)
+        plan, mode = resume_plan_from_state(state, include_completed=True,
+                                           feedback=message if request.get("cancel_boundaries") else None)
         tasks = state.get("tasks") or {}
         captain = str(state.get("captain") or "")
         persistent = mode == "orchestrate" and captain not in ("", "unselected")
@@ -5542,8 +5578,10 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
         require_project_access(packet)  # Grants may be revoked while the request is queued.
         import personal_identity
         personal_identity.bind_plan_attachments(plan, user_id, conversation_id)
-        TEAMS.record_continuation(
-            team_id, request_id, owner=owner, status="running", started_at=time.time())
+        if not TEAMS.record_continuation(
+                team_id, request_id, owner=owner, status="running", started_at=time.time()):
+            return {"ok": True, "status": "unchanged", "team_id": team_id,
+                    "reason": "feedback_not_admitted"}
         SESSIONS.save_turn(
             conversation_id, feedback, {"team_id": child, "status": "running", "results": []},
             mode=mode, user_id=user_id)
@@ -5563,10 +5601,30 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
                     stream_started = True
                 return TEAMS.append_event(child, event, event_type)
 
+        forwarded_stops = set()
+
+        def forward_stops():
+            parent = TEAMS.load(team_id) or {}
+            if request.get("cancel_boundaries"):
+                # The parent's old in-memory flag is not a Stop for this round.
+                # Persisted sequence, not HTTP completion order, decides.
+                for stop in _feedback_cancel_requests(parent, message):
+                    sequence = stop.get("sequence")
+                    if sequence not in forwarded_stops:
+                        key = str(stop.get("key") or "")
+                        LEGION.request_cancel(child, None if key == "__all__" else key,
+                                              stop.get("reason") or "用户停止", scope=stop.get("scope") or "")
+                        if TEAMS.request_cancel(
+                                child, key="" if key == "__all__" else key,
+                                reason=stop.get("reason") or "用户停止", scope=stop.get("scope") or "",
+                                source_team_id=team_id, source_sequence=int(sequence or 0)):
+                            forwarded_stops.add(sequence)
+            elif LEGION.is_cancelled(team_id):
+                LEGION.request_cancel(child)
+
         def progress(event):
             TEAMS.renew_resume(team_id, owner)
-            if LEGION.is_cancelled(team_id):
-                LEGION.request_cancel(child)
+            forward_stops()
             if (not isinstance(event, dict) or event.get("t") == "runtime_activity"
                     or LEGION._private_transport_output(event)
                     or ARTIFACTS._is_private_artifact_event(event)):
@@ -5579,6 +5637,7 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
                 user_id=user_id, conversation_id=conversation_id,
                 **({"_retained_results": retained} if retained else {}))
             out["team_id"] = child
+            forward_stops()  # A pre-start Stop may return before any callback.
             persist_event(out, "final")
         except Exception as exc:
             try:

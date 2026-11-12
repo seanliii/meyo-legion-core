@@ -26,6 +26,8 @@ from test_native_model_continuation_cpu import unbound, M1, M2, M3
     ("request", ("A",), None),
     ("fixed", ("A",), None),
     ("provider", ("A",), None),
+    ("automatic", ("A",), "cancelled"),
+    ("provider", ("A",), "cancelled"),
     *[("automatic", ("A", "B"), change) for change in (
         "missing", "wrong-team", "wrong-owner", "wrong-checkpoint",
         "wrong-model", "duplicate-node", "missing-workdir")],
@@ -33,6 +35,7 @@ from test_native_model_continuation_cpu import unbound, M1, M2, M3
 def test_http_feedback_preserves_node_models_and_explicit_choices(
         unbound, selection, order, receipt_change):
     case, core, mp = unbound, unbound.core, unbound.monkeypatch
+    mp.setattr(core, "_CANCEL_REGISTRY", {})
     server = importlib.import_module("server")
     persistent = len(order) > 1
     original_models = {key: {"A": M1, "B": M3}[key] for key in order}
@@ -49,7 +52,9 @@ def test_http_feedback_preserves_node_models_and_explicit_choices(
         "model_used": original_models[call["task_id"]],
     }
     parent = "__ut_feedback_models_" + selection + "_" + "".join(order)
-    plan = _plan(case, {key: _node("Original synthetic node " + key) for key in order})
+    plan = _plan(case, {key: _node("Original synthetic node " + key,
+                                  scope="conversation" if receipt_change == "cancelled" else None)
+                       for key in order})
     plan["captain"] = RELAY if persistent else ""
     original = core.dispatch(
         QUESTION, plan, qhash=parent, mode="orchestrate" if persistent else "relay", user_id=USER,
@@ -68,9 +73,18 @@ def test_http_feedback_preserves_node_models_and_explicit_choices(
     elif selection == "fixed":
         mp.setattr(case.mr, "_load_prefs", lambda: {RELAY: M2})
     case.teams._write(state)
+    if receipt_change == "cancelled":
+        case.teams.request_cancel(parent, reason="original maintenance Stop")
+        core.request_cancel(parent, reason="original maintenance Stop")
+        state = case.teams.load(parent)
+        state["tasks"]["A"]["status"] = "cancelled"
+        state["tasks"]["A"]["result"]["status"] = "cancelled"
+        case.teams._write(state)
     original_tasks = deepcopy(state["tasks"])
     receipt = deepcopy(original)
     source_a = next(row for row in receipt["results"] if row.get("task_id") == "A")
+    if receipt_change == "cancelled":
+        source_a["status"] = "cancelled"
     if receipt_change == "missing":
         receipt["results"] = []
     elif receipt_change == "wrong-team":
@@ -144,7 +158,7 @@ def test_http_feedback_preserves_node_models_and_explicit_choices(
                 else dict(original_models))
     if receipt_change in ("missing", "wrong-team"):
         expected = dict.fromkeys(order, M2)
-    elif receipt_change:
+    elif receipt_change and receipt_change != "cancelled":
         expected["A"] = M2
     diagnostic = {
         "selection": selection, "order": order, "receipt_change": receipt_change,
@@ -158,6 +172,10 @@ def test_http_feedback_preserves_node_models_and_explicit_choices(
         assert resumed[node]["checkpoint"]["session_id"] == "__ut_feedback_native_" + node
         assert resumed[node]["session_id"] == first_calls[node]["session_id"]
         assert resumed[node]["memory_workdir"] == str(case.work)
+        assert resumed[node]["provider"] == first_calls[node]["provider"]
+    if receipt_change == "cancelled":
+        assert core.is_cancelled(parent) and not core.is_cancelled(resumes[0]["team_id"])
+        assert invocations[0]["plan"]["tasks"]["A"]["native_session_scope"] == "conversation"
     assert case.teams.load(parent)["tasks"] == original_tasks, "do not erase the old model facts"
     expected_overrides = {RELAY: M2} if selection == "request" else {}
     if not persistent and selection == "automatic":

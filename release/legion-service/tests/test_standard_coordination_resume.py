@@ -568,13 +568,11 @@ def test_duplicate_feedback_request_id_does_not_dispatch_twice(case):
     assert len(case.member_calls) == 1
 
 
-@pytest.mark.parametrize("stop", ["cancelled", "runtime_budget", "native_unsettled"])
+@pytest.mark.parametrize("stop", ["runtime_budget", "native_unsettled"])
 def test_feedback_never_clears_an_existing_stop(case, stop):
     seed_single_feedback(case)
     state = case.teams.load(TEAM)
-    if stop == "cancelled":
-        state["cancel_requests"] = [{"key": "__all__"}]
-    elif stop == "runtime_budget":
+    if stop == "runtime_budget":
         state["tasks"]["A"]["result"] = {
             "status": "error", "error_envelope": {
                 "category": "runtime_budget", "retryable": False, "scope": "request"}}
