@@ -17,7 +17,7 @@ PROJECT = HERE.parents[1]
 KEY_ENV = "MEYO_PERSONAL_PROVIDER_KEY"
 MODEL_PROFILE_ENV = ("MEYO_PERSONAL_STATE_DIR", "LEGION_PERSONAL_OWNER")
 _MODEL_CONTEXT_OPTIONS = ("context_window", "model_auto_compact_token_limit")
-_MODEL_PROFILE_OPTIONS = ("input_modalities", *_MODEL_CONTEXT_OPTIONS)
+_MODEL_PROFILE_OPTIONS = ("input_modalities", "image_file_cache", *_MODEL_CONTEXT_OPTIONS)
 _STATE_DIRS = ("secrets", "home", "codex-home", "data", "legion-home",
                "registry", "repos", "runtimes", "tmp")
 _PASSTHROUGH = {
@@ -401,7 +401,8 @@ def configure_mobile(state_dir: Path | str, key_file: Path | str, *,
 def configure_model(state_dir: Path | str, model: str, base_url: str, key_file: Path | str,
                     *, input_modalities: list[str] | None = None,
                     context_window: int | None = None,
-                    model_auto_compact_token_limit: int | None = None) -> dict:
+                    model_auto_compact_token_limit: int | None = None,
+                    image_file_cache: dict | None = None) -> dict:
     root = _root(state_dir)
     _configuration(root)
     key = _private(Path(key_file).expanduser().absolute(), limit=4096).decode().strip()
@@ -414,6 +415,7 @@ def configure_model(state_dir: Path | str, model: str, base_url: str, key_file: 
             **({"context_window": context_window} if context_window is not None else {}),
             **({"model_auto_compact_token_limit": model_auto_compact_token_limit}
                if model_auto_compact_token_limit is not None else {}),
+            **({"image_file_cache": image_file_cache} if image_file_cache is not None else {}),
         }), KEY_ENV: key,
     })
     with _locked(root):
@@ -551,7 +553,8 @@ def save_model_profile(state_dir: Path | str, profile_id: str, model: str,
                        base_url: str, key_file: Path | str,
                        *, input_modalities: list[str] | None = None,
                        context_window: int | None = None,
-                       model_auto_compact_token_limit: int | None = None) -> dict:
+                       model_auto_compact_token_limit: int | None = None,
+                       image_file_cache: dict | None = None) -> dict:
     """Append one private candidate; never change the actual runtime binding."""
     root = _root(state_dir)
     profile_id = _profile_id(profile_id)
@@ -567,6 +570,7 @@ def save_model_profile(state_dir: Path | str, profile_id: str, model: str,
             **({"context_window": context_window} if context_window is not None else {}),
             **({"model_auto_compact_token_limit": model_auto_compact_token_limit}
                if model_auto_compact_token_limit is not None else {}),
+            **({"image_file_cache": image_file_cache} if image_file_cache is not None else {}),
         })
         profiles[profile_id] = binding
         _write_model_profiles(root, profiles)
@@ -691,6 +695,10 @@ def main(argv=None) -> int:
                                  help="该绑定已确认的模型容量；省略则保持未知")
             command.add_argument("--model-auto-compact-token-limit", type=int,
                                  help="明确选择的原生上下文整理阈值；未指定不替用户决定")
+            command.add_argument("--image-file-cache-ttl-seconds", type=int,
+                                 help="显式启用同提供方 Files 图片复用，TTL 3600..2592000 秒；默认关闭")
+            command.add_argument("--image-file-cache-default-detail", choices=("high", "original", "auto"),
+                                 help="已核实的省略 detail 语义；不声明则省略 detail 的图片保持 inline")
         elif name == "activate-model-profile":
             command.add_argument("--id", required=True, help="明确选择已保存的候选")
         elif name == "configure-capabilities":
@@ -722,6 +730,14 @@ def main(argv=None) -> int:
         args.state_dir = args.state_dir.expanduser().absolute()
         if args.command in ("configure-model", "save-model-profile"):
             args.api_key_file = args.api_key_file.expanduser().absolute()
+            args.image_file_cache = None
+            if args.image_file_cache_default_detail and args.image_file_cache_ttl_seconds is None:
+                raise ValueError("默认图片语义必须与显式 Files TTL 一起声明")
+            if args.image_file_cache_ttl_seconds is not None:
+                args.image_file_cache = {"profile": "deepseek-files-v1",
+                                        "ttl_seconds": args.image_file_cache_ttl_seconds}
+                if args.image_file_cache_default_detail:
+                    args.image_file_cache["default_detail"] = args.image_file_cache_default_detail
         if args.command == "init":
             result = initialize(args.state_dir, args.user, args.port)
         elif args.command == "dsh-config":
@@ -742,7 +758,8 @@ def main(argv=None) -> int:
                                         args.base_url, args.api_key_file,
                                         input_modalities=args.input_modality,
                                         context_window=args.context_window,
-                                        model_auto_compact_token_limit=args.model_auto_compact_token_limit)
+                                        model_auto_compact_token_limit=args.model_auto_compact_token_limit,
+                                        image_file_cache=args.image_file_cache)
         elif args.command == "list-model-profiles":
             result = list_model_profiles(args.state_dir)
         elif args.command == "activate-model-profile":
@@ -762,7 +779,8 @@ def main(argv=None) -> int:
                 result = configure_model(args.state_dir, args.model, args.base_url,
                                          args.api_key_file, input_modalities=args.input_modality,
                                          context_window=args.context_window,
-                                         model_auto_compact_token_limit=args.model_auto_compact_token_limit)
+                                         model_auto_compact_token_limit=args.model_auto_compact_token_limit,
+                                         image_file_cache=args.image_file_cache)
             elif args.command == "configure-capabilities":
                 result = configure_capabilities(args.state_dir, args.tool)
             else:

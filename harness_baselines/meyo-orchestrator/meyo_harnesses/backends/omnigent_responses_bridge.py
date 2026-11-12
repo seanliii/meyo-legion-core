@@ -63,11 +63,12 @@ def transparent_bridge(binding: dict, environment: dict, checkpoint: dict | None
     except (ValueError, OverflowError):
         raise NativeBindingError("bridge_stream_timeout_invalid", "显式流等待预算须为正有限整数") from None
     error_profile = binding.get("error_compatibility_profile")
+    image_files = binding.get("image_file_cache")
     if ("error_compatibility_profile" in binding
             and error_profile != "invalid-prompt-max-length-v1"):
         raise NativeBindingError("bridge_error_profile_invalid", "显式错误兼容配置不受支持")
     if (not binding.get("http_headers") and limit is None and stream_idle is None
-            and error_profile is None):
+            and error_profile is None and image_files is None):
         yield binding
         return
     if os.name != "posix":
@@ -121,6 +122,20 @@ def transparent_bridge(binding: dict, environment: dict, checkpoint: dict | None
             config["stream_idle_timeout_ms"] = stream_idle
         if error_profile is not None:
             config["error_compatibility_profile"] = error_profile
+        if image_files is not None:
+            # Use the native user's original private state, never cwd or a task-selected path.
+            home = environment.get("CODEX_HOME")
+            if not home and environment.get("HOME"):
+                home = str(Path(environment["HOME"]) / ".codex")
+            user = binding.get("image_file_cache_user")
+            workdir = binding.get("image_file_cache_workdir")
+            if (not home or not Path(home).is_absolute() or not isinstance(user, str)
+                    or not user.strip() or not workdir or not Path(workdir).is_absolute()
+                    or Path(home).resolve().is_relative_to(Path(workdir).resolve())):
+                raise NativeBindingError("image_files_state_invalid", "Files 缓存需要原用户私有状态及明确归属，不能位于工程目录")
+            config.update(image_file_cache=image_files,
+                          image_file_cache_root=str(Path(home).resolve() / "meyo-image-files"),
+                          image_file_cache_user=user)
         env = dict(environment, MEYO_RESPONSES_BRIDGE_MODE="passthrough",
                    MEYO_RESPONSES_BRIDGE_BINDING=json.dumps(config))
         env.pop("MEYO_RESPONSES_ACTIVITY_FD", None)

@@ -845,6 +845,21 @@ def explicit_responses_binding(environment: dict | None = None) -> dict:
             error.binding_option = "error_compatibility_profile"
             raise error from None
         extra["error_compatibility_profile"] = config["error_compatibility_profile"]
+    if "image_file_cache" in config:
+        option = config["image_file_cache"]
+        if (not isinstance(option, dict)
+                or not {"profile", "ttl_seconds"} <= set(option)
+                or not set(option) <= {"profile", "ttl_seconds", "default_detail"}
+                or option.get("profile") != "deepseek-files-v1"
+                or type(option.get("ttl_seconds")) is not int
+                or not 3600 <= option["ttl_seconds"] <= 2592000
+                or ("default_detail" in option
+                    and option["default_detail"] not in ("high", "original", "auto"))):
+            error = ValueError("显式 Responses 的 image_file_cache 须声明 deepseek-files-v1、"
+                               "3600..2592000 秒 TTL；默认图片语义仅可显式声明 high/original/auto")
+            error.binding_option = "image_file_cache"
+            raise error from None
+        extra["image_file_cache"] = dict(option)
     return {"model": model, "base_url": endpoint["base_url"], "api_key": key, **extra}
 
 

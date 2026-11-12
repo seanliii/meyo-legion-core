@@ -16,6 +16,37 @@ ENTRY = SERVICE.parents[1] / "meyo.py"
 LIBRARY = "secrets/model-profiles.json"
 
 
+def test_files_transport_option_survives_profile_activation_and_rollback(runtime, root, tmp_path):
+    original = legacy(runtime, root, tmp_path)
+    option = {"profile": "deepseek-files-v1", "ttl_seconds": 3600, "default_detail": "auto"}
+    runtime.save_model_profile(root, "files", "legacy-fixture", "https://legacy.example.invalid/v1",
+                               key_file(tmp_path, "files"), image_file_cache=option)
+    assert (root / "secrets/model.json").read_bytes() == original
+    activation = runtime.activate_model_profile(root, "files")
+    env, _ = runtime.environment(root, inherited={})
+    binding = json.loads(env["LEGION_CODEX_RESPONSES_BINDING"])
+    assert binding["image_file_cache"] == option
+    assert "api_key" not in binding
+    runtime.activate_model_profile(root, activation["rollback_profile"])
+    assert (root / "secrets/model.json").read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["configure-model", "save-model-profile"])
+def test_files_transport_cli_saves_explicit_options(runtime, root, tmp_path, command):
+    args = [command, "--state-dir", root, "--model", "files-fixture",
+            "--base-url", "https://files.example.invalid/v1", "--api-key-file", key_file(tmp_path, "files-cli"),
+            "--image-file-cache-ttl-seconds", "3600", "--image-file-cache-default-detail", "auto"]
+    if command == "save-model-profile":
+        args += ["--id", "files"]
+    rc, out, err = cli(tmp_path, *args)
+    assert rc == 0, err
+    saved = json.loads((root / ("secrets/model.json" if command == "configure-model" else LIBRARY)).read_text())
+    if command == "save-model-profile":
+        saved = saved["files"]
+    assert saved["image_file_cache"] == {"profile": "deepseek-files-v1", "ttl_seconds": 3600, "default_detail": "auto"}
+    assert "fake-profile-key-files-cli" not in out + err
+
+
 def test_explicit_binding_preserves_declared_inputs_without_verification(runtime):
     registry = importlib.import_module("model_registry")
     binding = registry.explicit_responses_binding({

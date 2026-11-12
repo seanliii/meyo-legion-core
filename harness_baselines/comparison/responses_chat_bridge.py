@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Legacy Responses→Chat bridge, or explicitly bound transparent Responses transport."""
 import argparse
+import base64
+import binascii
+from contextlib import asynccontextmanager
 import copy
 import hashlib
 import hmac
@@ -11,6 +14,7 @@ import re
 import stat
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
@@ -51,6 +55,9 @@ class _ResponsesBinding:
     stream_idle_timeout_ms: int | None = None
     activity_fd: int | None = None
     error_compatibility_profile: str | None = None
+    image_file_cache: dict | None = None
+    image_file_cache_root: str | None = None
+    image_file_cache_user: str | None = None
 
 
 def _configure_mode(application, environment=None):
@@ -98,6 +105,21 @@ def _configure_mode(application, environment=None):
     error_profile = raw.get("error_compatibility_profile")
     if "error_compatibility_profile" in raw and error_profile != _ERROR_PROFILE:
         raise ValueError("unsupported bound error compatibility profile")
+    image_files = raw.get("image_file_cache")
+    if "image_file_cache" in raw:
+        if (not isinstance(image_files, dict)
+                or not {"profile", "ttl_seconds"} <= set(image_files)
+                or not set(image_files) <= {"profile", "ttl_seconds", "default_detail"}
+                or image_files.get("profile") != "deepseek-files-v1"
+                or type(image_files.get("ttl_seconds")) is not int
+                or not 3600 <= image_files["ttl_seconds"] <= 2592000
+                or ("default_detail" in image_files
+                    and image_files["default_detail"] not in ("high", "original", "auto"))
+                or not isinstance(raw.get("image_file_cache_root"), str)
+                or not Path(raw["image_file_cache_root"]).is_absolute()
+                or not isinstance(raw.get("image_file_cache_user"), str)
+                or not raw["image_file_cache_user"].strip()):
+            raise ValueError("invalid bound image Files cache configuration")
     activity_fd = None
     if "MEYO_RESPONSES_ACTIVITY_FD" in env:
         try:
@@ -110,7 +132,206 @@ def _configure_mode(application, environment=None):
     application.state.responses_binding = _ResponsesBinding(
         raw["binding_id"], raw["model"], raw["base_url"].rstrip("/"),
         raw["api_key"], raw["client_token"], tuple(headers.items()), timeout, limit,
-        stream_idle, activity_fd, error_profile)
+        stream_idle, activity_fd, error_profile, image_files,
+        raw.get("image_file_cache_root"), raw.get("image_file_cache_user"))
+
+
+class _ImageFilesError(Exception):
+    """Only bounded stage/code/status facts escape; never provider bodies or URLs."""
+    def __init__(self, stage, code, status=None):
+        super().__init__(code)
+        self.stage, self.code, self.status = stage, code, status
+
+    def response(self):
+        # A failed dependency is explicit and does not invite native 5xx retries.
+        error = {"type": "image_file_transport_error", "code": self.code,
+                 "stage": self.stage, "message": "Image Files transport failed at " + self.stage}
+        if self.status is not None:
+            error["upstream_status"] = self.status
+        return JSONResponse(status_code=424, content={"error": error})
+
+
+def _private_cache_dir(binding):
+    root = Path(binding.image_file_cache_root)
+    # User, upstream identity and exact bytes are separate cache dimensions.
+    user = hashlib.sha256(binding.image_file_cache_user.encode()).hexdigest()
+    upstream = hashlib.sha256(json.dumps(
+        [binding.model, binding.base_url, binding.api_key, binding.http_headers],
+        separators=(",", ":")).encode()).hexdigest()
+    for directory in (root, root / user, root / user / upstream):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077):
+            raise _ImageFilesError("files_cache", "files_cache_not_private")
+    return directory
+
+
+def _private_cache_open(path, flags):
+    fd = os.open(path, flags | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077):
+        os.close(fd)
+        raise _ImageFilesError("files_cache", "files_cache_not_private")
+    return fd
+
+
+@asynccontextmanager
+async def _image_cache_lock(path, timeout):
+    import fcntl
+    fd = _private_cache_open(path, os.O_CREAT | os.O_RDWR)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise _ImageFilesError("files_cache", "files_cache_busy") from None
+                await anyio.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)
+
+
+async def _files_call(client, binding, method, suffix, stage, **kwargs):
+    # No request-supplied identity, destination, redirects or automatic retries.
+    headers = {k: v for k, v in binding.http_headers
+               if k.lower() not in {"content-type", "content-length", "content-encoding"}
+               | _REPRESENTATION_VALIDATORS}
+    headers["Authorization"] = "Bearer " + binding.api_key
+    try:
+        response = await client.request(method, binding.base_url + suffix, headers=headers, **kwargs)
+    except httpx.HTTPError as exc:
+        code = "files_timeout" if isinstance(exc, httpx.TimeoutException) else "files_network_error"
+        raise _ImageFilesError(stage, code) from None
+    if not 200 <= response.status_code < 300:
+        raise _ImageFilesError(stage, "files_http_error", response.status_code)
+    try:
+        result = response.json()
+    except ValueError:
+        raise _ImageFilesError(stage, "files_invalid_response") from None
+    if not isinstance(result, dict):
+        raise _ImageFilesError(stage, "files_invalid_response")
+    return result
+
+
+def _file_metadata(value, size, stage, expected_id=None):
+    file_id = value.get("id")
+    if (not isinstance(file_id, str) or not re.fullmatch(r"file-api-[A-Za-z0-9_-]+", file_id)
+            or (expected_id is not None and file_id != expected_id)
+            or value.get("object") != "file" or value.get("purpose") != "user_data"
+            or type(value.get("bytes")) is not int or value["bytes"] != size
+            or type(value.get("created_at")) is not int
+            or type(value.get("expires_at")) is not int):
+        raise _ImageFilesError(stage, "files_invalid_metadata")
+    return file_id
+
+
+async def _cached_image_file(client, binding, directory, data, mime, digest):
+    path = directory / (digest + ".json")
+    ttl = binding.image_file_cache["ttl_seconds"]
+    async with _image_cache_lock(directory / (digest + ".lock"), binding.timeout_s):
+        try:
+            with os.fdopen(_private_cache_open(path, os.O_RDONLY)) as source:
+                cached = json.load(source)
+        except FileNotFoundError:
+            cached = None
+        except (ValueError, UnicodeError):
+            raise _ImageFilesError("files_cache", "files_cache_invalid") from None
+        if cached is not None:
+            if (not isinstance(cached, dict) or cached.get("sha256") != digest
+                    or type(cached.get("cache_until")) is not int
+                    or type(cached.get("uploaded_at")) is not int):
+                raise _ImageFilesError("files_cache", "files_cache_invalid")
+            file_id = _file_metadata(cached, len(data), "files_cache")
+            if min(cached["cache_until"], cached["created_at"] + ttl,
+                   cached["uploaded_at"] + ttl) > time.time():
+                try:
+                    remote = await _files_call(client, binding, "GET", "/files/" + file_id,
+                                               "files_validate")
+                except _ImageFilesError as exc:
+                    if exc.status in (404, 410):
+                        path.unlink()  # Report this failure; a later request may upload anew.
+                    raise
+                _file_metadata(remote, len(data), "files_validate", file_id)
+                if remote["expires_at"] <= time.time():
+                    path.unlink()
+                    raise _ImageFilesError("files_validate", "files_expired")
+                return file_id
+            path.unlink()  # Normal local TTL eviction, followed by one upload.
+        started = int(time.time())
+        value = await _files_call(
+            client, binding, "POST", "/files", "files_upload",
+            data={"purpose": "user_data", "expires_after[anchor]": "created_at",
+                  "expires_after[seconds]": str(ttl)},
+            files={"file": ("image." + mime.split("/")[1], data, mime)})
+        file_id = _file_metadata(value, len(data), "files_upload")
+        until = min(value["expires_at"], value["created_at"] + ttl, started + ttl)
+        if until <= time.time():
+            raise _ImageFilesError("files_upload", "files_expired")
+        record = {name: value[name] for name in ("id", "object", "purpose", "bytes",
+                                                "created_at", "expires_at")}
+        record.update(sha256=digest, cache_until=until, uploaded_at=started)
+        temporary = directory / (digest + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            with os.fdopen(_private_cache_open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY), "w") as out:
+                json.dump(record, out, separators=(",", ":"))
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return file_id
+
+
+async def _reuse_image_files(body, binding, client):
+    """Change only supported input parts in this parsed sending copy, never a rollout."""
+    if binding.image_file_cache is None or not isinstance(body.get("input"), list):
+        return False
+    directory, memo, changed = None, {}, False
+    try:
+        for item in body["input"]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in ("function_call_output", "custom_tool_call_output"):
+                parts = item.get("output")
+            elif (item.get("type", "message") == "message"
+                  and item.get("role") in ("user", "developer")):
+                parts = item.get("content")
+            else:
+                continue
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if (not isinstance(part, dict) or part.get("type") != "input_image"
+                        or "file_id" in part
+                        or part.get("detail", binding.image_file_cache.get("default_detail"))
+                        not in ("high", "original", "auto")):
+                    continue
+                url = part.get("image_url")
+                match = re.fullmatch(r"data:(image/(?:png|jpeg|gif|webp));base64,([\s\S]*)", url) if isinstance(url, str) else None
+                if not match:
+                    continue
+                try:
+                    data = base64.b64decode(match[2], validate=True)
+                except (ValueError, binascii.Error):
+                    raise _ImageFilesError("files_decode", "files_invalid_base64") from None
+                if not data:
+                    raise _ImageFilesError("files_decode", "files_empty_image")
+                digest = hashlib.sha256(data).hexdigest()
+                if digest not in memo:
+                    if directory is None:
+                        directory = _private_cache_dir(binding)
+                    memo[digest] = await _cached_image_file(client, binding, directory, data, match[1], digest)
+                part["file_id"] = memo[digest]
+                del part["image_url"]
+                changed = True
+        return changed
+    except OSError:
+        raise _ImageFilesError("files_cache", "files_cache_io_error") from None
 
 
 def _unique_sse_object(pairs):
@@ -282,8 +503,16 @@ async def _transparent_responses(request, binding):
     call_id = uuid.uuid4().hex if binding.activity_fd is not None else ""
     _transport_activity(binding, call_id, "start")
     try:
+        if await _reuse_image_files(body, binding, client):
+            raw_body = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            headers = {k: v for k, v in headers.items()
+                       if k.lower() not in _REPRESENTATION_VALIDATORS | {"content-encoding"}}
         upstream = await client.send(client.build_request(
             "POST", binding.base_url + "/responses", content=raw_body, headers=headers), stream=True)
+    except _ImageFilesError as exc:
+        _transport_activity(binding, call_id, "error")
+        await client.aclose()
+        return exc.response()
     except httpx.HTTPError as exc:
         _transport_activity(binding, call_id, "error")
         await client.aclose()

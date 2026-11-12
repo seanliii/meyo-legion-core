@@ -3469,6 +3469,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
     _apply_patch_tool_type = None
     _auto_compact_token_limit = None
     _error_compatibility_profile = None
+    _image_file_cache = None
     _transport_activity_fd = None
     if _transport == "responses":
         try:
@@ -3492,7 +3493,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                     if getattr(binding_error, "binding_option", None) in (
                             "stream_idle_timeout_ms", "apply_patch_tool_type",
                             "model_auto_compact_token_limit", "context_window",
-                            "error_compatibility_profile"):
+                            "error_compatibility_profile", "image_file_cache"):
                         raise
                     try:
                         declared = _json.loads(operator_env.get("LEGION_CODEX_RESPONSES_BINDING") or "{}")
@@ -3511,6 +3512,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                 _apply_patch_tool_type = declaration_binding.get("apply_patch_tool_type")
                 _auto_compact_token_limit = declaration_binding.get("model_auto_compact_token_limit")
                 _error_compatibility_profile = declaration_binding.get("error_compatibility_profile")
+                _image_file_cache = declaration_binding.get("image_file_cache")
                 if _output_budget is not None:
                     _output_budget_facts = {
                         "max_output_tokens": _output_budget,
@@ -3698,7 +3700,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                 return {"final": "", "status": "unavailable", "elapsed": round(_t.time() - t0, 1),
                         "error": "codex bridge 起不来(responses_chat_bridge.py 缺失或端口占用)"}
             if (_output_budget is not None or _stream_idle_timeout_ms is not None
-                    or _error_compatibility_profile is not None):
+                    or _error_compatibility_profile is not None or _image_file_cache is not None):
                 _prepare_stage = "output_budget_transport"
                 import secrets
                 from meyo_harnesses.backends.omnigent_responses_bridge import transparent_bridge
@@ -3713,6 +3715,10 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                        if _stream_idle_timeout_ms is not None else {}),
                     **({"error_compatibility_profile": _error_compatibility_profile}
                        if _error_compatibility_profile is not None else {}),
+                    **({"image_file_cache": _image_file_cache,
+                        "image_file_cache_user": ctx.user_id,
+                        "image_file_cache_workdir": str(codex_ws)}
+                       if _image_file_cache is not None else {}),
                 }, _tool_env), "output_budget_transport")
                 _transport_activity_fd = _budget_transport.get("runtime_activity_fd")
                 _budget_token_name = "MEYO_CODEX_OUTPUT_TOKEN_" + secrets.token_hex(8).upper()
