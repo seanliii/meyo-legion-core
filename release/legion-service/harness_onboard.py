@@ -25,17 +25,52 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import time
+from types import SimpleNamespace
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import external_agent_registry as R  # noqa: E402
 
-REPORT_DIR = pathlib.Path(R._paths.under("external_agents", "onboard_reports"))
 SPEED_TARGET_AVG = 10.0
 SPEED_HARD_SINGLE = 25.0
-SERVER = os.environ.get("LEGION_BASE_URL", "http://127.0.0.1:8000")
+# Optional explicit override; the default remains resolved per invocation.
+REPORT_DIR = None
+
+
+def _native_onboard_lease():
+    provider = sys.modules.get("agent_tool_provider")
+    bound = getattr(provider, "_bound_native_onboard", None)
+    lease = bound() if bound is not None else None
+    if lease is not None:
+        lease.check()
+    return lease
+
+
+def _report_dir():
+    return pathlib.Path(REPORT_DIR) if REPORT_DIR is not None else pathlib.Path(
+        R._paths.under("external_agents", "onboard_reports"))
+
+
+def _server_url():
+    return os.environ.get("LEGION_BASE_URL", "http://127.0.0.1:8000")
+
+
+def _save_report(report, ok):
+    lease = _native_onboard_lease()
+    if lease is not None:
+        report = lease.redact(report)
+    directory = _report_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json",
+                                     prefix=R._safe_key(str(report.get("key") or "onboard")) + "-",
+                                     dir=directory, delete=False) as stream:
+        _native_onboard_lease()
+        json.dump(report, stream, ensure_ascii=False, indent=2)
+        out = stream.name
+    return {"report": report, "report_path": out, "ok": bool(ok)}
 
 
 class Step:
@@ -50,6 +85,7 @@ class Step:
     def __exit__(self, exc_type, exc, tb):
         self.ms = round((time.time() - self._t0) * 1000)
         if exc is not None:
+            _native_onboard_lease()  # Revocation must not be swallowed as a step failure.
             self.status = "FAIL"
             self.reason = "exception"
             self.detail = str(exc)[:300]
@@ -86,15 +122,19 @@ def _upsert_catalog(key, spec_path):
                 break
         if not replaced:
             items.append(entry)
+        _native_onboard_lease()
         R._save_catalog(items)
     return "catalog %s:%s (total=%d)" % ("updated" if replaced else "appended", key, len(items))
 
 def _harness_pool_has(key, *, personal_token: str | None = None, uid: str | None = None):
+    lease = _native_onboard_lease()
+    if lease is not None:
+        return lease.pool_has(key)
     # Same caller-owned credential contract as desktop/CLI clients. A denied
     # directory request is not evidence that the server or member is unavailable.
     import legion_client
     try:
-        data = legion_client.harnesses(SERVER, personal_token=personal_token, uid=uid, timeout=120)
+        data = legion_client.harnesses(_server_url(), personal_token=personal_token, uid=uid, timeout=120)
     except legion_client.LegionClientError as exc:
         return False, f"{exc.code}: " + (
             "成员目录需要调用方已有个人Bearer（LEGION_PERSONAL_TOKEN），未判成员或server不可用"
@@ -108,24 +148,37 @@ def _harness_pool_has(key, *, personal_token: str | None = None, uid: str | None
     return False, "pool total=%d 但无 %s" % (len(pool), key)
 
 
+def _run_agent(key, task, *, timeout_s, model, workdir=""):
+    lease = _native_onboard_lease()
+    if lease is None:
+        return R.run(key, task, timeout_s=timeout_s, model=model, workdir=workdir)
+    import agent_tool_provider
+    _, env, cancel = agent_tool_provider._runtime_binding()
+    return R.run(key, task, timeout_s=timeout_s, model=model,
+                 workdir=workdir or str(lease.workdir), env=env,
+                 session_id=lease.session_id,
+                 runtime_context={"user_id": lease.user_id, "cancel_check": cancel,
+                                  "project_context": {"workspace_root": str(lease.workdir)}})
+
+
 def _speed_runs(key, model, rounds=3):
     runs, problems = [], []
     for i in range(rounds):
         t0 = time.time()
         # 40s 单轮硬顶:网关 5xx 时 CLI 常带长退避重试,120s 只会白等;速度环本来目标<=10s,
         # 40s 还没出结果就该快速判失败看真错误,不让流水线干等(铁律0:速度底线)。
-        r = R.run(key, "1+1等于几?只回答数字", timeout_s=40, model=model)
+        r = _run_agent(key, "1+1等于几?只回答数字", timeout_s=40, model=model)
         retried = False
         if r.get("status") != "ok":
             retried = True
-            r = R.run(key, "1+1等于几?只回答数字", timeout_s=40, model=model)
+            r = _run_agent(key, "1+1等于几?只回答数字", timeout_s=40, model=model)
         wall = round(time.time() - t0, 1)
         final = str(r.get("final") or "").strip()
         api_ms = ""
         for e in (r.get("events") or []):
             if isinstance(e, dict) and e.get("type") == "result":
                 api_ms = e.get("duration_ms")
-        ok = final == "2"
+        ok = r.get("status") == "ok" and final == "2"
         if not ok:
             problems.append("round%d final=%r status=%s err=%s" % (i + 1, final[:30], r.get("status"), str(r.get("error"))[:120]))
         runs.append({"wall_s": wall, "api_ms": api_ms, "ok": ok, "retried": retried,
@@ -141,7 +194,7 @@ def _tool_run(key, model, workdir):
     if target.exists():
         target.unlink()
     task = ("用工具在工作目录创建 onboard_tool_test.txt 写入内容 %s,然后读出来确认,final 里报告文件内容" % marker)
-    r = R.run(key, task, timeout_s=240, model=model, workdir=str(workdir))
+    r = _run_agent(key, task, timeout_s=240, model=model, workdir=str(workdir))
     final = str(r.get("final") or "")
     disk = target.read_text().strip() if target.is_file() and not target.is_symlink() else ""
     hit_final, hit_disk = marker in final, disk == marker
@@ -176,47 +229,51 @@ def _capability_runs(key, entry):
     return rows, problems
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--key", default="")
-    ap.add_argument("--spec", default="")
-    ap.add_argument("--from-github", default="", help="GitHub URL 一条指令全自动:clone->识别->生成spec->六环")
-    ap.add_argument("--skip-install", action="store_true")
-    ap.add_argument("--no-server", action="store_true")
-    ap.add_argument("--build-only", action="store_true", help="仅构建成员；可用显式 --spec 持锁登记，不调用模型、不作运行验收")
-    ap.add_argument("--install-timeout", type=int, default=1500, help="单个安装步骤时限（秒）；不改变任务执行时限")
-    ap.add_argument("--model", default="gpt-5.6-sol")
-    args = ap.parse_args()
-    if args.install_timeout <= 0:
-        ap.error("--install-timeout 必须为正整数")
+def onboard(key="", spec=None, from_github="", skip_install=False, no_server=False,
+            build_only=False, install_timeout=1500, model="gpt-5.6-sol",
+            personal_token=None, uid=None) -> dict:
+    """Reuse the pipeline from CLI or host; incomplete observations remain PARTIAL."""
+    if type(install_timeout) not in (int, float) or not 0 < install_timeout < float("inf"):
+        raise ValueError("--install-timeout 必须为有限正数")
+    if build_only and (not key or from_github or skip_install):
+        raise ValueError("--build-only 必须指定 --key，不能与 --from-github 或 --skip-install 组合")
+    if not key and not from_github:
+        raise ValueError("--key 或 --from-github 必须给一个")
+    _native_onboard_lease()
+    args = SimpleNamespace(key=key, spec=spec, from_github=from_github,
+                           skip_install=skip_install, no_server=no_server,
+                           build_only=build_only, install_timeout=install_timeout, model=model)
+    with tempfile.TemporaryDirectory(prefix="harness-onboard-") as temporary:
+        try:
+            if from_github:
+                import harness_autospec
+                gen = harness_autospec.generate(from_github, key)
+                _native_onboard_lease()
+                args.key, args.spec = gen["spec"]["key"], gen["spec"]
+            if isinstance(args.spec, dict):
+                spec_path = pathlib.Path(temporary) / "spec.json"
+                spec_path.write_text(json.dumps(args.spec, ensure_ascii=False), encoding="utf-8")
+                args.spec = str(spec_path)
+            if args.build_only:
+                if args.spec:
+                    _upsert_catalog(args.key, args.spec)
+                _native_onboard_lease()
+                result = R.install(args.key, confirm=True, timeout_s=args.install_timeout, build_only=True)
+                return _save_report({**result, "key": args.key, "scope": "build_only",
+                                     "runtime_acceptance": "not_run"}, result.get("ok"))
+            return _onboard(args, personal_token=personal_token, uid=uid)
+        except Exception as exc:
+            _native_onboard_lease()
+            return _save_report({"key": args.key, "model": model, "verdict": "FAIL",
+                                 "steps": [{"name": "pipeline", "status": "FAIL", "ms": 0,
+                                            "detail": "%s:%s" % (type(exc).__name__, exc)}],
+                                 "speed_runs": [], "capability_runs": []}, False)
 
-    if args.build_only:
-        if not args.key or args.from_github or args.skip_install:
-            ap.error("--build-only 必须指定 --key，不能与 --from-github 或 --skip-install 组合")
-        if args.spec:
-            _upsert_catalog(args.key, args.spec)
-        result = R.install(args.key, confirm=True, timeout_s=args.install_timeout, build_only=True)
-        # Build evidence is deliberately distinct from the full onboarding verdict.
-        print(json.dumps({"scope": "build_only", "runtime_acceptance": "not_run",
-                          **result}, ensure_ascii=False))
-        return 0 if result.get("ok") else 1
 
-    autospec_note = ""
-    if args.from_github:
-        # 一条指令全自动(护城河固化 2026-09-02):URL->clone->读源码识别->自动生成spec->落盘->六环
-        import harness_autospec
-        gen = harness_autospec.generate(args.from_github, args.key)
-        args.key = gen["spec"]["key"]
-        spec_path = pathlib.Path("/tmp/autospec-%s.json" % args.key)
-        spec_path.write_text(json.dumps(gen["spec"], ensure_ascii=False, indent=2), encoding="utf-8")
-        args.spec = str(spec_path)
-        autospec_note = " [autospec:%s|%s]" % (gen["kind"], gen["hint"])
-    if not args.key:
-        ap.error("--key 或 --from-github 必须给一个")
-
-    print("== harness_onboard:%s (model=%s)%s ==" % (args.key, args.model, autospec_note))
+def _onboard(args, *, personal_token=None, uid=None):
     steps = []
 
+    _native_onboard_lease()
     s = Step("1_catalog"); steps.append(s)
     with s:
         if args.spec:
@@ -235,6 +292,7 @@ def main():
     role = entry.get("execution_role") or "agent"
     is_answer_agent = role == "agent"
 
+    _native_onboard_lease()
     s = Step("2_install"); steps.append(s)
     with s:
         if args.skip_install:
@@ -246,14 +304,19 @@ def main():
             else:
                 s.fail("status=%s err=%s" % (res.get("status"), str(res.get("error"))[:200]))
 
+    _native_onboard_lease()
     s = Step("3_pool"); steps.append(s)
     with s:
         if args.no_server:
             s.skip("--no-server", reason="requested_skip")
+        elif not is_answer_agent:
+            s.skip("execution_role=%s 不进答题池(角色分流)" % role, reason="not_applicable")
         else:
-            has, detail = _harness_pool_has(args.key)
+            has, detail = (_harness_pool_has(args.key) if personal_token is None and uid is None
+                           else _harness_pool_has(args.key, personal_token=personal_token, uid=uid))
             (s.ok if has else s.fail)(("已进编排池" if has else "未进编排池") + "·" + detail)
 
+    _native_onboard_lease()
     s = Step("4_speed"); steps.append(s)
     with s:
         runs, problems = [], []
@@ -288,15 +351,24 @@ def main():
     except Exception as exc:
         problems.append("performance_ledger:%s:%s" % (type(exc).__name__, exc))
 
+    _native_onboard_lease()
     s = Step("5_tool"); steps.append(s)
     with s:
         if not is_answer_agent:
             tool_ok = True
             s.skip("execution_role=%s 无工具题(角色分流)" % role, reason="not_applicable")
         else:
-            tool_ok, detail = _tool_run(args.key, args.model, REPORT_DIR.parent / "onboard_wd" / args.key)
+            lease = _native_onboard_lease()
+            if lease is None:
+                tool_ok, detail = _tool_run(args.key, args.model, _report_dir().parent / "onboard_wd" / args.key)
+            else:
+                with tempfile.TemporaryDirectory(prefix="onboard-tool-") as temporary:
+                    directory = pathlib.Path(temporary).resolve()
+                    with lease.research_scope(directory):
+                        tool_ok, detail = _tool_run(args.key, args.model, directory)
             (s.ok if tool_ok else s.fail)(detail)
 
+    _native_onboard_lease()
     s = Step("6_stability"); steps.append(s)
     with s:
         stable = ((bool(capability_runs) and all(x["ok"] for x in capability_runs))
@@ -309,6 +381,7 @@ def main():
             (sum(1 for x in (capability_runs if not is_answer_agent else runs) if x["ok"]),
              len(capability_runs if not is_answer_agent else runs), tool_ok, probe.get("status")))
 
+    _native_onboard_lease()
     s = Step("7_modes"); steps.append(s)
     with s:
         bench = pathlib.Path(__file__).resolve().parents[2] / "dev" / "benchmark_execution_modes.py"
@@ -318,13 +391,14 @@ def main():
             s.skip("当前发行包未附带模式矩阵；本环未运行，前序结果保留", reason="not_included")
         else:
             try:
-                import tempfile
-                REPORT_DIR.mkdir(parents=True, exist_ok=True)
-                output = pathlib.Path(tempfile.mkdtemp(prefix="modes-", dir=REPORT_DIR)) / "matrix.json"
+                _report_dir().mkdir(parents=True, exist_ok=True)
+                if _native_onboard_lease() is not None:
+                    raise RuntimeError("legacy mode matrix is not a native-onboard declared launch")
+                output = pathlib.Path(tempfile.mkdtemp(prefix="modes-", dir=_report_dir())) / "matrix.json"
                 command_ok, diagnostic = R._run_probe_command(
                     [sys.executable, str(bench), "--keys", args.key,
                      "--question", "用一句话解释什么是缓存", "--model", args.model,
-                     "--output", str(output)], cwd=bench.parent.parent, timeout_s=600)
+                     "--output", str(output)], cwd=bench.parent.parent, timeout_s=600, key=args.key)
                 matrix = (json.loads(output.read_text())
                           if output.is_file() and not output.is_symlink() else {})
                 modes = {row.get("mode") for row in matrix.get("runs") or []}
@@ -337,31 +411,48 @@ def main():
             except Exception as exc:
                 s.fail("%s:%s" % (type(exc).__name__, exc))
 
-    passed = sum(1 for x in steps if x.status == "PASS")
     failed = sum(1 for x in steps if x.status == "FAIL")
-    skipped = sum(1 for x in steps if x.status == "SKIP")
     incomplete = any(x.status == "SKIP" and x.reason != "not_applicable" for x in steps)
     verdict = "FAIL" if failed else "PARTIAL" if incomplete else "PASS"
 
-    print()
-    print("%-14s%-7s%9s  说明" % ("环节", "结果", "耗时"))
-    for x in steps:
-        print("%-14s%-7s%7sms  %s" % (x.name, x.status, x.ms, x.detail))
-    print()
-    print("结论:%s  PASS=%d FAIL=%d SKIP=%d" % (verdict, passed, failed, skipped))
-    print("速度线:avg<=%ss(用户钉死5-10s)·单轮硬顶%ss·工具题必须真落盘" % (SPEED_TARGET_AVG, SPEED_HARD_SINGLE))
-
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out = REPORT_DIR / ("%s-%d.json" % (args.key, time.time_ns()))
-    out.write_text(json.dumps({
+    return _save_report({
         "key": args.key, "model": args.model, "verdict": verdict,
         "steps": [{"name": x.name, "status": x.status, "reason": x.reason,
                    "ms": x.ms, "detail": x.detail} for x in steps],
-        "speed_runs": runs,
-        "capability_runs": capability_runs,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("报告:%s" % out)
-    return 1 if failed else 2 if incomplete else 0
+        "speed_runs": runs, "capability_runs": capability_runs,
+    }, verdict == "PASS")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--key", default="")
+    ap.add_argument("--spec", default="")
+    ap.add_argument("--from-github", default="")
+    ap.add_argument("--skip-install", action="store_true")
+    ap.add_argument("--no-server", action="store_true")
+    ap.add_argument("--build-only", action="store_true")
+    ap.add_argument("--install-timeout", type=int, default=1500)
+    ap.add_argument("--model", default="gpt-5.6-sol")
+    args = ap.parse_args()
+    if args.install_timeout <= 0:
+        ap.error("--install-timeout 必须为正整数")
+    if args.build_only:
+        if not args.key or args.from_github or args.skip_install:
+            ap.error("--build-only 必须指定 --key，不能与 --from-github 或 --skip-install 组合")
+        if args.spec:
+            _upsert_catalog(args.key, args.spec)
+        result = R.install(args.key, confirm=True, timeout_s=args.install_timeout, build_only=True)
+        print(json.dumps({**result, "scope": "build_only", "runtime_acceptance": "not_run"},
+                         ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    try:
+        result = onboard(**vars(args))
+    except ValueError as exc:
+        ap.error(str(exc))
+    report = result["report"]
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    print("报告:%s" % result["report_path"], file=sys.stderr)
+    return 0 if result["ok"] else 2 if report.get("verdict") == "PARTIAL" else 1
 
 
 if __name__ == "__main__":

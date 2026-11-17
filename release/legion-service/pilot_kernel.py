@@ -70,6 +70,49 @@ def merge_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     return out
 
 
+REFERENCE_REVIEW_KINDS = frozenset({"benchmark_self_check", "reference_review_missing"})
+
+
+def _reference_review(state: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """作品交回后、收口前，请原作者拿成品与参照并排看一次；不是父层质量判决。
+
+    只在调用方给出 reference_review 事实时生效（旧 hook / 短答没有这份事实，行为不变）：
+    - 本单交回了真实文件，且用户盯的范围不是单轮；
+    - 本请求还没有做过这一步（做过之后是否继续，由成员自己提出续作，父层不再追问）；
+    - 有可回访的参照（研究记录的来源或用户给的材料），或这是一次长时间制作却没有任何参照记录。
+    """
+    facts = state.get("reference_review")
+    if not isinstance(facts, dict) or cfg.get("scope") == "turn":
+        return None
+    if facts.get("rounds") or not state.get("artifact_count"):
+        return None
+    recorded = [str(item) for item in (state.get("benchmark_refs") or state.get("reference_links") or [])
+                if str(item).strip()]
+    supplied = [str(item) for item in (facts.get("user_materials") or []) if str(item).strip()]
+    refs = [*recorded[:3], *supplied[:3]]
+    if refs:
+        return {"action": "continue", "kind": "benchmark_self_check",
+                "reason": "作品已交回；收口前由原作者对照参照自查一次",
+                "next_action": (
+                    "作品已经交回，先不要重做。请把你现在的成品和参照（%s）并排看一遍："
+                    "实际打开成品、看真实画面并正常操作，对比第一眼观感、完整度、细节与反馈，"
+                    "写下仍明显低一档的地方。差距明显就在原工程上继续迭代"
+                    "（学它的手法、换更合适的工具或素材），改完用同一份正式交付文件复验；"
+                    "确实已经逼近或受当前条件所限，就说明剩余差距和原因后收尾。"
+                    "是否还需要下一轮由你判断，需要时明确提出继续。" % "、".join(item[:120] for item in refs))}
+    if facts.get("long_build"):
+        return {"action": "continue", "kind": "reference_review_missing",
+                "reason": "长时间制作已交回，但本单没有任何参照记录；收口前由原作者补一次对照",
+                "next_action": (
+                    "作品已经交回，先不要重做。本单至今没有记录任何参照："
+                    "请找一到三个与用户目标同类、公认做得好的作品（用户点名的风格或作品优先），"
+                    "把来源记进项目现场的 quality_context.sources，再实际打开自己的成品并排对比"
+                    "第一眼观感、完整度、细节与反馈。差距明显就在原工程上继续迭代，"
+                    "改完用同一份正式交付文件复验；确实不需要对照或已逼近，就说明原因后收尾。"
+                    "是否还需要下一轮由你判断，需要时明确提出继续。")}
+    return None
+
+
 def classify(reply: str, state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
     """纯判断:返回 action=continue/stop、kind、reason、next_action。
 
@@ -111,6 +154,9 @@ def classify(reply: str, state: dict[str, Any], config: dict[str, Any] | None = 
                 "reason": f"调用方报告目标已完成；该声明不等于独立验收(范围={cfg['scope']})"}
     if (can_return and state.get("delivery_return_ready") is True
             and state.get("scope_goal_met") is None):
+        review = _reference_review(state, cfg)
+        if review:
+            return review
         return {"action": "stop", "kind": "turn_returned",
                 "reason": "本轮已交回结果，未收到继续请求；用户目标是否达标尚未确认"}
 

@@ -98,6 +98,7 @@ def plan(case, *, independent=False, coordinate=False):
              {"C": task(["B"]), "B": task(["A"]), "A": task()})
     return {
         "captain": HARNESS, "tasks": tasks,
+        "execution_depths": dict.fromkeys(tasks, "quick"),
         "team_policy": {"continuous_coordination": coordinate},
         "project_context": {"repo_root": str(case.work), "user_id": OWNER,
                             "conversation_id": CONVERSATION},
@@ -261,6 +262,8 @@ def test_dispatch_audit_scope_preserves_real_delivery_and_session(
     task_plan = plan(case, independent=True)
     task_plan["tasks"] = {"A": task(), "B": task()}
     task_plan["success_audit"] = {"enabled": True}
+    # Exercise the independent audit lane, not owner candidate selection.
+    task_plan["team_policy"]["candidate_selection"] = False
     task_plan.update(policy)
     if mode == "relay":
         task_plan["pipeline"] = ["A", "B"]
@@ -402,10 +405,210 @@ def test_duplicate_legacy_key_is_unresolved_and_preserves_both_rows(case):
     assert [row["final"] for row in out["results"]] == ["first", "second"]
 
 
-def test_unadjudicated_selection_survives_session_round_trip(case):
-    out = dispatch(case, plan(case, independent=True), mode="pk")
+def test_requested_candidate_selection_keeps_original_reference_without_repair_or_audit(case):
+    task_plan = plan(case, independent=True)
+    task_plan["execution_depths"] = dict.fromkeys(task_plan["tasks"], "standard")
+    task_plan["success_audit"] = {"enabled": True}
+    task_plan["delivery_contract"] = {
+        "require_final": True, "required_artifacts": [{"kind": "file", "formats": ["txt"]}]}
+    selection_calls = []
+
+    def select(question, plan, team_id, results, **kwargs):
+        selection_calls.append(deepcopy(results))
+        assert plan["team_policy"]["candidate_selection"] is True
+        assert plan["team_policy"]["candidate_selection_collaboration"] is True
+        return {"ok": True, "action": "complete", "selected_task_id": "A",
+                "captain": HARNESS, "collaboration": {"runtime_boundary": "owner_returned"}}
+
+    case.mp.setattr(case.core, "_run_candidate_selection_collaboration", select)
+    case.mp.setattr(case.core, "_selection_read_only_keys", lambda: {HARNESS})
+    # The default forbidden gateway also catches accidental contract repair or audit.
+    out = dispatch(case, task_plan, mode="pk")
+    assert len(selection_calls) == 1
+    assert out["selection"]["status"] == "selected"
+    assert out["selection"]["adjudicated"] is True
+    assert out["winner"] == "A"
+    assert out["final_result"] == next(row for row in out["results"] if row["task_id"] == "A")
+    assert case.core._winner_final(out) == "a"
+    assert [row["final"] for row in out["results"]] == ["c", "a", "b"]
+    assert not any(row.get("contract_repair") for row in out["results"])
+    assert out["contract_incomplete"] is True, "selection cannot fabricate the required file"
+    assert out["success_audit"]["enabled"] is False
+
+
+@pytest.mark.parametrize("captain,selection_result", [
+    ("cc", "unavailable"),
+    ("__ut_unsupported_captain", "unavailable"),
+    ("__ut_missing_captain", "no_election"),
+    ("codex", "selected"),
+    ("codex", "failed"),
+    ("codex", "invalid_view"),
+    ("codex", "execution_exception"),
+    ("codex", "locked"),
+    ("codex", "inconclusive"),
+    ("codex", "paused"),
+    ("codex", "unknown"),
+    ("codex", "zero_rounds"),
+])
+def test_pk_selection_admission_preserves_repair_audit_and_read_only_execution(
+        case, captain, selection_result):
+    # Real admission, collaboration, coordination and result projection. Only
+    # native IO is substituted; manifest-backed read-only keys stay unchanged.
+    reviewer = "__ut_admission_reviewer"
+    keys = {HARNESS, "cc", "codex", "__ut_unsupported_captain", reviewer}
+    case.mp.setattr(case.core, "_harness_keys", lambda: set(keys))
+    case.mp.setattr(case.core, "_aigc_ready", lambda **kw: {"runnable_clis": sorted(keys)})
+    case.mp.setattr(case.core, "_pick_relay_harness", lambda *a, **kw: reviewer)
+    assert "codex" in case.core._selection_read_only_keys()
+    assert "cc" not in case.core._selection_read_only_keys()
+    task_plan = plan(case, independent=True)
+    task_plan["captain"] = captain
+    task_plan["tasks"] = {"A": task(), "B": task()}
+    task_plan.pop("execution_depths")  # default pk/two standard candidates
+    task_plan["success_audit"] = {"enabled": True}
+    task_plan["delivery_contract"] = {
+        "require_final": True, "required_artifacts": [{"kind": "file", "formats": ["txt"]}]}
+    if selection_result == "invalid_view":
+        task_plan["candidate_selection_context"] = {"initial_candidate_view": "invalid"}
+    if selection_result == "zero_rounds":
+        task_plan["candidate_selection_context"] = {"max_rounds": 0}
+    calls, elections = [], []
+    if selection_result == "execution_exception":
+        def unavailable(*args, **kwargs):
+            calls.append("selection_exception")
+            raise RuntimeError("configuration failure before native reservation")
+        case.mp.setattr(case.core, "_run_candidate_selection_collaboration", unavailable)
+
+    def elect(question, selection_plan, **kwargs):
+        elections.append(deepcopy(selection_plan))
+        assert selection_result == "no_election", "valid CC captain must not be replaced"
+        assert selection_plan["captain_candidates"] == ["codex"]
+        return {"ok": False, "provider_results": []}
+
+    def native(key, prompt, **kwargs):
+        facts = kwargs.get("task_facts") or {}
+        role = facts.get("role")
+        if role == "candidate_selection":
+            calls.append("selection")
+            assert key == "codex" and selection_result in {"selected", "failed", "inconclusive", "paused", "unknown"}
+            assert facts["native_read_only"] is True
+            assert facts["native_session_scope"] == "request"
+            assert facts["native_session_request_id"] == kwargs["qhash"]
+            if selection_result == "unknown":
+                raise RuntimeError("interrupted after native reservation")
+            if selection_result == "paused":
+                return {"status": "error", "error_envelope": {"category": "runtime_budget",
+                        "scope": "request", "retryable": False, "details": {}}}
+            if selection_result == "failed":
+                # Even a bogus reference in a failed response cannot become winner.
+                return {"status": "error", "error": "offline_selection_failure",
+                        "final": "", "orchestration_request": {
+                            "coordinate": {"action": "complete", "selected_task_id": "A"}}}
+            return {"status": "done", "final": "original reference selected",
+                    "orchestration_request": {
+                        "coordinate": {"action": "complete", "selected_task_id":
+                                       "inconclusive" if selection_result == "inconclusive" else "A"}}}
+        assert key == reviewer
+        assert kwargs["lease_plan"]["captain"] == captain
+        if role == "contract_repair":
+            calls.append("repair")
+            artifact = case.work / "repaired.txt"
+            artifact.write_text("actual offline repair", encoding="utf-8")
+            return {"status": "done", "final": str(artifact),
+                    "artifacts": [{"path": str(artifact), "kind": "file"}]}
+        assert kwargs["qhash"].endswith("_success_audit")
+        calls.append("audit")
+        assert (case.work / "repaired.txt").exists(), "audit must see the repaired delivery"
+        assert str(case.work / "repaired.txt") in prompt
+        return {"status": "done", "final": "Independent observation\n<<LEGION_VERIFY>>"
+                + json.dumps({"verdict": "unverified", "winner": "", "scores": {},
+                              "reason": "no selection evidence"}) + "<<END>>"}
+
+    case.mp.setattr(case.core, "elect_captain", elect)
+    case.mp.setattr(case.core, "_run_one_with_gateway", native)
+    pc = importlib.import_module("project_context")
+    with (pc._packet_lock(TEAM, namespace="selection", blocking=False)
+          if selection_result == "locked" else nullcontext(True)) as acquired:
+        assert acquired
+        out = dispatch(case, task_plan, mode="pk")
+    assert [row["final"] for row in out["results"][:2]] == ["a", "b"]
+    assert len(elections) == (selection_result == "no_election")
+    if selection_result in {"unavailable", "no_election", "failed", "invalid_view", "execution_exception", "zero_rounds"}:
+        prefix = (["selection"] if selection_result == "failed" else
+                  ["selection_exception"] if selection_result == "execution_exception" else [])
+        assert calls == [*prefix, "repair", "audit"]
+        assert out["results"][-1]["contract_repair"] is True
+        assert out["contract_incomplete"] is False
+        assert out["success_audit"]["enabled"] is True
+        if selection_result in {"unavailable", "no_election"}:
+            assert "candidate_selection" not in out
+        else:
+            assert out["candidate_selection"]["adjudicated"] is False
+            assert out["candidate_selection"]["error"]
+            assert out["selection"]["source"] == "unadjudicated_candidates"
+            if selection_result == "invalid_view":
+                assert out["candidate_selection"]["error"] == "invalid_initial_candidate_view"
+        assert out["winner"] == "" and out["final_result"] is None
+        assert case.core._winner_final(out) == ""
+    else:
+        assert calls == ([] if selection_result == "locked" else ["selection"])
+        assert out["contract_incomplete"] is True
+        assert out["success_audit"]["enabled"] is False
+        assert not any(row.get("contract_repair") for row in out["results"])
+        if selection_result == "selected":
+            assert out["selection"]["adjudicated"] is True
+            assert out["winner"] == "A"
+            assert out["final_result"] == out["results"][0]
+            assert case.core._winner_final(out) == "a"
+        else:
+            assert out["selection"]["adjudicated"] is False
+            assert out["selection"]["fallback"] == "unadjudicated_candidates"
+            assert out["winner"] == "" and out["final_result"] is None
+            assert case.core._winner_final(out) == ""
+            if selection_result in {"locked", "paused", "unknown"}:
+                assert out["selection"]["status"] == "deferred"
+                assert out["selection_deferred"] is True
+                assert out["selection_inconclusive"] is False
+                assert out["status"] == "partial" and out["outcome"]["selection_deferred"] is True
+                assert out["cancelled"] is False
+                if selection_result == "locked":
+                    assert out["selection"]["error"] == "selection_collaboration_in_progress"
+                if selection_result == "unknown":
+                    assert out["selection"]["collaboration"]["runtime_boundary"] == "recovery_unknown"
+                    scene = next(iter(pc.load(TEAM)["selection_collaborations"].values()))
+                    assert scene["owner_calls"][-1]["status"] == "unknown"
+            else:
+                assert out["selection"]["status"] == "inconclusive"
+                assert out["selection_inconclusive"] is True
+
+
+@pytest.mark.parametrize("selection_path", ["quick", "inconclusive"])
+def test_unadjudicated_selection_survives_session_round_trip(case, selection_path):
+    task_plan = plan(case, independent=True)
+    selection_calls = []
+    if selection_path == "inconclusive":
+        task_plan["execution_depths"] = dict.fromkeys(task_plan["tasks"], "standard")
+        def select(question, plan, team_id, results, **kwargs):
+            selection_calls.append(deepcopy(results))
+            assert plan["team_policy"]["candidate_selection"] is True
+            assert plan["team_policy"]["candidate_selection_collaboration"] is True
+            return {"ok": True, "action": "complete", "selected_task_id": "inconclusive",
+                    "captain": HARNESS, "collaboration": {"runtime_boundary": "owner_returned"}}
+        case.mp.setattr(case.core, "_run_candidate_selection_collaboration", select)
+        case.mp.setattr(case.core, "_selection_read_only_keys", lambda: {HARNESS})
+    out = dispatch(case, task_plan, mode="pk")
     assert out["execution_mode"] == "pk"
-    assert out["selection"]["source"] == "unadjudicated_candidates"
+    if selection_path == "quick":
+        assert out["selection"]["source"] == "unadjudicated_candidates"
+        assert "candidate_selection" not in out
+    else:
+        assert len(selection_calls) == 1
+        assert out["selection"]["source"] == "harness"
+        assert out["selection"]["status"] == "inconclusive"
+        assert out["selection"]["adjudicated"] is False
+        assert out["selection"]["fallback"] == "unadjudicated_candidates"
+        assert out["selection_inconclusive"] is True
+    assert out["winner"] == "" and out["final_result"] is None
     assert case.core._winner_final(out) == ""
     import sessions
     saved = sessions.save_turn("__ut_unadjudicated_pk", "fixture", out, mode="pk", user_id=OWNER)

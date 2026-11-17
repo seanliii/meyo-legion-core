@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass, field
+from typing import Callable
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,52 @@ def _roots(values, label):
         raise NativeProcessSandboxError(f"{label} must be a sequence of directories") from None
 
 
+def source_workspace_grant(env, cwd, protected_roots=(), writable_state_roots=()):
+    """Resolve a selected source workspace against live, independent authority."""
+    import personal_identity
+
+    user = str(env.get("MEYO_USER_ID") or "")
+    workspace = _directory(cwd, "source workspace")
+    grant = personal_identity.source_write_grant(user, str(workspace)) if user else None
+    if grant is None:
+        return None
+    hard = [Path(__file__).resolve().parent,
+            personal_identity._operator_store_path().resolve().parent]
+    for name in ("MEYO_RUNTIME_ROOT", "MEYO_TOOLBOX_ROOT", "LEGION_PROC_REGISTRY_DIR"):
+        if env.get(name):
+            hard.append(_directory(env[name], name))
+    writable = [workspace, *_roots(writable_state_roots, "writable roots")]
+    if any(_overlaps(candidate, root) for candidate in writable for root in hard):
+        raise NativeProcessSandboxError("source grant overlaps a runtime, authority or control root")
+    control = personal_identity._operator_store_path().resolve()
+    if any(control.is_relative_to(root) for root in writable):
+        raise NativeProcessSandboxError("source authority must remain outside all native-writable roots")
+    for root in _roots(protected_roots, "protected roots"):
+        if root != workspace and root.is_relative_to(workspace):
+            raise NativeProcessSandboxError("source workspace contains a separately protected root")
+    return grant
+
+
+def _validate_write_scope(env, workspace, protected, writable):
+    grant = source_workspace_grant(env, workspace, protected, writable)
+    for root in writable:
+        for boundary in protected:
+            if not _overlaps(root, boundary):
+                continue
+            if grant is not None and root == workspace and workspace.is_relative_to(boundary):
+                continue  # Only the exact canonical source may relax broad protection.
+            raise NativeProcessSandboxError("writable roots overlap protected roots")
+    if grant is None:
+        return None
+
+    def recheck():
+        current = source_workspace_grant(env, workspace, protected, writable)
+        if current is None or current["user_id"] != grant["user_id"]:
+            raise NativeProcessSandboxError("source write grant was revoked before native launch")
+
+    return recheck
+
+
 def _binary(runtime):
     try:
         entry = runtime / "node-tools/bin/codex"
@@ -89,6 +136,34 @@ def _binary(runtime):
     except (OSError, ValueError, RuntimeError):
         raise NativeProcessSandboxError("codex binary is missing, untrusted, or not executable") from None
     return binary
+
+
+def _sandbox_binary(value, writable):
+    """Host executable only: no alias, PATH lookup, or writable ancestry."""
+    entry = _absolute(value, "sandbox executable")
+    try:
+        binary = entry.resolve(strict=True)
+        if binary != entry or entry.stat().st_nlink != 1:
+            raise ValueError
+        info = entry.lstat()
+        if not stat.S_ISREG(info.st_mode) or not os.access(entry, os.X_OK):
+            raise ValueError
+        if any(entry.is_relative_to(root) for root in writable):
+            raise ValueError
+        _trusted(entry, "sandbox executable")
+        for parent in entry.parents:
+            info = parent.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError
+            if info.st_uid == 0 and info.st_mode & stat.S_ISVTX:
+                continue
+            _trusted(parent, "sandbox executable ancestor")
+    except (OSError, ValueError, RuntimeError):
+        raise NativeProcessSandboxError(
+            "sandbox executable must be canonical, regular, unaliased, executable and operator-controlled "
+            "outside native-writable roots with trusted ancestors"
+        ) from None
+    return entry
 
 
 def _private(stack, parent, prefix):
@@ -111,6 +186,8 @@ class NativeProcessLaunch:
     _closed: bool = field(default=False, repr=False)
     executable: Path | None = None
     native_args: tuple[str, ...] = ()
+    source_write: dict | None = None
+    _recheck_source: Callable[[], None] | None = field(default=None, repr=False)
 
     def wrap(self, argv):
         if self._closed:
@@ -119,6 +196,8 @@ class NativeProcessLaunch:
                 or any(not isinstance(word, str) or "\0" in word for word in argv)
                 or not argv[0]):
             raise NativeProcessSandboxError("native argv must be a nonempty argument sequence")
+        if self._recheck_source is not None:
+            self._recheck_source()
         return [*self._prefix, *argv]
 
 
@@ -172,8 +251,7 @@ def prepare_codex_native(env, cwd, protected_roots=(), writable_state_roots=(), 
     _trusted(runtime, "runtime root")
     if not any(runtime.is_relative_to(p) for p in protected):
         raise NativeProcessSandboxError("configured runtime must be covered by protected roots")
-    if any(_overlaps(w, p) for w in writable for p in protected):
-        raise NativeProcessSandboxError("writable roots overlap protected roots")
+    source_check = _validate_write_scope(child_env, workspace, protected, writable)
     binary = _binary(runtime)
     _directory(child_env.get("HOME"), "native HOME")
     if child_env.get("CODEX_HOME"):
@@ -206,7 +284,11 @@ def prepare_codex_native(env, cwd, protected_roots=(), writable_state_roots=(), 
             "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
         )
         launch = NativeProcessLaunch(config, child_env, prefix,
-                                     executable=binary, native_args=native_args)
+                                     executable=binary, native_args=native_args,
+                                     source_write=({"user_id": child_env["MEYO_USER_ID"],
+                                                    "root": str(workspace), "source_write": True}
+                                                   if source_check and not read_only else None),
+                                     _recheck_source=source_check)
         try:
             yield launch
         finally:
@@ -214,7 +296,9 @@ def prepare_codex_native(env, cwd, protected_roots=(), writable_state_roots=(), 
 
 
 @contextmanager
-def prepare_native_process(env, cwd, backend="", protected_roots=(), writable_state_roots=()):
+def prepare_native_process(env, cwd, backend="", protected_roots=(), writable_state_roots=(),
+                           *, sandbox_executable: Path | None = None,
+                           network_access: bool = True):
     """Return config_dir/env/wrap(argv), with no global environment mutation.
 
     ``backend=""`` preserves native argv/env except the host-only
@@ -234,6 +318,10 @@ def prepare_native_process(env, cwd, backend="", protected_roots=(), writable_st
     """
     if backend not in ("", None, "codex"):
         raise NativeProcessSandboxError("unknown native process sandbox backend")
+    if sandbox_executable is not None and backend != "codex":
+        raise NativeProcessSandboxError("sandbox executable requires codex backend")
+    if type(network_access) is not bool:
+        raise NativeProcessSandboxError("network access must be a boolean")
     child_env = dict(env)
     child_env.pop("LEGION_CC_SANDBOX_BACKEND", None)
     temporary_root = "/tmp" if os.name != "nt" else tempfile.gettempdir()
@@ -248,13 +336,19 @@ def prepare_native_process(env, cwd, backend="", protected_roots=(), writable_st
             workspace = _directory(cwd, "workspace")
             protected = _roots(protected_roots, "protected roots")
             writable = list(dict.fromkeys([workspace, *_roots(writable_state_roots, "writable roots")]))
+            binary = None
+            if sandbox_executable is not None:
+                binary = _sandbox_binary(sandbox_executable, writable)
+                child_env["MEYO_RUNTIME_ROOT"] = str(binary.parent)
             runtime = _directory(child_env.get("MEYO_RUNTIME_ROOT"), "MEYO_RUNTIME_ROOT")
             _trusted(runtime, "runtime root")
             if not any(runtime.is_relative_to(p) for p in protected):
                 raise NativeProcessSandboxError("configured runtime must be covered by protected roots")
-            if any(_overlaps(w, p) for w in writable for p in protected):
-                raise NativeProcessSandboxError("writable roots overlap protected roots")
-            binary = _binary(runtime)
+            source_check = _validate_write_scope(child_env, workspace, protected, writable)
+            if binary is None:
+                binary = _binary(runtime)
+            interpreter_prefix = (_codex_node_prefix(binary, child_env, writable)
+                                  if sandbox_executable is not None else ())
             _directory(child_env.get("HOME"), "native HOME")
             original_home = child_env["HOME"]  # Validate without changing its logical spelling.
             original_codex_home = child_env.get("CODEX_HOME")
@@ -289,16 +383,20 @@ def prepare_native_process(env, cwd, backend="", protected_roots=(), writable_st
             if original_codex_home:
                 restore += [f"CODEX_HOME={original_codex_home}"]
             prefix = [
-                str(binary), "sandbox",
+                *interpreter_prefix, str(binary), "sandbox",
                 "-c", 'sandbox_mode="workspace-write"',
-                "-c", "sandbox_workspace_write.network_access=true",
+                "-c", "sandbox_workspace_write.network_access=" + str(network_access).lower(),
                 "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(
                     [str(p) for p in [*writable, inner_tmp]], ensure_ascii=True),
                 "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                 "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
                 "--", *restore,
             ]
-            launch = NativeProcessLaunch(config, child_env, tuple(prefix))
+            launch = NativeProcessLaunch(config, child_env, tuple(prefix),
+                                         source_write=({"user_id": child_env["MEYO_USER_ID"],
+                                                        "root": str(workspace), "source_write": True}
+                                                       if source_check else None),
+                                         _recheck_source=source_check)
         try:
             yield launch
         finally:

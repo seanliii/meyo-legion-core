@@ -47,7 +47,31 @@ def _locks_dir() -> Path:
 
 
 @contextlib.contextmanager
-def _packet_lock(team_id: str):
+def _packet_lock(team_id: str, *, namespace: str = "", blocking: bool = True):
+    if namespace:
+        key = "ns-" + hashlib.sha256(json.dumps([str(_root()), team_id, namespace]).encode()).hexdigest()
+        with _LOCK:
+            lock = _CONTEXT_LOCKS.setdefault(key, threading.Lock())
+        if not lock.acquire(blocking=blocking):
+            yield False
+            return
+        try:
+            _locks_dir().mkdir(parents=True, exist_ok=True)
+            with (_locks_dir() / f"{key}.lock").open("a+", encoding="utf-8") as handle:
+                if _fcntl is not None:
+                    try:
+                        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | (0 if blocking else _fcntl.LOCK_NB))
+                    except BlockingIOError:
+                        yield False
+                        return
+                try:
+                    yield True
+                finally:
+                    if _fcntl is not None:
+                        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        finally:
+            lock.release()
+        return
     key = _safe(team_id)
     with _LOCK:
         thread_lock = _CONTEXT_LOCKS.setdefault(key, threading.RLock())
@@ -894,6 +918,48 @@ def _ingest_anchor_artifacts_unlocked(packet: dict, result: dict, task_id: str) 
     _commit_anchor_rows(packet, normalized, change_reason="concept_anchor_artifact_ingest")
 
 
+def public_selection_value(value: Any) -> Any:
+    """Project auxiliary evidence, never expose credentials or private runtime stores.
+
+    Original result bytes remain in the owner-only attempt. Withheld content is
+    an explicit safety observation, not a changed candidate or a quality verdict.
+    """
+    import artifact_content_safety as safety
+    import artifact_delivery
+    private = {"path", "workdir", "workspace_root", "repo_root", "packet_path", "context_ref",
+               "prompt", "private_prompt", "runtime_brief", "native_facts", "native_checkpoint",
+               "tool_trace", "tool_execution_evidence", "command", "arguments", "metadata",
+               "raw", "output", "original_final", "raw_orchestration_request", "orchestration_request",
+               "selection_recovery_receipt", "native_raw", "private_reasoning", "reasoning_content",
+               "tool_command", "command_metadata", "task_facts", "original_source"}
+    if isinstance(value, dict):
+        if "final" in value:
+            value = {key: item for key, item in value.items() if key in {
+                "final", "status", "error", "task_id", "key", "harness", "assigned_harness",
+                "model_used", "usage", "role", "supporting_context", "candidate_view", "public_result_ref",
+                "artifacts", "discovered_artifacts", "fail_kind", "error_envelope"}}
+        return {key: public_selection_value(item) for key, item in value.items()
+                if key not in private and (not safety.sensitive_key(str(key))
+                                          or key in {"key", "task_id", "harness", "artifact_id"})}
+    if isinstance(value, (list, tuple)):
+        return [public_selection_value(item) for item in value]
+    if isinstance(value, str):
+        if value.startswith("/") and artifact_delivery._is_internal_artifact_path(value):
+            return "[withheld:private_content]"
+        if safety.sensitive_text(value):
+            value = safety._normalized_text(value)
+        # Preserve legal prose on both sides; screen individual spans with the
+        # existing credential recognizer, including encoded credential forms.
+        patterns = (safety._AUTH, safety._PAIR, safety._QUERY, safety._TOKEN,
+                    re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)"))
+        for pattern in patterns:
+            value = pattern.sub(lambda m: "[redacted:secret]" if safety.sensitive_text(m.group()) else m.group(), value)
+        value = re.sub(r"(?i)(?:https?://)?(?:[a-z0-9-]+\.)*(?:sankuai\.com|meituan\.com)(?:[^\s<>\"']*)",
+                       "[withheld:private_url]", value)
+        return value
+    return _json_safe(value)
+
+
 def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
                             assigned_harness: str = "",
                             continuation: dict | None = None) -> dict:
@@ -907,8 +973,11 @@ def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
     row = {
         "task_id": task_id,
         "harness": owner,
+        "qhash": str(result.get("qhash") or ""),
+        "model_used": str(result.get("model_used") or result.get("model") or ""),
         "status": status,
         "summary": summary[:_MAX_INLINE],
+        "original_final": str(result.get("final") or ""),
         "error_envelope": _json_safe(result.get("error_envelope") or {}),
         "native_facts": _json_safe(result.get("native_facts") or {}),
         "native_checkpoint": _json_safe(result.get("native_checkpoint") or {}),
@@ -930,6 +999,19 @@ def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
     for field in ("orchestration_request", "raw_orchestration_request", "collaboration_protocol"):
         if field in result:
             row[field] = _json_safe(result[field])
+    public = {key: _json_safe(result[key]) for key in (
+        "final", "status", "error", "artifacts", "discovered_artifacts",
+        "role", "supporting_context", "candidate_view",
+        "assigned_harness", "fail_kind", "error_envelope", "usage", "model_used") if key in result}
+    public.update(task_id=task_id, key=str(result.get("key") or task_id), harness=owner)
+    public = public_selection_value(public)
+    encoded = json.dumps(public, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    import artifact_store
+    manifest = artifact_store.put_bytes(team_id, task_id, encoded, name="candidate.json")
+    row["public_result_ref"] = {**manifest, "store": "artifact_store",
+        "team_id": team_id, "task_id": task_id,
+        "final_sha256": hashlib.sha256(str(public.get("final") or "").encode()).hexdigest(),
+        "original_final_sha256": hashlib.sha256(str(result.get("final") or "").encode()).hexdigest()}
     attempts = [item for item in (packet.get("attempts") or [])
                 if not (isinstance(item, dict) and item.get("task_id") == task_id
                         and item.get("harness") == owner and item.get("status") == status)]
@@ -986,12 +1068,17 @@ def _record_coordination_unlocked(team_id: str, captain: str, proposal: dict) ->
     # 未能进入执行图这一事实；旧记录缺失的字段也不补造为成功。
     for field in ("ok", "error", "protocol_feedback", "protocol_recovery", "execution_result_ref",
                   "collaboration_protocol", "message_receipts", "raw_orchestration_request",
-                  "source", "task_id"):
+                  "source", "task_id", "phase", "selected_task_id", "evidence_refs",
+                  "candidate_view", "selection_collaboration", "execution_usage_records",
+                  "selection_recovery_receipt"):
         if field in proposal:
             row[field] = _json_safe(proposal[field])
     decisions = [item for item in (packet.get("decisions") or []) if isinstance(item, dict)]
     decisions.append(row)
     packet["decisions"] = decisions[-_MAX_ITEMS:]
+    scene = row.get("selection_collaboration")
+    if row.get("phase") == "candidate_selection" and isinstance(scene, dict) and scene.get("identity"):
+        packet.setdefault("selection_collaborations", {})[scene["identity"]] = _json_safe(scene)
     if not is_author_proposal:
         packet["captain"] = str(captain)
     packet["current_stage"] = "coordinating"
@@ -1371,6 +1458,8 @@ def snapshot(team_id: str, task_id: str = "", *, packet: dict | None = None,
                               if not isinstance(item, dict) or str(item.get("task_id") or "") in allowed_tasks]
         source["artifacts"] = [item for item in (source.get("artifacts") or [])
                                if not isinstance(item, dict) or str(item.get("task_id") or "") in allowed_tasks]
+        source["decisions"] = [item for item in (source.get("decisions") or [])
+                               if not isinstance(item, dict) or item.get("phase") != "candidate_selection"]
         source["concept_anchors_sources"] = [
             item for item in (source.get("concept_anchors_sources") or [])
             if isinstance(item, dict) and str(item.get("task_id") or "") in allowed_tasks
@@ -1430,7 +1519,8 @@ def snapshot(team_id: str, task_id: str = "", *, packet: dict | None = None,
         "open_gaps": list(source.get("open_gaps") or [])[-max_items:],
         "verification_findings": list(source.get("verification_findings") or [])[-max_items:],
         "artifacts": list(source.get("artifacts") or [])[-max_items:],
-        "attempts": list(source.get("attempts") or [])[-max_items:],
+        "attempts": [{key: value for key, value in item.items() if key != "original_final"}
+                     for item in list(source.get("attempts") or [])[-max_items:] if isinstance(item, dict)],
         "packet_path": str(source.get("packet_path") or _path(team_id)),
         "updated_at": source.get("updated_at"),
     }

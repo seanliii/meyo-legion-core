@@ -32,7 +32,7 @@ def overview() -> dict:
         pass
 
     def _is_answer_agent(key: str) -> bool:
-        return _roles.get(key) not in ("control-plane", "ui-platform", "capability")
+        return _roles.get(key) not in ("control-plane", "ui-platform", "capability", "evolution")
 
     # 1) 内置可派单家(legion_core adapter·军团核心成员)
     try:

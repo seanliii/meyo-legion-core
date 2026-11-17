@@ -1068,6 +1068,8 @@ def run_tool(tool_id: str, params: dict, timeout_s: float | None = None,
     import time as _t
     from contextlib import nullcontext
     params = dict(params or {})
+    if tool_id.removeprefix("runnable:") == "harness_onboard" and "personal_token" in params:
+        return {"ok": False, "isError": True, "error": "USE_EXISTING_RUNTIME_CREDENTIAL"}
     _model_tool = tool_id.removeprefix("runnable:")
     if _model_tool in ("model_catalog", "model_chat", "model_decisions"):
         # 在事件、权限账本或进程参数之前拒绝凭证/网关覆盖，避免误传值被日志回显。
@@ -1121,6 +1123,13 @@ def run_tool(tool_id: str, params: dict, timeout_s: float | None = None,
                           else f"CAPABILITY_DENIED:{_authorization.get('action')}")}
     _local_binding = None
     _dl = float(timeout_s if timeout_s is not None else _TOOL_DEADLINE_S)
+    if tool_id.removeprefix("runnable:") == "harness_onboard" and timeout_s is None:
+        try:
+            requested = float(params.get("install_timeout", 1500))
+            if 0 < requested < float("inf"):
+                _dl = max(_dl, requested + 120)
+        except (TypeError, ValueError):
+            pass
     if (tool_id.removeprefix("runnable:") == "mcp_call"
             and params.get("server") == "meyo_capabilities"
             and params.get("name") == "call_capability"
@@ -1275,6 +1284,79 @@ def run_tool(tool_id: str, params: dict, timeout_s: float | None = None,
         return {"ok": False, "isError": True, "error": f"run_tool 调度失败: {type(e).__name__}: {e}"}
 
 
+def _onboard_host_url() -> str:
+    base = str(os.environ.get("LEGION_BASE_URL") or "").strip()
+    if base:
+        return base.rstrip("/")
+    port = str(os.environ.get("LEGION_PORT") or os.environ.get("PORT") or "8000").strip() or "8000"
+    return f"http://127.0.0.1:{port}"
+
+
+def _route_onboard_through_host(params: dict, uid: str, session_id: str, workdir: str) -> dict:
+    """Delegate to the existing host pipeline, without giving children personal tokens."""
+    import urllib.request
+    import legion_client
+    base = _onboard_host_url()
+    endpoint = base + "/api/legion/tool/onboard"
+    try:
+        bridge = os.environ.get("MEYO_ONBOARD_BRIDGE_URL", "")
+        delegated = os.environ.get("MEYO_ONBOARD_BRIDGE_TOKEN", "")
+        if bridge or delegated:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(bridge)
+            if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port
+                    or parsed.path != "/onboard" or parsed.username or parsed.password
+                    or parsed.query or parsed.fragment or not 16 <= len(delegated) <= 128
+                    or not delegated.isascii() or any(char.isspace() for char in delegated)):
+                return {"ok": False, "isError": True, "error": "ONBOARD_BRIDGE_INVALID"}
+            endpoint = bridge
+            headers = {"Authorization": "Bearer " + delegated}
+        else:
+            headers = legion_client._personal_headers(base, None)
+        body = json.dumps({"uid": uid, "session_id": session_id, "workdir": workdir,
+                           "params": params}, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(endpoint, data=body,
+                headers={**headers, "Content-Type": "application/json"}, method="POST")
+        timeout = float(params.get("install_timeout", 1500)) + 120
+        if not 0 < timeout < float("inf"):
+            return {"ok": False, "isError": True, "error": "INVALID_ONBOARD_TIMEOUT"}
+        with legion_client._open(request, timeout=max(60.0, timeout)) as response:
+            return json.loads(response.read().decode("utf-8") or "{}")
+    except legion_client.LegionClientError as exc:
+        return {"ok": False, "isError": True, "error": "ONBOARD_HOST_" + exc.code.upper()}
+    except Exception as exc:
+        return {"ok": False, "isError": True, "error": f"ONBOARD_HOST_FAILED:{type(exc).__name__}"}
+
+
+def _onboard_scope_authorized(uid: str, workdir: str) -> dict | None:
+    import personal_identity
+    import external_agent_registry
+    from pathlib import Path
+    if not workdir or personal_identity.source_write_grant(uid, workdir) is None:
+        return {"ok": False, "isError": True, "error": "SOURCE_WRITE_NOT_GRANTED"}
+    catalog = Path(external_agent_registry.CATALOG)
+    try:
+        root = Path(workdir).resolve(strict=True)
+        if catalog.is_symlink() or catalog.resolve() != catalog.absolute() or not catalog.is_relative_to(root):
+            return {"ok": False, "isError": True, "error": "CATALOG_OUTSIDE_SOURCE_GRANT"}
+    except (OSError, ValueError, RuntimeError):
+        return {"ok": False, "isError": True, "error": "CATALOG_OUTSIDE_SOURCE_GRANT"}
+    return None
+
+
+def _onboard_scope_error(params: dict, bound: str) -> dict | None:
+    requested = str(params.get("uid") or "").strip()
+    if requested and bound and requested != bound:
+        return {"ok": False, "isError": True, "error": "USER_SCOPE_MISMATCH"}
+    if "personal_token" in params:
+        return {"ok": False, "isError": True, "error": "USE_EXISTING_RUNTIME_CREDENTIAL"}
+    allowed = {"key", "spec", "from_github", "skip_install", "no_server", "build_only",
+               "install_timeout", "model", "uid"}
+    if set(params) - allowed:
+        return {"ok": False, "isError": True, "error": "UNSUPPORTED_ONBOARD_FIELDS"}
+    return None
+
+
 def _run_tool_inner(tool_id: str, params: dict) -> dict:
     """真执行一件可运行工具。当前可跑:媒体工具(gen_image/see_image/…)+ opencli + search_github。"""
     if tool_id.startswith("agent_tool:"):
@@ -1401,6 +1483,42 @@ def _run_tool_inner(tool_id: str, params: dict) -> dict:
             return skill_improver.improve_all(uid=uid, since_days=int(params.get("since_days") or 30))
         except Exception as e:
             return {"ok": False, "error": f"skill_improve 失败: {e}"}
+    if mid == "harness_onboard":
+        try:
+            registry = sys.modules.get("harness_registry")
+            runtime = getattr(registry, "_INPROC_RUNTIME_ENV", None)
+            local = getattr(runtime, "values", {}) or {}
+            inherit = getattr(runtime, "inherit_process_context", True)
+            bound = str(local.get("MEYO_USER_ID") or "").strip()
+            if not bound and inherit and "MEYO_USER_ID" not in local:
+                env_uid = str(os.environ.get("MEYO_USER_ID") or "").strip()
+                env_sid = str(os.environ.get("MEYO_SESSION_ID") or "").strip()
+                env_wd = str(os.environ.get("MEYO_WORKDIR") or "").strip()
+                if not (env_uid and env_sid and env_wd):
+                    return {"ok": False, "isError": True, "error": "USER_SCOPE_MISSING"}
+                error = _onboard_scope_error(params, env_uid)
+                if error is not None:
+                    return error
+                return _route_onboard_through_host(params, env_uid, env_sid, env_wd)
+            error = _onboard_scope_error(params, bound)
+            if error is not None:
+                return error
+            if not bound:
+                return {"ok": False, "isError": True, "error": "USER_SCOPE_MISSING"}
+            error = _onboard_scope_authorized(bound, str(local.get("MEYO_WORKDIR") or ""))
+            if error is not None:
+                return error
+            import agent_tool_provider
+            import harness_onboard
+            lease = agent_tool_provider._bound_native_onboard()
+            if lease is None:
+                return {"ok": False, "isError": True, "error": "NATIVE_ONBOARD_LEASE_REQUIRED"}
+            lease.check()
+            options = {name: value for name, value in params.items() if name != "uid"}
+            credential = agent_tool_provider._bound_personal_token()
+            return harness_onboard.onboard(**options, uid=bound, personal_token=credential or "")
+        except Exception as exc:
+            return {"ok": False, "isError": True, "error": f"harness_onboard 失败:{type(exc).__name__}"}
     if mid == "source_audit":
         # 任意成员都可发起的源码审核→互学→自优化入口。长方法放在按需Skill里，
         # 此处只提供事实、证据核验和持久账本，不把审核协议塞进普通任务prompt。

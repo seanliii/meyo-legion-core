@@ -676,7 +676,8 @@ def _cli_process_boundary(command, context, env):
             not pathlib.Path(declared).is_absolute()
             or pathlib.Path(declared).resolve() != runtime):
         raise NativeProcessSandboxError("CLI runtime differs from the installed program")
-    effective = {**env, "MEYO_RUNTIME_ROOT": str(runtime)}
+    effective = {**env, "MEYO_RUNTIME_ROOT": str(runtime),
+                 "MEYO_USER_ID": str(context.get("user_id") or env.get("MEYO_USER_ID") or "")}
     protected = [str(app), str(runtime)]
     protected.extend(context[name] for name in ("source", "runtime_dir") if context.get(name))
     # Session files below cwd need no extra grant. Add only explicit memory/IPC
@@ -730,6 +731,10 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
     flag and never creates a boundary. Public run_cli always prepares its own;
     the fixed Cline bootstrap owns the launch passed by its native entry.
     """
+    if launch is not None:
+        # Build/runtime children receive only the run-owned single-action bridge.
+        for name in ("LEGION_PERSONAL_TOKEN", "MEYO_PERSONAL_TOKEN"):
+            launch.env.pop(name, None)
     launch_command = launch.wrap(command) if launch is not None else command
     launch_env = launch.env if launch is not None else env
     if report_command is not None:

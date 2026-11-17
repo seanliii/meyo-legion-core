@@ -8,6 +8,8 @@ import hashlib
 import os
 import pathlib
 import re
+import secrets
+import stat
 import shutil
 import subprocess
 import sys
@@ -16,7 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 import legion_paths as _paths
@@ -40,45 +42,201 @@ def catalog_lock(timeout_s: float = 30.0):
     写(15家)->qwen 凭空消失。凡是要改 catalog 的路径(install/apply_update/
     onboarding)必须全程持锁;纯读(load_catalog)不必持锁(读个快照即可)。
     """
-    # 可重入:同线程已持锁时嵌套调用直接放行(flock 不同 fd 同进程会自死锁)。
-    _depth = getattr(_LOCK_TLS, "depth", 0)
-    if fcntl is None or _depth > 0:
-        _LOCK_TLS.depth = _depth + 1
+    if fcntl is None or not all(hasattr(os, flag) for flag in
+                               ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC")):
+        raise RuntimeError("safe catalog locking is unavailable")
+    _native_onboard_lease()
+    path = CATALOG.absolute()
+    depth = getattr(_LOCK_TLS, "depth", 0)
+    if depth:
+        if path != _LOCK_TLS.path:
+            raise PermissionError("nested catalog lock path changed")
+        _check_catalog_directory(_LOCK_TLS.directory_fd, path.parent)
+        _check_catalog_lock_entry(_LOCK_TLS.directory_fd, _LOCK_TLS.lock_fd)
+        _LOCK_TLS.depth = depth + 1
         try:
             yield
         finally:
-            _LOCK_TLS.depth = _depth
+            _LOCK_TLS.depth = depth
         return
-    lock_path = CATALOG.parent / ".external_agents.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as fh:
-        deadline = time.time() + timeout_s
-        while True:
-            try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.time() >= deadline:
-                    raise TimeoutError(f"catalog lock timeout {timeout_s}s")
-                time.sleep(0.2)
-        _LOCK_TLS.depth = 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    lock_fd = None
+    locked = False
+    try:
+        _check_catalog_directory(directory_fd, path.parent)
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
         try:
+            lock_fd = os.open(".external_agents.lock", flags | os.O_CREAT | os.O_EXCL,
+                              0o600, dir_fd=directory_fd)
+        except FileExistsError:
+            lock_fd = os.open(".external_agents.lock", flags, dir_fd=directory_fd)
+        info = os.fstat(lock_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022):
+            raise PermissionError("unsafe catalog lock file")
+        # Tighten trusted legacy locks without unlinking a potentially held inode.
+        os.fchmod(lock_fd, 0o600)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            _native_onboard_lease()
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"catalog lock timeout {timeout_s}s")
+                time.sleep(min(0.1, remaining))
+        _check_catalog_directory(directory_fd, path.parent)
+        _check_catalog_lock_entry(directory_fd, lock_fd)
+        _LOCK_TLS.depth, _LOCK_TLS.path = 1, path
+        _LOCK_TLS.directory_fd, _LOCK_TLS.lock_fd = directory_fd, lock_fd
+        try:
+            _native_onboard_lease()
             yield
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
             _LOCK_TLS.depth = 0
+            for name in ("path", "directory_fd", "lock_fd"):
+                delattr(_LOCK_TLS, name)
+    finally:
+        try:
+            if locked:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            try:
+                if lock_fd is not None:
+                    os.close(lock_fd)
+            finally:
+                os.close(directory_fd)
+
+
+def _check_catalog_directory(fd, path):
+    info, current = os.fstat(fd), os.stat(path, follow_symlinks=False)
+    if (not stat.S_ISDIR(info.st_mode) or not stat.S_ISDIR(current.st_mode)
+            or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022
+            or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
+        raise PermissionError("catalog directory is unsafe or changed")
+
+
+def _check_catalog_lock_entry(directory_fd, lock_fd):
+    info = os.fstat(lock_fd)
+    current = os.stat(".external_agents.lock", dir_fd=directory_fd, follow_symlinks=False)
+    if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+            or current.st_uid not in (0, os.getuid()) or stat.S_IMODE(current.st_mode) != 0o600
+            or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
+        raise PermissionError("catalog lock file changed")
 
 import agent_manifest
 from external_agent_transports import TransportError, run_transport, _managed_cli_app, is_readonly_loopback_http
 
 HERE = pathlib.Path(__file__).resolve().parent
-CATALOG = HERE / "external_agents.json"
+CATALOG = _paths.external_catalog_path(HERE / "external_agents.json")
 _STATE_DIR = pathlib.Path(_paths.under("external_agents"))
 _STATE_PATH = _STATE_DIR / "state.json"
 _LOG_DIR = _STATE_DIR / "logs"
 _ALLOWED_EXECUTABLES = {"python", "python.exe", "python3", "python3.12", "pip", "pip3", "npm", "npx",
                         "pnpm", "corepack", "cargo", "make", "docker", "git", "uv", "brew",
                         "node", "node.exe"}
+
+
+def _native_onboard_lease():
+    """Only the loaded host provider supplies live thread authority, never env flags."""
+    provider = sys.modules.get("agent_tool_provider")
+    bound = getattr(provider, "_bound_native_onboard", None)
+    lease = bound() if bound is not None else None
+    if lease is not None:
+        lease.check()
+    return lease
+
+
+def _check_install_paths(lease, item, destination, runtime_dir):
+    if lease is not None:
+        lease.check()
+        lease.install_paths(item, destination, runtime_dir)
+
+
+def _probe_spec_identity(item: dict) -> str:
+    import hashlib
+    return hashlib.sha256(json.dumps(item, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+# Reviewed release identities, not a snapshot of the mutable catalog at startup.
+# Update with reviewed bundled declarations; restart must never launder user specs.
+_TRUSTED_PROBE_SPECS = {
+    "cowagent": "1c3bee49b83fe3f54852ccf69ec79e36f64c76aceb9961d252e95c72bc8e7e7a",
+    "paperclip": "5b42d86e33ce094817ce3f94bcbe5c82d34c94598be0551eb5f1939e1e12b9b9",
+    "deer-flow": "e787d060f5c4d3d20b59474dccd05be6e6a32c01a66202065dbc0333f087565c",
+    "cline": "ac1d7b5f82255da20c2f301cf763689ea5340fa587e6628d439d2b6c7c84a50d",
+    "goose": "ef0c4eaded9967b416929c4583b8fc148f743af623686825fe0fbd205393592a",
+    "openclaw": "bd2c7e1e205735480b73233c6d50d68bedfa03cb53c62b7b03d319a5a36afebf",
+    "pi": "76dd5784b4490b6ae7ddb826c11315386b179a2a97d9b48fb10e7d6fe8dbd0c8",
+    "nanobot": "988dd67e906dd72746796e640fb2a920dd41618009e91700df49ae84a1de81e7",
+    "genericagent": "d68cd5c5cce2fbac967adf2305c48ebef318545c893fc210ad601785fab2ebb1",
+    "omniagent": "617a8193e60051bffeb2719fc7c41ffeb88b090f91e8917cab5ccf2f7181c0b9",
+    "kimi-code": "8d669a9a4087036ab7f986567c83a5f4756264cd016147b64fa6d15c793dec1a",
+    "ironclaw": "81fee483b624345b0dc1fba4658563b13cd5d2d5366e0069ef2e8495e7ebbb13",
+    "aeon": "78a1670cdbb2ddc3b4a012a23c169da8791214e5230f8bbde95015434d17a14d",
+    "qwen-code": "00655dbdc8a299c8043e4f89d3d80bdabd07b310dcf36db1887b8570c4e378e8",
+    "aider": "ba8120c32da4d36a12b22f15bf43570f8dc5c952b108dc700b499e7d90a8f1b3",
+    "opencode": "f62dbd9cecdc5bc4bf49aea3844dbcbb4bc92f0c5b97e0a5bc6cec856cd32f7f",
+    "browser-use": "8d133df5521320237e4533a396c1efb37712d7faefd267addc5efc0c6dfe805e",
+    "gnhf": "475b408611fdf873827cfcb3caf27491990187c5076820fab2dd5866c0bc41eb",
+    "macos-harness": "34b0ef1fdb87596847147717b4ee3cb65f4e2bfd3cf0b927eac461ea19df694f",
+    "headlong": "52f61dd0c8b3ab95955c106fbbef84548cdbb1a414add6d2ee992fa0a5ef7ad9",
+    "harness-anything": "64e5096c2f5bc1907b2e6e5c2bd97c4783ff36419b40b6d1fe6ea6adb9c1aa30",
+    "hass-agent": "8c8933b764730079c15f671221c7822f90a4194a4996511058aae79ecdbecccd",
+    "loopx": "f0f4ae51e4ebc06c00ba943ad3cbbb09cb9cf845ade50efa0f1df48650716eb1",
+    "openhands": "b47e3d3d303e6bf8c5cfefe89b8743014d2a323e2cd1f5a7deb38354cc2b734b",
+    "mobilerun": "984323079a9eb965f2888cb2f49c721d643ee310578970420f17b4fed684e630",
+    "grok-bot-reconstructed": "1a1ae84b22eaa894809e6d3de2e0e802079c5396662e4a8af4188ffcdc78aeb0",
+    "prime-intellect": "d381e56670a0f055512b402977c5b46c1d1d187772938258c9cabf3bcd104e80",
+    "penguin-harness": "c493bad26c6d91b9ba06944f3f7abb0018340dbfb347472430bf37ac35c3e460",
+    "ohmygame": "6b5d3f2dcf0dda557e68e1af190e815731f7c8fe5e72eaa0643e6a639ec69f3a",
+    "openmontage": "19b4fdf6b115d0cee9ecabfca3df1f78f052a2c0d5d291f983a6c79838acb305",
+    "dsh-superagent": "dfc05985ff14f3db38387f4423cc1e327da4413858cc7cb81d3132d62fdbaf06",
+    "cursor-claude": "e17c90091f8af2b63d1c3b0bda206664e6bd6b3419818296e456d2f2a4eb548e",
+    "cursor-gpt": "eee6071b49269d455856e3234482ef58de81df38451728a29c30319ebdf0f05c",
+    "cursor-gemini": "4437bff595c2f00f7a595173959646d4c380f60e8cd265fb210604caa976ffbe",
+}
+
+
+def _host_probe_trusted(item: dict) -> bool:
+    if _TRUSTED_PROBE_SPECS.get(item.get("key")) != _probe_spec_identity(item):
+        return False
+    try:
+        fd = os.open(CATALOG, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022):
+                return False
+            data = json.load(stream)
+        # Sticky host-generated origin survives reloads and same-key replacement.
+        return item.get("key") not in data.get("native_managed_sources", {})
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _managed_probe_metadata(item: dict) -> dict:
+    """No user-declared command, import, URL or path is evaluated on the host."""
+    return {
+        "key": item["key"], "name": item.get("name"), "kind": item.get("kind", "agent"),
+        "url": item.get("url"), "version": item.get("version"), "revision": "",
+        "locked_revision": item.get("revision"), "revision_ok": False,
+        "source": "", "source_present": False, "installed": False,
+        "available": False, "execution_ready": False, "runnable": False,
+        "status": "requires_managed_probe",
+        "status_detail": "User-declared probe requires a live native onboard lease; host metadata only",
+        "probe": {"method": str((item.get("probe") or {}).get("method") or ""), "target": None},
+        "credentials": {"ready": False},
+        "protocols": [t.get("type") for t in item.get("transports") or []],
+        "execution_role": item.get("execution_role", "agent"),
+        "provenance": item.get("provenance") or {},
+        "capabilities": item.get("capabilities") or [], "updated_at": None,
+    }
 
 
 def load_catalog() -> list[dict]:
@@ -142,8 +300,14 @@ def _trusted_cline_bootstrap(spec, context, env):
         work = _directory(context["workdir"], "Cline workspace")
         protected = [app, runtime, service]
         protected.extend(_directory(context[name], name) for name in ("source", "runtime_dir"))
-        if any(_overlaps(work, path) for path in protected) or interpreter.is_relative_to(work):
+        if interpreter.is_relative_to(work):
             return None
+        if any(_overlaps(work, path) for path in protected):
+            from native_process_sandbox import source_workspace_grant
+            if source_workspace_grant(
+                    {**env, "MEYO_USER_ID": str(context.get("user_id") or "")},
+                    work, protected) is None:
+                return None
         shared = [pathlib.Path(env.get("MEYO_LEGION_DIR") or
                               pathlib.Path(env["HOME"]) / ".meyo/legion").resolve()]
         if env.get("LEGION_HOME_DIR"):
@@ -277,6 +441,7 @@ def _read_state() -> dict:
 
 
 def _write_state(key: str, patch: dict) -> dict:
+    _native_onboard_lease()
     state = _read_state()
     row = {**(state.get(key) or {}), **patch, "updated_at": time.time()}
     state[key] = row
@@ -415,7 +580,7 @@ def stop_probes() -> None:
     _PROBE_STOP.set()
 
 
-def _git_revision(root: pathlib.Path) -> str:
+def _git_revision(root: pathlib.Path, key: str = "") -> str:
     if _PROBE_STOP.is_set():
         return ""
     if not (root / ".git").exists():
@@ -448,6 +613,10 @@ def _git_revision(root: pathlib.Path) -> str:
             except (OSError, ValueError, TypeError, KeyError):
                 return ""
         return ""
+    if _native_onboard_lease() is not None:
+        ok, output = _run_probe_command(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                        root, timeout_s=15, key=key)
+        return output.strip() if ok else ""
     try:
         return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
                               text=True, timeout=15).stdout.strip()
@@ -550,36 +719,67 @@ def _credentials(item: dict, env: dict[str, str] | None = None, *,
 
 
 def _run_probe_command(command: list[str], cwd: pathlib.Path, timeout_s: int = 45,
-                       env: dict[str, str] | None = None) -> tuple[bool, str]:
+                       env: dict[str, str] | None = None, key: str = "") -> tuple[bool, str]:
     """探活子进程必须自立进程组并挂注册表账本(血泪 2026-09-06:
     subprocess.run 超时只杀父进程,make→docker info 等孙进程逃逸成孤儿,
     Docker 不健康时探活挂死堆积→CPU 打满机器卡死)。
     超时/异常时 killpg 整组回收,绝不留孙进程。"""
-    try:
-        proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, start_new_session=True)
-    except Exception as exc:
-        return False, f"{type(exc).__name__}:{exc}"
-    try:
+    lease = _native_onboard_lease()
+    boundary = (lease.install_launch(command, cwd, dict(os.environ if env is None else env), key)
+                if lease is not None else nullcontext(None))
+    with boundary as launch:
+        if lease is not None:
+            from native_process_sandbox import NativeProcessLaunch
+            if not isinstance(launch, NativeProcessLaunch):
+                raise RuntimeError("native onboard lease must yield NativeProcessLaunch")
+            lease.check()
+        argv = launch.wrap(command) if launch is not None else command
         try:
-            import legion_proc_registry as _preg
-            _preg.register(proc.pid, pgid=proc.pid, owner=os.getpid(),
-                           comm=command[0] if command else "probe")
-        except Exception:
-            pass
+            proc = subprocess.Popen(argv, cwd=str(getattr(launch, "cwd", cwd)),
+                                    env=launch.env if launch is not None else env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        except Exception as exc:
+            if lease is not None:
+                lease.check()
+            return False, f"{type(exc).__name__}:{exc}"
+        completed = False
         try:
-            out, _ = proc.communicate(timeout=max(1, int(timeout_s)))
-        except subprocess.TimeoutExpired:
-            _kill_proc_tree(proc)
-            return False, f"timeout after {timeout_s}s (process group killed)"
-        return proc.returncode == 0, (out or "")[-2000:]
-    finally:
-        try:
-            import legion_proc_registry as _preg
-            _preg.unregister(proc.pid)
-        except Exception:
-            pass
+            try:
+                import legion_proc_registry as _preg
+                registered = _preg.register(proc.pid, pgid=proc.pid, owner=os.getpid(),
+                                            comm=argv[0] if argv else "probe")
+                if lease is not None and not registered:
+                    raise RuntimeError("probe process registration failed")
+            except Exception:
+                if lease is not None:
+                    raise
+            deadline = time.monotonic() + max(1, int(timeout_s))
+            while True:
+                if lease is not None:
+                    lease.check()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False, f"timeout after {timeout_s}s (process group killed)"
+                try:
+                    out, _ = proc.communicate(timeout=min(0.25, remaining) if lease is not None else remaining)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if lease is not None:
+                lease.check()
+            completed = True
+            return proc.returncode == 0, (out or "")[-2000:]
+        finally:
+            try:
+                if not completed or proc.poll() is None:
+                    _kill_proc_tree(proc)
+            finally:
+                try:
+                    import legion_proc_registry as _preg
+                    _preg.unregister(proc.pid)
+                except Exception:
+                    pass
 
 
 def _kill_proc_tree(proc: subprocess.Popen) -> None:
@@ -592,7 +792,7 @@ def _kill_proc_tree(proc: subprocess.Popen) -> None:
             return
         try:
             proc.wait(timeout=5)
-            return
+            # The exited root does not prove its grandchildren left the group.
         except Exception:
             continue
     try:
@@ -603,6 +803,9 @@ def _kill_proc_tree(proc: subprocess.Popen) -> None:
 
 def _probe_one(item: dict, env: dict[str, str] | None = None, *,
                inherit_environment: bool = True) -> dict:
+    lease = _native_onboard_lease()
+    if lease is None and not _host_probe_trusted(item):
+        return _managed_probe_metadata(item)
     if _PROBE_STOP.is_set():
         return {"key": item["key"], "available": False, "status": "cancelled",
                 "reason": "server shutdown cancelled inspection", "revision_ok": False,
@@ -633,7 +836,7 @@ def _probe_one(item: dict, env: dict[str, str] | None = None, *,
             "provenance": item.get("provenance") or {"official": True},
             "capabilities": item.get("capabilities") or [], "updated_at": None,
         }
-    revision = _git_revision(root)
+    revision = _git_revision(root, item["key"])
     revision_ok = bool(source_present and revision == str(item.get("revision") or ""))
     probe = item.get("probe") or {}
     method = str(probe.get("method") or "")
@@ -653,14 +856,14 @@ def _probe_one(item: dict, env: dict[str, str] | None = None, *,
         resolved = rendered_target if os.path.isfile(rendered_target) else shutil.which(rendered_target, path=probe_env["PATH"])
         available = bool(resolved)
         if available and probe.get("command"):
-            available, detail = _run_probe_command(_format_argv(probe["command"], item), root, env=probe_env)
+            available, detail = _run_probe_command(_format_argv(probe["command"], item), root, env=probe_env, key=item["key"])
     elif method in ("command", "build"):
         command = _format_argv(probe.get("command") or [], item)
         resolved = command
         if method == "build" and not command:
             available = revision_ok
         elif command and _safe_step(command):
-            available, detail = _run_probe_command(command, root, env=probe_env)
+            available, detail = _run_probe_command(command, root, env=probe_env, key=item["key"])
     elif method == "path":
         # 支持完整 context 占位符({source}/{runtime_dir}/{runtime_bin}…),不只 {source}。
         # (ironclaw 等 cargo 装到 {runtime_dir}/bin 的家 probe 要用 runtime_dir。)
@@ -669,6 +872,8 @@ def _probe_one(item: dict, env: dict[str, str] | None = None, *,
         available = path.exists()
         resolved = str(path)
     elif method == "python_import":
+        if _native_onboard_lease() is not None:
+            raise RuntimeError("native onboard python_import probe needs a declared sandbox command")
         try:
             import importlib.util
             available = importlib.util.find_spec(target) is not None
@@ -691,7 +896,7 @@ def _probe_one(item: dict, env: dict[str, str] | None = None, *,
             detail = f"{type(exc).__name__}:{exc}"
     credentials = _credentials(item, env, inherit_environment=inherit_environment)
     has_transport = bool(item.get("transports"))
-    executable_role = item.get("execution_role") not in ("control-plane", "ui-platform", "capability")
+    executable_role = item.get("execution_role") not in ("control-plane", "ui-platform", "capability", "evolution")
     execution_ready = bool(revision_ok and available and credentials["ready"] and has_transport and executable_role)
     # 平台不匹配如实上报(2026-09-02 红灯清单根修):catalog 声明 platform_target(如
     # cloud-windows-vm 的 WPS/HASS 家)而本机是 darwin——按设计【本机不装不 probe】,旧逻辑
@@ -829,23 +1034,24 @@ def invalidate_probe_cache() -> None:
 
 
 def probe(key: str = "", env: dict[str, str] | None = None) -> dict:
+    lease = _native_onboard_lease()
     items = load_catalog()
     if key:
         # 单家探活不走缓存(装/卸后即时验证需要真实结果)
         item = next((x for x in items if x["key"] == key), None)
         return _probe_one(item, env) if item else {"ok": False, "error": f"unknown external agent:{key}"}
     # 全量探活:命中 TTL 内缓存直接返回(env 定制时不缓存·避免串味)
-    if env is None and not _PROBE_STOP.is_set():
+    if env is None and lease is None and not _PROBE_STOP.is_set():
         import time as _t
         if _PROBE_CACHE["data"] is not None and (_t.time() - _PROBE_CACHE["ts"]) < _PROBE_TTL:
             return _PROBE_CACHE["data"]
     rows = [_probe_one(item, env) for item in items]
     counts = {name: sum(row["status"] == name for row in rows) for name in
               ("not_installed", "installing", "ready", "missing_credentials", "build_failed",
-               "platform_mismatch")}
+               "platform_mismatch", "requires_managed_probe")}
     out = {"agents": rows, "summary": {"total": len(rows), **counts,
            "execution_ready": sum(row["execution_ready"] for row in rows)}}
-    if env is None:
+    if env is None and lease is None:
         import time as _t
         _PROBE_CACHE["data"] = out
         _PROBE_CACHE["ts"] = _t.time()
@@ -895,29 +1101,139 @@ def _docker_daemon_dead_proxy() -> str:
 _install_env_cache: dict = {}
 
 
-def _run_install_step(command, cwd, env, timeout_s, key, index):
-    """Stream installation evidence to disk and reclaim the entire timed-out process group."""
-    import legion_proc_registry
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    path = _LOG_DIR / f"{_safe_key(key)}-{time.time_ns()}-step{index}.log"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    timed_out = False
-    with os.fdopen(fd, "wb") as output:
-        proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-                                stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            if not legion_proc_registry.register(proc.pid, owner=os.getpid(),
-                                                 meta={"kind": "harness-install", "key": key}):
-                raise RuntimeError("installation process registration failed")
+_INSTALL_THREAD_LOCK = threading.RLock()
+_INSTALL_TLS = threading.local()
+
+
+@contextmanager
+def _install_serialized(lease, timeout_s):
+    """Use the existing host-wide installation lock with live cancellation checks."""
+    deadline = time.monotonic() + timeout_s
+
+    def check_wait():
+        if lease is not None:
+            lease.check()
+        if time.monotonic() >= deadline:
+            raise TimeoutError("global installation lock wait timed out")
+
+    if fcntl is None or not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("safe global installation locking is unavailable")
+    while True:
+        check_wait()
+        if _INSTALL_THREAD_LOCK.acquire(blocking=False):
+            break
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+    fd, locked = None, False
+    depth = getattr(_INSTALL_TLS, "depth", 0)
+    try:
+        check_wait()
+        path = pathlib.Path(os.environ.get("LEGION_INSTALL_LOCK_FILE") or "/tmp/.legion-install.lock")
+        if not path.is_absolute():
+            raise ValueError("installation lock path must be absolute")
+        parent = path.parent.resolve(strict=True)
+        for directory in (parent, *parent.parents):
+            info = directory.stat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid())
+                    or (info.st_mode & 0o022 and not
+                        (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+                raise PermissionError("unsafe installation lock directory")
+        path = parent / path.name
+        if depth:
+            if path != _INSTALL_TLS.path:
+                raise RuntimeError("nested installation lock path changed")
+        else:
+            flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
             try:
-                proc.wait(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _kill_proc_tree(proc)
+                fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                fd = os.open(path, flags)
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid not in (0, os.getuid()) or stat.S_IMODE(info.st_mode) != 0o600):
+                raise PermissionError("unsafe installation lock file")
+            while True:
+                check_wait()
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+            current = path.lstat()
+            if (current.st_dev, current.st_ino, current.st_nlink) != (info.st_dev, info.st_ino, 1):
+                raise PermissionError("installation lock file changed while waiting")
+        _INSTALL_TLS.depth, _INSTALL_TLS.path = depth + 1, path
+        check_wait()
+        yield max(0, deadline - time.monotonic())
+    finally:
+        _INSTALL_TLS.depth = depth
+        try:
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            if proc.poll() is None:
-                _kill_proc_tree(proc)
-            legion_proc_registry.unregister(proc.pid)
+            try:
+                if fd is not None:
+                    os.close(fd)
+            finally:
+                _INSTALL_THREAD_LOCK.release()
+
+
+def _run_install_step(command, cwd, env, timeout_s, key, index):
+    lease = _native_onboard_lease()
+    with _install_serialized(lease, timeout_s) as remaining:
+        return _run_install_step_locked(command, cwd, env, remaining, key, index)
+
+
+def _run_install_step_locked(command, cwd, env, timeout_s, key, index):
+    """Existing install spawn stays inside the host lock and the issued lease."""
+    import legion_proc_registry
+    lease = _native_onboard_lease()
+    boundary = lease.install_launch(command, cwd, env, key) if lease is not None else nullcontext(None)
+    with boundary as launch:
+        if lease is not None:
+            from native_process_sandbox import NativeProcessLaunch
+            if not isinstance(launch, NativeProcessLaunch):
+                raise RuntimeError("native onboard lease must yield NativeProcessLaunch")
+            lease.check()
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = _LOG_DIR / f"{_safe_key(key)}-{time.time_ns()}-step{index}.log"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        timed_out = False
+        with os.fdopen(fd, "wb") as output:
+            argv = launch.wrap(command) if launch is not None else command
+            if lease is not None:
+                lease.check()
+            proc = subprocess.Popen(argv, cwd=str(getattr(launch, "cwd", cwd)),
+                                    env=launch.env if launch is not None else env,
+                                    stdin=subprocess.DEVNULL, stdout=output,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            completed = False
+            try:
+                if not legion_proc_registry.register(proc.pid, owner=os.getpid(),
+                                                     meta={"kind": "harness-install", "key": key}):
+                    raise RuntimeError("installation process registration failed")
+                deadline = time.monotonic() + timeout_s
+                while True:
+                    if lease is not None:
+                        lease.check()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    try:
+                        proc.wait(timeout=min(0.25, remaining) if lease is not None else remaining)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                if lease is not None:
+                    lease.check()
+                completed = not timed_out
+            finally:
+                try:
+                    if not completed or proc.poll() is None:
+                        _kill_proc_tree(proc)
+                finally:
+                    legion_proc_registry.unregister(proc.pid)
     with path.open("rb") as stream:
         stream.seek(max(0, path.stat().st_size - 6000))
         tail = stream.read().decode("utf-8", "replace")
@@ -927,16 +1243,18 @@ def _run_install_step(command, cwd, env, timeout_s, key, index):
 
 def probe_build(item: dict) -> dict:
     """Verify declared build outputs without claiming the native service is running."""
+    if _native_onboard_lease() is None and not _host_probe_trusted(item):
+        return {**_managed_probe_metadata(item), "runtime_acceptance": "not_run"}
     declaration = item.get("build_probe")
     if declaration is None:
         return _probe_one(item)
     root = source_dir(item)
-    revision_ok = _git_revision(root) == str(item.get("revision") or "")
+    revision_ok = _git_revision(root, item["key"]) == str(item.get("revision") or "")
     command = _format_argv(declaration.get("command") or [], item)
     if declaration.get("method") != "command" or not command or not _safe_step(command):
         return {"available": False, "revision_ok": revision_ok, "status": "build_failed",
                 "status_detail": "invalid build probe", "runtime_acceptance": "not_run"}
-    available, detail = _run_probe_command(command, root)
+    available, detail = _run_probe_command(command, root, key=item["key"])
     return {"available": available, "revision_ok": revision_ok,
             "status": "built" if available and revision_ok else "build_failed",
             "status_detail": detail, "runtime_acceptance": "not_run"}
@@ -978,6 +1296,7 @@ def _published_runtime_mutation(item: dict) -> dict | None:
 
 def install(key: str, confirm: bool = False, timeout_s: int = 1800,
             build_only: bool = False) -> dict:
+    lease = _native_onboard_lease()
     item = next((x for x in load_catalog() if x["key"] == key), None)
     if not item:
         return {"ok": False, "error": f"unknown external agent:{key}"}
@@ -992,8 +1311,9 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
         return immutable
     destination = source_dir(item)
     runtime_dir = pathlib.Path(_context(item)["runtime_dir"])
+    _check_install_paths(lease, item, destination, runtime_dir)
     bundled = (destination / ".meyo-source.json").is_file() and not (destination / ".git").exists()
-    if bundled and _git_revision(destination) != revision:
+    if bundled and _git_revision(destination, key) != revision:
         return {"ok": False, "status": "build_failed", "key": key,
                 "error": "bundled source verification failed; source preserved"}
     commands = [] if bundled else [["git", "clone", "--filter=blob:none", "--no-checkout", url + ".git", str(destination)],
@@ -1004,16 +1324,30 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
         return {"ok": True, "status": "planned", "key": key, "commands": commands,
                 "destination": str(destination), "version": item.get("version"),
                 "revision": revision}
+    _check_install_paths(lease, item, destination, runtime_dir)
+    if not bundled and destination.exists() and not (destination / ".git").exists():
+        if not destination.is_dir() or any(destination.iterdir()):
+            return {"ok": False, "status": "build_failed", "key": key,
+                    "error": "non-git installation destination is not empty; source preserved",
+                    "source_preserved": True}
     _write_state(key, {"status": "installing", "phase": "clone", "error": ""})
+    _check_install_paths(lease, item, destination, runtime_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    _check_install_paths(lease, item, destination, runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     logs = []
     try:
-        if not bundled and destination.exists() and _git_revision(destination) != revision:
+        if (not bundled and (destination / ".git").exists()
+                and _git_revision(destination, key) != revision):
+            _check_install_paths(lease, item, destination, runtime_dir)
             shutil.rmtree(destination)
         for index, command in enumerate(commands):
-            if not bundled and index == 0 and destination.exists():
-                continue
+            _check_install_paths(lease, item, destination, runtime_dir)
+            if not bundled and index == 0:
+                if (destination / ".git").exists():
+                    continue
+                if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+                    raise RuntimeError("non-git installation destination is not empty; source preserved")
             if not _safe_step(command):
                 raise RuntimeError(f"安装命令不在白名单:{command[0] if command else ''}")
             _write_state(key, {"status": "installing", "phase": f"step_{index + 1}"})
@@ -1021,9 +1355,9 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
             # 死了会让 docker build/pull 全部 proxyconnect refused 卡满 timeout。提前一次 8s 体检,
             # 带人话修法直接报给调用方,别让它烧完 30min 才见 refused(铁律0:谁挡速度底线就先揪出来)。
             _step_name = pathlib.Path(str(command[0])).name
-            if _step_name in ("docker", "make") and "docker" not in _install_env_cache:
+            if lease is None and _step_name in ("docker", "make") and "docker" not in _install_env_cache:
                 _install_env_cache["docker"] = _docker_daemon_dead_proxy()
-            if _install_env_cache.get("docker"):
+            if lease is None and _install_env_cache.get("docker"):
                 raise RuntimeError(_install_env_cache["docker"])
             step_env = _strip_dead_proxy(os.environ)
             install_env = item.get("install_env") or {}
@@ -1042,6 +1376,7 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
             bins = _node_bin_dirs(item) + [runtime_dir / "venv" / ("Scripts" if os.name == "nt" else "bin"),
                                           runtime_dir / "node_modules" / ".bin", runtime_dir / "bin"]
             step_env["PATH"] = os.pathsep.join(str(path) for path in bins) + os.pathsep + step_env.get("PATH", "")
+            _check_install_paths(lease, item, destination, runtime_dir)
             result = _run_install_step(command, destination if destination.exists() else destination.parent,
                                        step_env, timeout_s, key, index + 1)
             logs.append(result)
@@ -1053,8 +1388,10 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
             state = probe_build(item)
             ok = bool(state.get("revision_ok") and state.get("available"))
             status = "built" if ok else "build_failed"
+            _check_install_paths(lease, item, destination, runtime_dir)
             _write_state(key, {"status": status, "phase": "build_probe",
                                "error": "" if ok else state.get("status_detail", "")})
+            _check_install_paths(lease, item, destination, runtime_dir)
             _LOG_DIR.mkdir(parents=True, exist_ok=True)
             log_path = _LOG_DIR / f"{_safe_key(key)}-{time.time_ns()}.json"
             log_path.write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1076,11 +1413,14 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
         # UI 如实显示 missing_credentials；不能把“缺凭证”误报成构建失败。
         install_complete = state["revision_ok"] and state["available"]
         ok = install_complete and status in ("ready", "missing_credentials")
+        _check_install_paths(lease, item, destination, runtime_dir)
         _write_state(key, {"status": status, "phase": "probe", "error": state.get("status_detail", "")})
         state = _probe_one(item)
     except Exception as exc:
+        _check_install_paths(lease, item, destination, runtime_dir)
         ok, status = False, "build_failed"
         _write_state(key, {"status": status, "phase": "install", "error": f"{type(exc).__name__}:{exc}"})
+    _check_install_paths(lease, item, destination, runtime_dir)
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _LOG_DIR / f"{_safe_key(key)}-{int(time.time())}.json"
     log_path.write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1243,9 +1583,19 @@ def run_capability(key: str, action: str, params: dict | None = None,
     if workdir and (not cwd.is_absolute() or not cwd.is_dir()):
         return {"ok": False, "error": "bound capability workdir is not an absolute directory"}
     started = time.time()
+    lease = _native_onboard_lease()
     try:
-        result = subprocess.run(command, cwd=str(cwd), env=run_env,
-                                capture_output=True, text=True, timeout=limit)
+        if lease is None:
+            result = subprocess.run(command, cwd=str(cwd), env=run_env,
+                                    capture_output=True, text=True, timeout=limit)
+        else:
+            _check_install_paths(lease, item, source_dir(item), pathlib.Path(_context(item)["runtime_dir"]))
+            evidence = _run_install_step(command, cwd, run_env, limit, key, "capability")
+            if evidence.get("timed_out"):
+                raise subprocess.TimeoutExpired(command, limit)
+            result = subprocess.CompletedProcess(command, evidence["exit_code"],
+                                                 evidence["stdout"], evidence["stderr"])
+            lease.check()
     except subprocess.TimeoutExpired:
         return {"ok": False, "status": "timeout", "error": f"timeout after {limit}s",
                 "key": key, "action": action}
@@ -1346,6 +1696,16 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
     # 工作目录也通过 env 下放给包 worker。仅给 cwd 还不够：部分原生 harness 会从自己的
     # workspace 配置决定文件工具根目录；显式 MEYO_WORKDIR 让 adapter 能把两者绑定到同一事实源。
     run_env["MEYO_WORKDIR"] = cwd
+    provider = sys.modules.get("agent_tool_provider")
+    bound = getattr(provider, "_bound_native_onboard", None)
+    lease = bound() if bound is not None else None
+    for name in ("MEYO_ONBOARD_BRIDGE_URL", "MEYO_ONBOARD_BRIDGE_TOKEN"):
+        run_env.pop(name, None)
+    if lease is not None:
+        lease.check()
+        run_env.update(lease.environment())
+    for name in ("LEGION_PERSONAL_TOKEN", "MEYO_PERSONAL_TOKEN"):
+        run_env.pop(name, None)
     # 跨家互学源码地图(护城河对齐 core 家):外部家与内置家一样拿到「已核验可读」的 peer
     # 源码入口(legion_sandbox.prepare_peer_sources·context not control·只给路径不写规则),
     # 不会读别家源码自愈的能力差距归零。异常不拦派活(上游断链铁律)。
@@ -1353,7 +1713,8 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
         import legion_sandbox as _ls
         _project = (runtime_context or {}).get("project_context") or {}
         run_env["MEYO_PEER_SOURCE_CONTEXT"] = _ls.prepare_peer_sources(
-            key, cwd, preserve_project=bool(_project.get("repo_root") or _project.get("workspace_root")))
+            key, cwd, preserve_project=bool(_project.get("repo_root") or _project.get("workspace_root")),
+            user_id=str((runtime_context or {}).get("user_id") or ""))
     except Exception:
         pass
     runtime_context = runtime_context or {}
@@ -1764,12 +2125,58 @@ def _save_catalog(items: list[dict]) -> None:
     调用方若先 load 再改再 save,应整段包在 catalog_lock() 里(load 也在锁内)防丢更新。
     """
     with catalog_lock():
+        lease = _native_onboard_lease()
+        directory_fd, path = _LOCK_TLS.directory_fd, _LOCK_TLS.path
+        _check_catalog_directory(directory_fd, path.parent)
         try:
-            data = json.loads(CATALOG.read_text(encoding="utf-8")) if CATALOG.exists() else {}
-        except Exception:
+            old_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory_fd)
+        except FileNotFoundError:
             data = {}
+        else:
+            with os.fdopen(old_fd, "r", encoding="utf-8") as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022):
+                    raise PermissionError("catalog is not a safe independent regular file")
+                try:
+                    data = json.load(stream)
+                except ValueError:
+                    data = {}
+        if lease is not None:
+            origins = data.setdefault("native_managed_sources", {})
+            previous = {item["key"]: _probe_spec_identity(item)
+                        for item in data.get("agents", []) if isinstance(item, dict) and item.get("key")}
+            for item in items:
+                key = item.get("key")
+                if key and previous.get(key) != _probe_spec_identity(item):
+                    origins[key] = {"spec_sha256": _probe_spec_identity(item),
+                                    "registered_at": time.time(), "origin": "native_onboard"}
         data["agents"] = items
-        CATALOG.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _PROBE_CACHE.update(data=None, ts=0.0)
+        _native_onboard_lease()
+        _check_catalog_directory(directory_fd, path.parent)
+        temporary = ".external-catalog-" + secrets.token_hex(12) + ".json"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory_fd)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                if lease is not None:
+                    lease.check()
+                _check_catalog_directory(directory_fd, path.parent)
+                stream.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            if lease is not None:
+                lease.check()
+            _check_catalog_directory(directory_fd, path.parent)
+            _check_catalog_lock_entry(directory_fd, _LOCK_TLS.lock_fd)
+            os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
 
 
 def _npm_latest_version(package: str) -> str:

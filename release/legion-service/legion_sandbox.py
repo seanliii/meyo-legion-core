@@ -282,10 +282,18 @@ def peer_source_entries(root: Path | None = None) -> list[dict]:
     return list(entries.values())
 
 
-def prepare_peer_sources(key: str, destination: str, *, preserve_project: bool = False) -> str:
-    """返回仓库唯一源码的已验证只读入口，绝不向任务目录复制源码树。"""
-    # 普通任务准备不清理任何项目；复用相同枚举供检索和源码引用核验使用。
-    del key, destination, preserve_project
+def prepare_peer_sources(key: str, destination: str, *, preserve_project: bool = False,
+                         user_id: str = "") -> str:
+    """Describe canonical sources and live selected authority without copying trees."""
+    del key, preserve_project
+    writable = None
+    if user_id and destination:
+        import native_process_sandbox
+        try:
+            writable = native_process_sandbox.source_workspace_grant(
+                {**os.environ, "MEYO_USER_ID": user_id}, destination)
+        except (OSError, ValueError):
+            pass
     paths = [entry["realpath"] for entry in peer_source_entries()]
     if not paths:
         return "Peer source access：当前布局未发现已核验可读的规范源码入口。"
@@ -293,4 +301,8 @@ def prepare_peer_sources(key: str, destination: str, *, preserve_project: bool =
         "Peer source access (规范源码单一事实源；下列路径已核验可直接只读访问，"
         "不会复制进任务产物目录)：\n"
         + "\n".join(f"- {path}" for path in paths)
+        + ("\n【本次源码演化写面】" + writable["root"] +
+           " 已由操作者显式授予 source_write=true；可用原生文件工具修改自身或同伴源码。"
+           "运行二进制、授权、凭证与控制区仍受保护；最终写范围由本次原生启动校验。"
+           if writable else "")
     )

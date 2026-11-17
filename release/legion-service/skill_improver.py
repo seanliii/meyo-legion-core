@@ -19,8 +19,10 @@ Warp 自进化杀手锏 = outer/improver skill:一个【定时观察者】,不�
 - 反馈可能是错的(Warp:assume it will be):improver 只聚合呈现·由人筛选采纳·不盲信。
 """
 from __future__ import annotations
+import hashlib
 import json
 import os
+import pathlib
 import time
 
 
@@ -29,12 +31,26 @@ def _skill_factory():
     return skill_factory
 
 
+def _user_skill_root(sf, uid: str) -> pathlib.Path:
+    """Trust the configured users store, not symlinks redirecting one user's namespace."""
+    root = sf.user_root(uid).resolve()
+    expected = pathlib.Path(sf.ROOT).resolve() / sf._safe(uid or "default") / "skills"
+    if root != expected:
+        raise ValueError("user_skill_root_redirected")
+    return root
+
+
 def collect_feedback(skill_name: str, uid: str = "default", since_days: int = 30) -> dict:
     """拉某 skill 近 since_days 的累积使用反馈(improver 的输入)。
     返回 {skill, total, good, bad, whys:[...], samples:[...]}。"""
     sf = _skill_factory()
-    root = sf.user_root(uid)
+    try:
+        root = _user_skill_root(sf, uid)
+    except (OSError, RuntimeError, ValueError):
+        return {"ok": False, "error": "user_skill_root_unavailable"}
     ledger = root / "factory.jsonl"
+    if ledger.is_symlink():
+        return {"ok": False, "error": "feedback_ledger_redirected"}
     if not ledger.is_file():
         return {"ok": True, "skill": skill_name, "total": 0, "good": 0, "bad": 0, "whys": [], "samples": []}
     cutoff = time.time() - since_days * 86400
@@ -67,6 +83,62 @@ def collect_feedback(skill_name: str, uid: str = "default", since_days: int = 30
             "good": good, "bad": bad, "whys": whys[-20:], "samples": samples[-20:]}
 
 
+def _skill_parent(skill_name: str, uid: str) -> dict:
+    """Identify the actual parent bytes without editing or silently choosing a namesake."""
+    sf = _skill_factory()
+    unresolved = {"status": "unresolved", "source": "", "skill_md": None,
+                  "revision": "", "content_sha256": "", "candidates": []}
+    try:
+        root = _user_skill_root(sf, uid)
+    except (OSError, RuntimeError, ValueError):
+        return {**unresolved, "source": "user_active", "reason": "user_skill_root_redirected"}
+    try:
+        active = [row for row in sf.list_active(uid).get("skills", [])
+                  if row.get("name") == sf._safe(skill_name)]
+    except (OSError, RuntimeError, ValueError):
+        return {**unresolved, "source": "user_active", "reason": "active_lookup_failed"}
+    if active:
+        if len(active) != 1:
+            return {**unresolved, "source": "user_active", "reason": "multiple_active_parents"}
+        try:
+            md = pathlib.Path(active[0]["skill_md"]).resolve(strict=True)
+            owned = root / sf._safe(skill_name)
+            if owned.resolve() != owned or not md.is_relative_to(owned) or not md.is_file():
+                return {**unresolved, "source": "user_active", "reason": "active_outside_user_skill"}
+            raw = md.read_bytes()
+            return {"status": "resolved", "source": "user_active", "skill_md": str(md),
+                    "revision": md.parent.name, "content_sha256": hashlib.sha256(raw).hexdigest(),
+                    "candidates": [], "note": "这是用户启用副本，不代表仓库维护源；提议不直接修改安装物。"}
+        except (OSError, RuntimeError, ValueError, KeyError):
+            return {**unresolved, "source": "user_active", "reason": "active_parent_unreadable"}
+    candidates = []
+    seen = set()
+    try:
+        for row in sf._scan_repo_skills():
+            if row.get("name") != skill_name or not row.get("skill_md"):
+                continue
+            md = pathlib.Path(row["skill_md"])
+            if not md.is_absolute():
+                md = pathlib.Path(sf._REPO_SKILL) / md
+            try:
+                md = md.resolve(strict=True)
+                if not md.is_file() or str(md) in seen:
+                    continue
+                raw = md.read_bytes()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            seen.add(str(md))
+            candidates.append({"source": "repo", "skill_md": str(md), "revision": "",
+                               "content_sha256": hashlib.sha256(raw).hexdigest()})
+    except (OSError, RuntimeError, ValueError):
+        return {**unresolved, "source": "repo", "reason": "repository_lookup_failed"}
+    if len(candidates) == 1:
+        return {"status": "resolved", **candidates[0], "candidates": candidates}
+    return {**unresolved, "source": "repo", "candidates": candidates,
+            "status": "ambiguous" if candidates else "unresolved",
+            "reason": "multiple_repository_parents" if candidates else "parent_not_found"}
+
+
 def propose_improvement(skill_name: str, uid: str = "default", since_days: int = 30) -> dict:
     """Warp 式:对比反馈·产出【可审的 skill 编辑提议】(不自动改文件·人审后才生效)。
 
@@ -79,32 +151,25 @@ def propose_improvement(skill_name: str, uid: str = "default", since_days: int =
     if fb["total"] == 0:
         return {"ok": True, "skill": skill_name, "has_proposal": False,
                 "reason": "该 skill 近期无使用反馈·无可改进信号(Warp:低摩擦收集反馈是前提)"}
-    # 找 skill 文件位置(可读可审的 base skill)
-    skill_md = None
-    try:
-        import func_index  # 复用全仓 skill 扫描不必要·直接找 repo skill
-    except Exception:
-        pass
-    try:
-        sf = _skill_factory()
-        for r in sf._scan_repo_skills():
-            if r["name"] == skill_name:
-                skill_md = r.get("skill_md")
-                break
-    except Exception:
-        pass
+    # 用户正在使用的版本优先；同名仓库副本不等于真父代。
+    base = _skill_parent(skill_name, uid)
+    skill_md = base["skill_md"]
     bad_whys = [w for w in fb["whys"] if w["rating"] == "bad"]
     good_whys = [w for w in fb["whys"] if w["rating"] == "good"]
     # 提议 = 呈现真实反馈信号 + 给出"下一步怎么改"的入口(交军团模型/人写具体编辑·不父层猜)
     proposal = {
         "ok": True, "skill": skill_name, "has_proposal": bool(bad_whys or fb["bad"]),
         "skill_md": skill_md,
+        "base": base,
+        "feedback_version_binding": "name_only_unknown",
         "signal": {"good": fb["good"], "bad": fb["bad"],
                    "bad_reasons": [w["why"] for w in bad_whys][:8],
                    "good_reasons": [w["why"] for w in good_whys][:4]},
         "how_to_apply": (
             f"这是 improver 聚合的反馈信号(非自动改)。要改进 {skill_name}:"
-            f"①读 {skill_md or '该skill的SKILL.md'} 现状 "
+            f"①核对父代 {skill_md or '未唯一定位；先查 base 状态与候选，不能猜一个同名副本'} "
+            f"及内容指纹 {base['content_sha256'] or '未知'}；实际编辑前重新核对，变化则重新生成提议。"
+            "反馈账本仅按名称聚合，不能假定全部来自当前版本。用户启用副本与仓库维护源分开。"
             f"②对照上面 bad_reasons(用户反复指出的问题)提一个【小而聚焦】的编辑(Warp:小编辑·写原则非规则·解释why)"
             f"③走人审(改动可审可并)→ 下次 skill 继承。"
             f"可派军团:run runnable:func_call 让某家读skill+反馈后产出编辑;人审后再写入。"),
@@ -117,8 +182,13 @@ def improve_all(uid: str = "default", since_days: int = 30, limit: int = 20) -> 
     """定时观察者入口(供 cron 调):扫近期有反馈的 skill·各产出提议汇总。
     定时(非每任务)运行=Warp improver 的关键特征。"""
     sf = _skill_factory()
-    root = sf.user_root(uid)
+    try:
+        root = _user_skill_root(sf, uid)
+    except (OSError, RuntimeError, ValueError):
+        return {"ok": False, "error": "user_skill_root_unavailable"}
     ledger = root / "factory.jsonl"
+    if ledger.is_symlink():
+        return {"ok": False, "error": "feedback_ledger_redirected"}
     if not ledger.is_file():
         return {"ok": True, "proposals": [], "note": "无反馈账本"}
     cutoff = time.time() - since_days * 86400

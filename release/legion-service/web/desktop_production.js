@@ -90,7 +90,7 @@
   function render() {
     const task = state.task || {};
     const files = (task.artifacts || []).map(file => `<button class="cd-task" data-cd-file="${escapeHtml(file.relative_path || file.path || "")}">📦 ${escapeHtml(file.name || "文件")}<span class="cd-row-meta">${escapeHtml(file.relative_path || "")}</span></button>`).join("") || '<div class="cd-empty">任务的真实交付物会在这里出现。</div>';
-    const html = `<div class="cd-tabs"><button class="btn cd-tab" data-cd-mobile="work">🖥 工作</button><button class="btn cd-tab" data-cd-mobile="manage">📋 管理</button></div><div class="cd-production" data-mobile-view="${state.view}"><aside class="cd-side"><section class="cd-pane"><div class="cd-pane-title"><span>项目</span><button class="btn" id="cdNewProject">＋</button></div><div>${projectRows()}</div><div class="cd-create-row" id="cdProjectForm" hidden><input class="adv-search" id="cdProjectTitle" placeholder="项目名称"><button class="btn btn-primary" id="cdProjectSave">创建</button></div></section><section class="cd-pane"><div class="cd-pane-title"><span>任务</span><button class="btn" id="cdNewTask" ${state.project ? "" : "disabled"}>＋</button></div><div>${taskRows()}</div><div class="cd-create-row" id="cdTaskForm" hidden><input class="adv-search" id="cdTaskGoal" placeholder="要在云电脑完成什么"><button class="btn btn-primary" id="cdTaskSave">创建</button></div></section><section class="cd-pane"><div class="cd-pane-title"><span>待你处理</span><span class="cd-badge waiting_human">${state.handoffs.length}</span></div>${handoffRows()}</section><section class="cd-pane"><div class="cd-pane-title"><span>可重放流程</span></div>${recipeRows()}</section></aside><main class="cd-main">${statusHtml()}<div class="cap-wb-actions"><button class="btn" id="cdShot">📷 截屏</button><button class="btn" id="cdApps">📱 应用</button><button class="btn" id="cdSync">🔄 同步</button><button class="btn" id="cdSaveRecipe" ${task.state === "completed" ? "" : "disabled"}>保存为流程</button><button class="btn" id="cdFiles">项目文件</button><button class="btn" id="stopCloudDesktop">停止真机</button></div><div class="cd-console-grid"><div class="cd-screen"><div class="cd-create-row"><input class="adv-search" id="cdSay" placeholder="一句话让军团在当前项目继续干"><button class="btn btn-primary" id="cdAsk">🚀 派军团</button></div><div class="cd-create-row"><input class="adv-search" id="cdCmd" placeholder="在真机执行 shell 命令"><button class="btn" id="cdRun">▶ 执行</button></div><pre id="cdOut">控制台就绪。关闭网页后任务仍保存在项目工作区。</pre><iframe src="${escapeHtml(state.url)}" title="我的云真机"></iframe></div><aside class="cd-pane cd-evidence"><div class="cd-pane-title"><span>交付 / 证据</span></div>${files}<div class="cd-pane-title cd-software-title"><span>生产软件</span></div>${softwareRows()}</aside></div></main></div>`;
+    const html = `<div class="cd-tabs"><button class="btn cd-tab" data-cd-mobile="work">🖥 工作</button><button class="btn cd-tab" data-cd-mobile="manage">📋 管理</button></div><div class="cd-production" data-mobile-view="${state.view}"><aside class="cd-side"><section class="cd-pane"><div class="cd-pane-title"><span>项目</span><button class="btn" id="cdNewProject">＋</button></div><div>${projectRows()}</div><div class="cd-create-row" id="cdProjectForm" hidden><input class="adv-search" id="cdProjectTitle" placeholder="项目名称"><button class="btn btn-primary" id="cdProjectSave">创建</button></div></section><section class="cd-pane"><div class="cd-pane-title"><span>任务</span><button class="btn" id="cdNewTask" ${state.project ? "" : "disabled"}>＋</button></div><div>${taskRows()}</div><div class="cd-create-row" id="cdTaskForm" hidden><input class="adv-search" id="cdTaskGoal" placeholder="要在云电脑完成什么"><button class="btn btn-primary" id="cdTaskSave">创建</button></div></section><section class="cd-pane"><div class="cd-pane-title"><span>待你处理</span><span class="cd-badge waiting_human">${state.handoffs.length}</span></div>${handoffRows()}</section><section class="cd-pane"><div class="cd-pane-title"><span>可重放流程</span></div>${recipeRows()}</section></aside><main class="cd-main">${statusHtml()}<div class="cap-wb-actions"><button class="btn" id="cdPersonalDevices" type="button">接入个人设备</button><button class="btn" id="cdShot">📷 截屏</button><button class="btn" id="cdApps">📱 应用</button><button class="btn" id="cdSync">🔄 同步</button><button class="btn" id="cdSaveRecipe" ${task.state === "completed" ? "" : "disabled"}>保存为流程</button><button class="btn" id="cdFiles">项目文件</button><button class="btn" id="stopCloudDesktop">停止真机</button></div><div class="cd-console-grid"><div class="cd-screen"><div class="cd-create-row"><input class="adv-search" id="cdSay" placeholder="一句话让军团在当前项目继续干"><button class="btn btn-primary" id="cdAsk">🚀 派军团</button></div><div class="cd-create-row"><input class="adv-search" id="cdCmd" placeholder="在真机执行 shell 命令"><button class="btn" id="cdRun">▶ 执行</button></div><pre id="cdOut">控制台就绪。关闭网页后任务仍保存在项目工作区。</pre><iframe src="${escapeHtml(state.url)}" title="我的云真机"></iframe></div><aside class="cd-pane cd-evidence"><div class="cd-pane-title"><span>交付 / 证据</span></div>${files}<div class="cd-pane-title cd-software-title"><span>生产软件</span></div>${softwareRows()}</aside></div></main></div>`;
     window.showAdvDetail("☁️ 云电脑工作台", html, "项目、任务、真机、待办、交付和流程属于同一现场；刷新或重开不会丢。");
     bindWorkspace();
   }
@@ -222,6 +222,7 @@
     document.querySelectorAll("[data-recipe]").forEach(button => button.onclick = async () => { const result = await post("/recipe/replay", {recipe_id: button.dataset.recipe, inputs: {project_id: state.project?.project_id || ""}}); if (!result.ok) return window.toast?.(result.error || "流程不可用"); sendToChat(`请在我的云真机重放流程 ${result.name} v${result.version}。${result.instruction}\n步骤：${JSON.stringify(result.steps)}\n当前项目：${state.project?.project_id || "未选择"}`); });
     document.querySelectorAll("[data-software]").forEach(button => button.onclick = async () => { const id = button.dataset.software; if (!confirm(`安装或升级 ${id}？系统会保存清单、真探测，失败自动回滚。`)) return; const result = await post("/software/transact", {software_id: id, action: "install", confirm: true}); window.toast?.(result.ok ? `✓ ${id} 已验证` : `✗ ${result.error || result.status || "安装失败"}`); await open(); });
     $("#cdRun").onclick = () => { const value = $("#cdCmd").value.trim(); if (value) command("/exec", {command: value, timeout_s: 60}, "命令"); };
+    $("#cdPersonalDevices").onclick = openPersonalDevices;
     $("#cdShot").onclick = () => command("/screenshot", {}, "截屏");
     $("#cdApps").onclick = () => command("/app", {action: "list"}, "应用");
     $("#cdSync").onclick = () => command("/fs/sync_personal", {}, "同步个人数据");
@@ -260,6 +261,139 @@
     output("🚀 已派军团，并持久记录项目与 checkpoint。");
   }
 
+  const personal = { owner: "", token: null, epoch: 0, devices: [], providers: [], loading: false, error: "", notice: "" };
+  const currentOwner = () => typeof clientUid === "string" ? clientUid : String(window.clientUid || "");
+  const platformName = value => ({windows: "Windows", macos: "macOS", linux: "Linux", android: "Android", other: "其他设备"})[value] || "其他设备";
+  const personalError = error => ({
+    personal_auth_required: "请先验证个人身份，再保存和查看自己的设备。",
+    forbidden: "当前请求未通过个人授权，请从原入口重新验证身份。",
+    authorization_required: "请确认设备属于你，或你已取得远控授权。",
+    invalid_name: "请填写不超过 80 个字符的设备名称。",
+    invalid_device_code: "设备码须为 3–80 位字母、数字、下划线或连字符；不要输入连接密码。",
+    invalid_platform: "请选择设备平台。",
+    provider_unavailable: "这个 BilldDesk 入口暂不可用，请选择可用入口。",
+    device_limit: "最多保存 50 台设备，请先移除不再使用的登记。",
+    unsupported_device_fields: "这里只保存设备信息，连接密码请在 BilldDesk 中输入。"
+  })[error] || "设备信息暂时不可用，请重试；已有登记不会因此被清空。";
+
+  function personalCurrent(epoch) {
+    return epoch === personal.epoch && currentOwner() === personal.owner
+      && $("#advPanel")?.hidden === false && $("#advPanelTitle")?.textContent === "接入个人设备";
+  }
+
+  function viewerUrl(row) {
+    const provider = personal.providers.find(item => item.id === row.provider);
+    if (!provider || !row.viewer_url || row.viewer_url !== provider.viewer_url) return "";
+    try {
+      const url = new URL(provider.viewer_url);
+      return url.protocol === "https:" && !url.username && !url.password && !url.search
+        && url.pathname === "/" && url.hash === "#/remote" ? url.href : "";
+    } catch (_) { return ""; }
+  }
+
+  async function personalRequest(path, body) {
+    const response = await fetch(api + "/personal_devices" + path, body === undefined ? {} : {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(personalError(data.error));
+    return data;
+  }
+
+  function personalDeviceRows() {
+    if (personal.loading) return '<div class="pd-empty" role="status">正在读取你的设备登记…</div>';
+    if (!personal.devices.length) return '<div class="pd-empty"><span class="pd-empty-mark" aria-hidden="true">▣</span><h3>把常用设备放在这里</h3><p>先在设备上安装 BilldDesk 客户端，再把设备码保存到你的个人工作区。</p><p>保存设备不会授予远控权限，连接时仍在 BilldDesk 中完成授权。</p></div>';
+    return personal.devices.map(row => {
+      const href = viewerUrl(row);
+      const label = personal.providers.find(item => item.id === row.provider)?.name || "入口未配置";
+      return `<article class="pd-device" data-pd-device="${escapeHtml(row.id)}"><div class="pd-device-head"><span class="pd-device-mark" aria-hidden="true">${row.platform === "android" ? "▯" : "▣"}</span><div><h3>${escapeHtml(row.name)}</h3><p>${escapeHtml(platformName(row.platform))} · ${escapeHtml(label)}</p></div><span class="pd-badge">已保存</span></div><label class="pd-code-label"><span>设备码</span><input class="pd-code" value="${escapeHtml(row.device_code)}" aria-label="${escapeHtml(row.name)}的设备码" readonly></label><p class="pd-connection">远控连接由 BilldDesk 确认，Meyo 未观测到连接状态。</p><div class="pd-device-actions"><button class="btn" type="button" data-pd-copy>复制设备码</button>${href ? `<a class="btn btn-primary" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-pd-open>打开 BilldDesk 远控</a>` : '<span class="pd-unavailable">请让管理员恢复对应 BilldDesk 入口。</span>'}<button class="btn pd-remove" type="button" data-pd-remove>移除登记</button></div><div class="pd-remove-confirm" hidden><p>只移除 Meyo 的设备登记，不会终止远控。请先在 BilldDesk 中断开。</p><div><button class="btn" type="button" data-pd-cancel-remove>保留登记</button><button class="btn pd-remove" type="button" data-pd-confirm-remove>移除此设备登记</button></div></div></article>`;
+    }).join("");
+  }
+
+  function renderPersonal() {
+    const options = personal.providers.map(row => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name)}</option>`).join("");
+    const html = `<section class="pd-workspace"><div class="pd-intro"><div><span class="pd-eyebrow">PERSONAL DEVICES / BILLDDESK</span><h2>你的设备，随时回到现场</h2><p>保存自己的电脑或手机，从这里打开 BilldDesk 远控。个人设备独立接入，不需要启动云真机。</p></div><a class="btn" href="https://desk.hsslive.cn/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">官网下载客户端</a></div><div class="pd-status" role="status" aria-live="polite">${escapeHtml(personal.notice)}</div>${personal.error ? `<div class="pd-error" role="alert">${escapeHtml(personal.error)}<button class="btn" id="pdRetry" type="button">重新读取</button></div>` : ""}<div class="pd-layout"><aside class="pd-setup"><h3>保存一台设备</h3><form id="pdForm"><label for="pdName">设备名称</label><input class="adv-search" id="pdName" name="name" maxlength="80" placeholder="例如：我的工作电脑" required><label for="pdCode">BilldDesk 设备码</label><input class="adv-search" id="pdCode" name="device_code" maxlength="100" spellcheck="false" autocomplete="off" placeholder="从被控设备客户端复制" required><p class="pd-field-note">不是连接密码。不设密码字段。请勿在设备名称或设备码中填写密码。</p><label for="pdPlatform">设备平台</label><select class="adv-search" id="pdPlatform"><option value="windows">Windows</option><option value="macos">macOS</option><option value="android">Android</option><option value="linux">Linux</option><option value="other">其他设备</option></select><label for="pdProvider">远控入口</label><select class="adv-search" id="pdProvider" ${options ? "" : "disabled"}>${options || '<option>正在读取可用入口</option>'}</select><label class="pd-authorization"><input id="pdAuthorized" type="checkbox" required><span>这是我的设备，或我已取得控制它的授权。</span></label><div id="pdFormError" role="alert" class="pd-form-error"></div><button class="btn btn-primary pd-save" id="pdSave" type="submit" ${personal.loading || !options ? "disabled" : ""}>保存设备</button></form><details class="pd-help"><summary>连接前需要做什么？</summary><ol><li>在被控设备安装 BilldDesk，按客户端提示授予屏幕录制和控制权限。</li><li>在 Meyo 保存设备码，复制后打开 BilldDesk 远控。</li><li>在 BilldDesk 登录并输入设备码、连接密码，看到真实画面后再操作。</li></ol><a href="https://desk.hsslive.cn/#/tutorial" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">查看作者的连接教程</a></details></aside><main class="pd-devices"><div class="pd-list-heading"><h3>我的设备 <span>${personal.devices.length}</span></h3><button class="btn" id="pdRefresh" type="button" ${personal.loading ? "disabled" : ""}>刷新登记</button></div>${personalDeviceRows()}</main></div><div class="pd-boundary"><b>远控和军团操作，是两种授权。</b><p>当前接入的是 BilldDesk 的用户远控入口；官网为 Pro，开源版功能与兼容性不同。设备能否被控以客户端支持和实际连接为准。</p><p>军团自动操作尚未接通，不会因为保存设备就控制它。移除登记也不会断开已打开的 BilldDesk 会话。</p><a href="https://github.com/galaxy-s10/billd-desk" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">galaxy-s10 / billd-desk 源码</a></div></section>`;
+    if (window.showAdvDetail("接入个人设备", html, "", personal.token) === false) return;
+    bindPersonal();
+  }
+
+  async function loadPersonal(epoch) {
+    try {
+      const data = await personalRequest("");
+      if (!personalCurrent(epoch)) return;
+      personal.devices = data.devices || []; personal.providers = data.providers || []; personal.error = "";
+    } catch (error) {
+      if (!personalCurrent(epoch)) return;
+      personal.error = error.message || "设备信息读取失败，请重试。";
+    } finally {
+      if (personalCurrent(epoch)) { personal.loading = false; renderPersonal(); }
+    }
+  }
+
+  async function openPersonalDevices() {
+    personal.owner = currentOwner(); personal.epoch += 1;
+    personal.devices = []; personal.providers = []; personal.error = ""; personal.notice = "";
+    personal.loading = true;
+    personal.token = window.advBegin?.("接入个人设备", "正在读取你的个人设备…") ?? null;
+    renderPersonal();
+    if (!personal.owner) {
+      personal.loading = false; personal.error = personalError("personal_auth_required"); renderPersonal(); return;
+    }
+    await loadPersonal(personal.epoch);
+  }
+
+  function personalNotice(message) {
+    personal.notice = message;
+    const target = $(".pd-status");
+    if (target) target.textContent = message;
+  }
+
+  function bindPersonal() {
+    const epoch = personal.epoch;
+    $("#pdRefresh").onclick = openPersonalDevices;
+    if ($("#pdRetry")) $("#pdRetry").onclick = openPersonalDevices;
+    $("#pdForm").onsubmit = async event => {
+      event.preventDefault();
+      if (!personalCurrent(epoch)) return;
+      const button = $("#pdSave"), errorBox = $("#pdFormError");
+      button.disabled = true; button.textContent = "保存中…"; errorBox.textContent = "";
+      try {
+        await personalRequest("/register", {name: $("#pdName").value.trim(), device_code: $("#pdCode").value.replace(/ /g, ""), platform: $("#pdPlatform").value, provider: $("#pdProvider").value, authorized: $("#pdAuthorized").checked});
+        if (!personalCurrent(epoch)) return;
+        personal.notice = "设备已保存。复制设备码后，在 BilldDesk 中完成授权连接。";
+        await loadPersonal(epoch);
+      } catch (error) { if (personalCurrent(epoch)) errorBox.textContent = error.message; }
+      finally { if (button.isConnected) { button.disabled = false; button.textContent = "保存设备"; } }
+    };
+    document.querySelectorAll("[data-pd-copy]").forEach(button => button.onclick = async () => {
+      if (!personalCurrent(epoch)) return;
+      const code = button.closest("[data-pd-device]").querySelector(".pd-code");
+      try { await navigator.clipboard.writeText(code.value); if (personalCurrent(epoch)) personalNotice("设备码已复制。请在 BilldDesk 中输入连接密码。"); }
+      catch (_) { if (personalCurrent(epoch) && code.isConnected) { code.focus(); code.select(); personalNotice("复制权限不可用。设备码已选中，请手动复制。"); } }
+    });
+    document.querySelectorAll("[data-pd-open]").forEach(link => link.onclick = event => {
+      if (!personalCurrent(epoch)) { event.preventDefault(); return; }
+      personalNotice("请在新打开的 BilldDesk 窗口完成授权。当前未确认设备已连接。");
+    });
+    document.querySelectorAll("[data-pd-remove]").forEach(button => button.onclick = () => {
+      if (personalCurrent(epoch)) button.closest("[data-pd-device]").querySelector(".pd-remove-confirm").hidden = false;
+    });
+    document.querySelectorAll("[data-pd-cancel-remove]").forEach(button => button.onclick = () => { button.closest(".pd-remove-confirm").hidden = true; });
+    document.querySelectorAll("[data-pd-confirm-remove]").forEach(button => button.onclick = async () => {
+      if (!personalCurrent(epoch)) return;
+      button.disabled = true;
+      try {
+        const id = button.closest("[data-pd-device]").dataset.pdDevice;
+        const result = await personalRequest("/remove", {device_id: id});
+        if (!personalCurrent(epoch)) return;
+        personal.notice = result.removed ? "设备登记已移除。若仍在远控，请在 BilldDesk 中断开。" : "设备登记已不存在。";
+        await loadPersonal(epoch);
+      } catch (error) { if (personalCurrent(epoch)) personalNotice(error.message); }
+      finally { if (button.isConnected) button.disabled = false; }
+    });
+  }
+
+  window.openPersonalDevicesPanel = openPersonalDevices;
   window.openCloudDesktopPanel = open;
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", startHandoffPolling);
   else startHandoffPolling();

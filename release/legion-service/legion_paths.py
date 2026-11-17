@@ -31,6 +31,25 @@ expanduser("~/.meyo") / expanduser("~/.legion")。
      可 env 重定向,测试注入 tmp,绝不写真实家目录。
 """
 import os
+import pathlib
+
+
+def external_catalog_path(default=None, *, environment=None) -> pathlib.Path:
+    """Resolve host catalog configuration, not request mutation authority."""
+    environment = os.environ if environment is None else environment
+    if "LEGION_EXTERNAL_CATALOG_PATH" not in environment:
+        return pathlib.Path(default) if default is not None else \
+            pathlib.Path(__file__).resolve().parent / "external_agents.json"
+    value = environment["LEGION_EXTERNAL_CATALOG_PATH"]
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or any(ord(char) < 32 or ord(char) == 127
+                   or (char.isspace() and char != " ") for char in value)
+            or not pathlib.Path(value).is_absolute()):
+        raise ValueError("LEGION_EXTERNAL_CATALOG_PATH must be a nonempty absolute path")
+    path = pathlib.Path(value)
+    if str(path.resolve()) != value:
+        raise ValueError("LEGION_EXTERNAL_CATALOG_PATH must be canonical, without symlink aliases")
+    return path
 
 
 def legion_dir() -> str:

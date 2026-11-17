@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 import pathlib
 import re
@@ -17,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from fractions import Fraction
 from typing import Any
 
 import legion_paths as _paths
@@ -31,6 +33,7 @@ _REPO = pathlib.Path(__file__).resolve().parents[2]
 _SKILL = _REPO / ".claude" / "skills" / "source-audit-evolve" / "SKILL.md"
 _BASELINE = _REPO / "dev" / "legion-today-optimizations-for-peers-2026-09-02.md"
 _STATUS = {"claimed", "verified", "contradicted", "unverified"}
+_EVOLUTION_COMPARISON_IMPLEMENTATION = "independent_method_component_not_official_Harmony_runtime"
 _PRIOR_ART_FILE_BYTES = 2_000_000
 _PRIOR_ART_TOTAL_BYTES = 32 * 1024 * 1024
 _PRIOR_ART_SECONDS = 5
@@ -601,6 +604,280 @@ def verify_reference(source_root: str, file: str, line: int, quote: str = "",
             "content_sha256": content_digest or hashlib.sha256(content.encode("utf-8")).hexdigest()}
 
 
+def compare_evolution_candidates(candidates: Any, objectives: Any,
+                                 preference_vectors: Any = None) -> dict:
+    """Compare supplied measurements without running, editing or adopting candidates.
+
+    This independent MOEA/D method component only computes normalized utilities,
+    Pareto dominance and optional weighted Tchebycheff distances. It implements no
+    mutation, population evolution or neighborhood updates, and is not Harmony's runtime.
+    """
+    facts = {"implementation": _EVOLUTION_COMPARISON_IMPLEMENTATION,
+             "autopromotion": False, "no_write": True, "no_model": True}
+
+    def invalid(message: str) -> dict:
+        return {"ok": False, **facts, "error": message}
+
+    def finite_number(value: Any) -> bool:
+        # Integers are finite; avoid float conversion overflowing on large integers.
+        return (not isinstance(value, bool)
+                and (isinstance(value, int)
+                     or isinstance(value, float) and math.isfinite(value)))
+
+    def valid_id(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    if not isinstance(objectives, list) or not 2 <= len(objectives) <= 8:
+        return invalid("objectives 必须是包含 2..8 个对象的列表")
+    if not isinstance(candidates, list) or len(candidates) > 64:
+        return invalid("candidates 必须是最多 64 个对象的列表")
+    if preference_vectors is not None and (
+            not isinstance(preference_vectors, list) or len(preference_vectors) > 32):
+        return invalid("preference_vectors 必须是最多 32 个权重对象的列表")
+
+    objective_rows = []
+    bounds = {}
+    for index, objective in enumerate(objectives):
+        if not isinstance(objective, dict):
+            return invalid(f"objectives[{index}] 必须是对象")
+        key = objective.get("id")
+        if not valid_id(key) or key in bounds:
+            return invalid(f"objectives[{index}].id 必须是唯一的非空字符串")
+        direction = objective.get("direction")
+        if not isinstance(direction, str) or direction not in {"maximize", "minimize"}:
+            return invalid(f"objectives[{index}].direction 必须是 maximize 或 minimize")
+        lower, upper = objective.get("lower"), objective.get("upper")
+        if not finite_number(lower) or not finite_number(upper) or upper <= lower:
+            return invalid(f"objectives[{index}] 必须显式提供有限 lower/upper 且 upper > lower")
+        objective_rows.append({"id": key, "direction": direction, "lower": lower, "upper": upper})
+        # Exact intermediates keep finite extreme scales and weight sums from overflowing.
+        bounds[key] = (Fraction(lower), Fraction(upper) - Fraction(lower))
+
+    objective_ids = list(bounds)
+    objective_keys = set(objective_ids)
+    normalized_vectors = []
+    for index, vector in enumerate(preference_vectors or []):
+        if not isinstance(vector, dict) or set(vector) != objective_keys:
+            return invalid(f"preference_vectors[{index}] 必须显式包含每个目标的权重且无未知键")
+        if any(not finite_number(vector[key]) or vector[key] < 0 for key in objective_ids):
+            return invalid(f"preference_vectors[{index}] 权重必须是有限非负数，不能是 bool")
+        weights = {key: Fraction(vector[key]) for key in objective_ids}
+        total = sum(weights.values())
+        if total <= 0:
+            return invalid(f"preference_vectors[{index}] 权重之和必须 > 0")
+        normalized_vectors.append({key: weights[key] / total for key in objective_ids})
+
+    compared = []
+    utilities_by_candidate = {}
+    seen_ids = set()
+    excluded = []
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            return invalid(f"candidates[{index}] 必须是对象")
+        key = candidate.get("id")
+        if not valid_id(key) or key in seen_ids:
+            return invalid(f"candidates[{index}].id 必须是唯一的非空字符串")
+        seen_ids.add(key)
+        split = candidate.get("split", "evolve")
+        if not isinstance(split, str) or split not in {"evolve", "diagnostic", "held_out"}:
+            return invalid(f"candidates[{index}].split 必须是 evolve、diagnostic 或 held_out")
+        metrics = candidate.get("metrics")
+        if not isinstance(metrics, dict):
+            return invalid(f"candidates[{index}].metrics 必须是对象")
+        for objective in objective_rows:
+            value = metrics.get(objective["id"])
+            if (not finite_number(value)
+                    or not objective["lower"] <= value <= objective["upper"]):
+                # Do not echo measurement values, including invalid held-out measurements.
+                return invalid(f"candidates[{index}].metrics 缺少目标值、值非有限数或超出显式归一界")
+        if split == "held_out":
+            excluded.append(key)
+            continue  # No held-out metrics, utilities or evidence enter selection output.
+        utilities = {}
+        for objective in objective_rows:
+            objective_id = objective["id"]
+            lower, span = bounds[objective_id]
+            normalized = (Fraction(metrics[objective_id]) - lower) / span
+            utilities[objective_id] = (normalized if objective["direction"] == "maximize"
+                                       else 1 - normalized)
+        utilities_by_candidate[key] = utilities
+        row = {"id": key, "split": split,
+               "metrics": {objective_id: metrics[objective_id] for objective_id in objective_ids},
+               "utilities": {objective_id: float(utilities[objective_id])
+                             for objective_id in objective_ids}}
+        if "evidence" in candidate:
+            row["evidence"] = candidate["evidence"]
+        compared.append(row)
+
+    ideal = {objective_id: max(values[objective_id] for values in utilities_by_candidate.values())
+             for objective_id in objective_ids} if compared else {}
+    pareto_front = []
+    for key, utilities in utilities_by_candidate.items():
+        dominated = any(
+            all(other[objective_id] >= utilities[objective_id] for objective_id in objective_ids)
+            and any(other[objective_id] > utilities[objective_id] for objective_id in objective_ids)
+            for other_key, other in utilities_by_candidate.items() if other_key != key)
+        if not dominated:
+            pareto_front.append(key)
+
+    preferences = []
+    for weights in normalized_vectors:
+        scores = {key: max(weights[objective_id] * abs(ideal[objective_id] - utilities[objective_id])
+                           for objective_id in objective_ids)
+                  for key, utilities in utilities_by_candidate.items()}
+        best = min(scores.values()) if scores else None
+        preferences.append({
+            "weights": {key: float(value) for key, value in weights.items()},
+            "tchebycheff_by_candidate": {key: float(value) for key, value in scores.items()},
+            "incumbent_candidates": [key for key, value in scores.items() if value == best],
+        })
+    return {"ok": True, **facts, "objectives": objective_rows, "candidates": compared,
+            "ideal_point": {key: float(value) for key, value in ideal.items()},
+            "pareto_front": pareto_front, "preferences": preferences,
+            "held_out_excluded": excluded}
+
+
+def evolution_context(uid: str | None = None, root: str | None = None) -> dict:
+    """Return attributed research and existing entrypoints on demand, not a controller."""
+    import quality_context
+    from legion_sandbox import peer_source_entries
+
+    paper = "https://arxiv.org/html/2610.15150v1"
+    captured_at = "2026-11-16T21:54:50.906685+00:00"
+    # Primary-paper excerpts are research observations, not reproduced runtime evidence.
+    observations = [
+        ("independent-objectives", "S4.SS1", "目标偏好独立保留", [
+            "This decomposition is fundamentally different from optimizing a single weighted-sum objective.",
+            "Different subproblems preserve different objective preferences, so a harness favored by a security-oriented subproblem need not compete directly with one favored by a functionality-oriented subproblem.",
+        ], "目标与采用决策由当次军团确定，不新增平台总分或固定权重。"),
+        ("factored-components", "A5.SS2", "组件与适用范围分开", [
+            "The decomposed operators are the three scoped variation operators summarized in Table 4: tool, skill, and logic.",
+            "Before any edit, the operator must also decide whether the change belongs to the general scope (general/) or to the benchmark-specific scope (<bench>/).",
+        ], "通用机制和当单环境事实分开，沿用已有维护源。"),
+        ("runtime-facts-and-write-scope", "A5.SS2.SSS0.Px1", "运行时事实与写入边界", [
+            "The scope is fixed before editing by decide_scope, a short, read-only model call that answers a single question: can the agent derive the relevant fact at run time on its own?",
+            "The chosen scope is then compiled into a write whitelist, and the whitelist is enforced at the tool layer, not through the prompt: any file written outside it is reverted.",
+        ], "运行时可获取事实不写死；写面约束属于隔离安全，不替军团决定作品质量。"),
+        ("validation-and-recovery", "A5.SS5", "验证失败保留现场与有效父代", [
+            "A candidate that fails again is rejected, and the working repository is restored to the last valid parent version.",
+            "First, every named self-test assertion of the parent must still exist in the child.",
+        ], "复用已有自检与父代事实；命名断言存在不等于测试语义未削弱。"),
+        ("held-out-feedback", "S5", "留出证据不参与改进选择", [
+            "For each benchmark, we partition tasks into evolve, held-out-ID, and held-out-OOD splits.",
+            "The evolve split provides the execution feedback used during harness evolution, whereas both held-out splits remain inaccessible to the proposer and selection procedure.",
+        ], "泛化须看未参与该轮调整的任务；历史回归不是新真实订单。"),
+        ("overfit-screen-limit", "A11.SS5.SSS0.Px3", "模型筛查不是泛化保证", [
+            "The gate is calibrated against planted overfits, which are by construction the overfits we thought to write down.",
+            "It bounds the judge’s sensitivity to known failure modes and does not establish coverage of unknown ones; that is precisely why the gate is deployed as a cheap pre-execution screen in front of the held-out protocol rather than as a replacement for it.",
+        ], "模型审查只作并列证据，不照搬质量否决门或投票，不替代真实留出验证。"),
+    ]
+    sources, patterns = [], []
+    for key, section, title, excerpts, note in observations:
+        source_id = "harmony-" + key
+        sources.append({
+            "source_id": source_id,
+            "title": "Yu et al. — Harmony Harness: Multi-Objective Self-Evolution of Agent Harnesses",
+            "url": paper + "#" + section, "kind": "primary_research_paper",
+            "revision": "arXiv:2610.15150v1", "page_or_state": section,
+            "visited_at": captured_at, "fetch_status": "primary_read_author_reported_not_reproduced",
+            "content_sha256": hashlib.sha256("\n\n".join(excerpts).encode("utf-8")).hexdigest(),
+            "hash_scope": "UTF-8 short excerpts; HTML whitespace normalized; not full page",
+            "supports_claims": [key], "observations": excerpts,
+            "decision": "research_context", "decision_reason": note,
+        })
+        patterns.append({"pattern_id": key, "dimension": "harness_evolution",
+                         "pattern": title, "source_ids": [source_id],
+                         "why_it_matters": note, "adoption_note": "论文方法参照，未在本军团复现效果。"})
+    source_authorization = {
+        "status": "not_queried", "source_write": None,
+        "grant_api": "personal_identity.source_write_grant",
+        "native_binding_api": "native_process_sandbox.source_workspace_grant",
+        "ordinary_task_self_grant": False, "context_grants_authority": False,
+        "boundary": "操作者须为 uid 和精确规范目录显式授予 source_write=true；原生绑定另行复查。",
+    }
+    if uid is not None and root is not None:
+        import personal_identity
+        grant = personal_identity.source_write_grant(uid, root)
+        source_authorization.update({
+            "status": "operator_granted" if grant is not None else "not_granted",
+            "source_write": grant is not None, "user_id": str(uid), "requested_root": str(root),
+            "root": grant.get("root") if grant is not None else None,
+            "native_binding_status": "not_checked_by_this_context",
+        })
+    return {
+        "ok": True, "layer": "evolution", "role": "on_demand_research_context_not_control",
+        "adoption": {"decision": "extend", "existing_core_kept": True,
+                     "official_code_status": "not_verified", "code_license_status": "not_verified",
+                     "checked_at": captured_at, "runtime_installed": False, "algorithm_reproduced": False,
+                     "original_reference_url": "https://mp.weixin.qq.com/s/QOJ6jCIa25ZuVSjB8uocFA",
+                     "paper_license": "CC BY 4.0 (article only)",
+                     "paper_license_url": "https://creativecommons.org/licenses/by/4.0/",
+                     "boundary": "仅论文研究上下文，官方 runtime 未引入；不自动改代码、评测或采用候选。"},
+        "quality_context": quality_context.normalize({"sources": sources, "reference_patterns": patterns},
+                                                      reason="on-demand evolution research"),
+        "peer_sources": peer_source_entries(root=_REPO),
+        "peer_source_boundary": "目录可读与原生沙箱许可是不同事实；此调用不扩权限、不复制源码。",
+        "entrypoints": evolution_entrypoints(),
+        "compare_evolution_action": {
+            "tool": "runnable:source_audit", "action": "compare_evolution",
+            "api": "source_audit.compare_evolution_candidates",
+            "implementation": _EVOLUTION_COMPARISON_IMPLEMENTATION,
+            "required_inputs": ["candidates", "objectives"], "optional_inputs": ["preference_vectors"],
+            "autopromotion": False, "no_write": True, "no_model": True, "decision_owner": "harness",
+            "method_scope": ["normalized_utilities", "pareto_front", "weighted_tchebycheff"],
+            "not_implemented": ["mutation", "population_evolution", "neighborhood_updates"],
+            "boundary": "仅独立方法组件，非官方 Harmony runtime；工具分发由既有 execution 层接线。",
+        },
+        "source_edit_capability": {
+            "actors": ["self", "peer"], "authorization_required": True,
+            "execution": "existing_harness_native_file_tools",
+            "prerequisites": ["authorized_maintenance", "workdir", "project_context"],
+            "source_audit": "runnable:source_audit",
+            "selfcheck": "harness_selfcheck.py --run-tests --files <本次文件>",
+            "authorization": source_authorization,
+            "boundary": "原生文件工具只在操作者已授权的源码现场工作；此 context 不创建授权、维护任务或修改。"
+                        "获准源写不证明已替换运行实例或验证效果；运行/控制根保护独立生效。",
+            "observation_boundary": "evolve_config 只是部分配置事实，不能据其存在或缺失判定全部进化机制。",
+        },
+        "measurement_note": "各维度、同任务结果与未知费用分开；作者报告、本地回归、真实用户结果分开。",
+    }
+
+
+def evolution_entrypoints() -> list[dict]:
+    """Describe only present public source entrypoints without executing them."""
+    here = pathlib.Path(__file__).resolve().parent
+    definitions = [
+        ("source_audit", here / "source_audit.py", "runnable",
+         "legion_tool.py audit-source '{\"action\":\"prior_art\",\"queries\":[\"<机制>\"]}'",
+         "复用 retained-source/core-package 定位、引用核验与证据账本。"),
+        ("source_edit", here / "native_process_sandbox.py", "existing_api",
+         "native_process_sandbox.source_workspace_grant(env, cwd, protected_roots, writable_state_roots)",
+         "操作者精确目录 grant 与原生绑定均须成立，普通任务不可自授。"),
+        ("harness_onboard", here / "harness_onboard.py", "existing_api", "harness_onboard.onboard",
+         "已有接入 API；报告与 ok 不自动成为 verified 或晋级。"),
+        ("skill_factory", here / "skill_factory.py", "runnable",
+         "legion_tool.py run runnable:skill_finder '{\"action\":\"list\"}'",
+         "共享发现与用户隔离安装；安装存在不等于效果验证。"),
+        ("skill_improve", here / "skill_improver.py", "runnable",
+         "legion_tool.py run runnable:skill_improve '{\"skill\":\"<技能名>\"}'",
+         "显式调用聚合反馈并识别实际父代；不自动编辑，不声称定时器已接通。"),
+        ("wiki_learning", here / "skill_wiki.py", "existing_api", "POST /api/legion/wiki/consolidate",
+         "持久经验与提炼提案；提案和采用分开。"),
+        ("selfcheck", here / "harness_selfcheck.py", "cli",
+         "harness_selfcheck.py --run-tests --files <本次文件>", "隔离相关回归；测试绿不代表泛化提升。"),
+        ("compare_evolution", here / "source_audit.py", "stateless_method_component",
+         "source_audit.compare_evolution_candidates(candidates, objectives, preference_vectors=None)",
+         "显式指标与偏好的 Pareto/Tchebycheff 比较；不运行候选、不自动采用。"),
+        ("auto_tool_creation", _REPO / "runtime/core-sources/auto-tools/qa_system/agent/capability_writer.py",
+         "source_reference", "capability_writer.write_capability",
+         "公开保留的工具生成源码；源码存在不代表发行包启用引擎。"),
+    ]
+    return [{"id": key, "layer": "evolution", "source_path": str(path), "present": True,
+             "kind": kind, "invoke": invoke, "runtime_status": "not_executed_by_this_context",
+             "boundary": boundary}
+            for key, path, kind, invoke, boundary in definitions if path.is_file()]
+
+
 def prepare(goal: str, scope: Any = None, dimensions: Any = None,
             mode: str = "full-loop", uid: str = "default") -> dict:
     goal = str(goal or "").strip()
@@ -624,6 +901,8 @@ def prepare(goal: str, scope: Any = None, dimensions: Any = None,
         "skill_status": skill_status,
         "baseline": str(_BASELINE) if _BASELINE.is_file() else None,
         "prior_art_required": True,
+        "evolution_context_action": {"tool": "runnable:source_audit", "action": "evolution_context",
+                                     "note": "需要进化方法参照时按需加载；不常驻、不自动执行或应用。"},
         "prior_art_action": {
             "tool": "runnable:source_audit", "action": "prior_art",
             "required_layers": ["current_source_and_entrypoints", "existing_results_and_evidence",

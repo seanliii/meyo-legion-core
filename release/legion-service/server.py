@@ -691,6 +691,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if ARTIFACTS._is_private_artifact_event(data):
                 return True  # Filter native/early references as well as collector-produced ones.
+            if (data.get("t") == "candidate_ready" or data.get("candidate_selection") or data.get("selection_auxiliary")
+                    or isinstance(data.get("coordination"), dict) and data["coordination"].get("phase") == "candidate_selection"):
+                data = __import__("project_context").public_selection_value(data)
             ident = f"id: {int(event_id)}\n" if event_id is not None else ""
             payload = f"{ident}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
             self.wfile.write(payload.encode("utf-8"))
@@ -1008,6 +1011,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(my_workspace.workspace(uid))
             except Exception as e:
                 self._send_json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        elif parsed.path == "/api/legion/cloud_desktop/personal_devices":
+            if not self._require_authorized():
+                return
+            import cloud_desktop
+            result = cloud_desktop.personal_devices(self._personal_user())
+            self._send_json(result, 200 if result.get("ok") else 400)
         elif parsed.path == "/api/legion/cloud_desktop/workspace/projects":
             uid = qs.get("uid", ["default"])[0]
             try:
@@ -1753,7 +1762,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not self._account_request_allowed():
                 return
-            self._do_POST_inner()
+            import agent_tool_provider
+            import personal_identity
+            with agent_tool_provider._runtime_scope(
+                    {}, None, inherit_process_context=False,
+                    personal_token=personal_identity.personal_token(
+                        self.headers, str(getattr(self.server, "api_token", "") or "")),
+                    native_onboard=None):
+                self._do_POST_inner()
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
@@ -2349,8 +2365,11 @@ class Handler(BaseHTTPRequestHandler):
                       if str(payload.get("tool") or "").startswith("agent_tool:") else "")
         sid = str(payload.get("session_id") or parent_sid or "")
         project = {}
+        session = None
+        onboard = str(payload.get("tool") or "").split(":")[-1] == "harness_onboard"
         if sid:
-            if SESSIONS.load_session(sid, user_id=uid) is None:
+            session = SESSIONS.load_session(sid, user_id=uid)
+            if session is None:
                 self._send_json({"ok": False, "error": "session_not_found"}, 404)
                 return None
             context["MEYO_SESSION_ID"] = sid
@@ -2370,7 +2389,24 @@ class Handler(BaseHTTPRequestHandler):
             if project.get("source_ref"):
                 facts["source_ref"] = project["source_ref"]
             context["MEYO_TASK_FACTS_JSON"] = json.dumps(facts, ensure_ascii=False)
-        if payload.get("capability_policy") is not None:
+        if onboard:
+            import legion_permissions
+            import agent_tool_provider
+            policy = legion_permissions.capability_policy()
+            # Only the latest persisted parent snapshot may narrow host policy.
+            turns = (session or {}).get("turns") or []
+            snapshot = (turns[-1].get("input_snapshot") or {}) if turns else {}
+            if not isinstance(snapshot, dict):
+                self._send_json({"ok": False, "error": "invalid_session_capability_policy"}, 403)
+                return None
+            stored = snapshot.get("capability_policy")
+            if stored is not None:
+                if not isinstance(stored, dict):
+                    self._send_json({"ok": False, "error": "invalid_session_capability_policy"}, 403)
+                    return None
+                policy = agent_tool_provider._narrow_policy(policy, stored)
+            context["MEYO_CAPABILITY_POLICY_JSON"] = json.dumps(policy, ensure_ascii=False)
+        elif payload.get("capability_policy") is not None:
             policy = payload["capability_policy"]
             if not isinstance(policy, dict):
                 self._send_json({"ok": False, "error": "capability_policy must be an object"}, 400)
@@ -2458,15 +2494,87 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "params must be an object"}, 400)
                 return
             params = dict(raw_params or {})
-            if payload.get("capability_policy") is not None:
+            if "personal_token" in params:
+                self._send_json({"ok": False, "error": "unsupported_personal_token"}, 400)
+                return
+            onboard = tool_id.split(":")[-1] == "harness_onboard"
+            if payload.get("capability_policy") is not None and not onboard:
                 params["_capability_policy"] = payload.get("capability_policy")
             context = self._tool_runtime_context(payload, params)
             if context is None:
                 return
+            if onboard:
+                params["_capability_policy"] = json.loads(context["MEYO_CAPABILITY_POLICY_JSON"])
+            import agent_tool_provider
+            import personal_identity
+            with agent_tool_provider._runtime_scope(
+                    context, None, inherit_process_context=False,
+                    personal_token=personal_identity.personal_token(
+                        self.headers, str(getattr(self.server, "api_token", "") or ""))):
+                self._send_json(LEGION_TOOL.run_tool(tool_id, params))
+        elif parsed.path == "/api/legion/tool/onboard":
+            if str((self.client_address or ("",))[0]) not in _LOOPBACKS:
+                self._send_json({"ok": False, "error": "loopback_only"}, 403)
+                return
+            if getattr(self, "_request_ticket_identity", None):
+                self._send_json({"ok": False, "error": "ticket_not_accepted"}, 400)
+                return
+            import personal_identity
+            token = personal_identity.personal_token(
+                self.headers, str(getattr(self.server, "api_token", "") or ""))
+            uid = personal_identity.resolve_token(token)
+            if not uid or uid != self._personal_user():
+                self._send_json({"ok": False, "error": "personal_auth_required"}, 403)
+                return
+            payload = getattr(self, "_request_json_payload", None)
+            if payload is None:
+                payload = self._parse_json_payload()
+            if payload is None:
+                return
+            if set(payload) - {"uid", "session_id", "workdir", "params"}:
+                self._send_json({"ok": False, "error": "unsupported_onboard_host_fields"}, 400)
+                return
+            if "uid" in payload and str(payload["uid"]) != uid:
+                self._send_json({"ok": False, "error": "personal_owner_mismatch"}, 403)
+                return
+            sid = str(payload.get("session_id") or "").strip()
+            workdir = str(payload.get("workdir") or "").strip()
+            params = payload.get("params")
+            if not sid or not workdir or not isinstance(params, dict):
+                self._send_json({"ok": False, "error": "onboard_host_identity_required"}, 400)
+                return
+            if "personal_token" in params:
+                self._send_json({"ok": False, "error": "unsupported_personal_token"}, 400)
+                return
+            if SESSIONS.load_session(sid, user_id=uid) is None:
+                self._send_json({"ok": False, "error": "session_not_found"}, 404)
+                return
+            if personal_identity.source_write_grant(uid, workdir) is None:
+                self._send_json({"ok": False, "error": "source_write_not_granted"}, 403)
+                return
+            context = self._tool_runtime_context(
+                {"uid": uid, "session_id": sid, "tool": "runnable:harness_onboard"}, params)
+            if context is None:
+                return
+            policy = json.loads(context["MEYO_CAPABILITY_POLICY_JSON"])
+            if not policy.get("install"):
+                self._send_json({"ok": False, "error": "capability_policy_denied"}, 403)
+                return
+            context["MEYO_WORKDIR"] = workdir
+            params = {**params, "_capability_policy": policy}
             import agent_tool_provider
             with agent_tool_provider._runtime_scope(
-                    context, None, inherit_process_context=False):
-                self._send_json(LEGION_TOOL.run_tool(tool_id, params))
+                    context, None, inherit_process_context=False, personal_token=token):
+                # Reuse the migrated provider's live grant/catalog/parent checks;
+                # do not bypass its required run-owned installation lease.
+                with agent_tool_provider.native_onboard_scope(
+                        user_id=uid, session_id=sid, owner_session=sid,
+                        workdir=workdir, capability_policy=policy,
+                        project_context=json.loads(context.get("MEYO_PROJECT_CONTEXT_JSON", "{}"))) as lease:
+                    if lease is None:
+                        self._send_json({"ok": False, "error": "native_onboard_authorization_unavailable"}, 403)
+                        return
+                    self._send_json(LEGION_TOOL.run_tool("runnable:harness_onboard", params))
         elif parsed.path == "/api/legion/upload":
             # 用户上传图片/PDF 到对话(存 ~/.meyo/legion/uploads)· 返回可引用 url + 本机路径
             self._handle_upload()
@@ -2489,6 +2597,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(INSTALL.install(str(payload["id"]), confirm=confirm))
             else:
                 self._send_json({"ok": False, "error": "缺 id 或 scene"}, 400)
+        elif parsed.path == "/api/legion/cloud_desktop/personal_devices/register":
+            payload = self._read_json_body()
+            if payload is None or not self._require_authorized():
+                return
+            allowed = {"uid", "name", "device_code", "platform", "provider", "authorized"}
+            if set(payload) - allowed:
+                self._send_json({"ok": False, "error": "unsupported_device_fields",
+                                 "reason": "只保存设备名称、设备码和平台；请在 BilldDesk 中输入连接密码。"}, 400)
+                return
+            import cloud_desktop
+            result = cloud_desktop.register_personal_device(
+                self._personal_user(), payload.get("name"), payload.get("device_code"),
+                payload.get("platform", "other"), payload.get("provider", "official"),
+                payload.get("authorized", False))
+            self._send_json(result, 201 if result.get("ok") else 400)
+        elif parsed.path == "/api/legion/cloud_desktop/personal_devices/remove":
+            payload = self._read_json_body()
+            if payload is None or not self._require_authorized():
+                return
+            if set(payload) - {"uid", "device_id"}:
+                self._send_json({"ok": False, "error": "unsupported_device_fields"}, 400)
+                return
+            import cloud_desktop
+            result = cloud_desktop.remove_personal_device(self._personal_user(), payload.get("device_id"))
+            self._send_json(result, 200 if result.get("ok") else 400)
         elif parsed.path == "/api/legion/cloud_desktop/workspace/project/create":
             payload = self._read_json_body()
             if payload is None:
@@ -3960,8 +4093,8 @@ class Handler(BaseHTTPRequestHandler):
             in {"1", "true", "yes", "on"}
         _direct_model_forced = bool(_route_benchmark_enabled and
             str(payload.get("execution_route") or "").strip() == "direct_model")
-        # pk=各军团并行比最佳(无首脑·默认) · relay=串行协作(无首脑) · orchestrate=首脑编排
-        # (用户2026-08-30:PK无首脑并行·编排才用首脑·可默认pk·用户可选orchestrate·对话指令切换)。
+        # PK authors execute first; the existing elected owner may then select one
+        # immutable candidate. Selection is optional context, not a quality gate.
         mode = str(payload.get("mode") or "auto")   # 默认智能:军团按场景自动选队形(用户2026-08-31)
         if mode not in ("pk", "relay", "orchestrate", "auto"):
             mode = "auto"
@@ -4031,10 +4164,13 @@ class Handler(BaseHTTPRequestHandler):
             "team_id": _team_id, "question_sha256": hashlib.sha256(question.encode()).hexdigest(),
             "initial_plan_sha256": _canonical_sha256(plan), "captured_at": time.time(),
             "attachments": deepcopy(plan.get("attachments") or []),
+            "original_public_input": {"prompt": question,
+                "output_contract": deepcopy(plan.get("delivery_contract") or {})},
             "request_team_policy": {
                 key: deepcopy(_request_team_policy[key])
                 for key in ("min_agents", "max_agents", "candidate_harnesses", "max_parallel",
-                            "max_failover", "contract_repair_rounds", "continuous_coordination")
+                            "max_failover", "contract_repair_rounds", "continuous_coordination",
+                            "candidate_selection", "candidate_selection_collaboration")
                 if key in _request_team_policy
             },
         }
@@ -4111,6 +4247,9 @@ class Handler(BaseHTTPRequestHandler):
         def cb(ev):
             if ARTIFACTS._is_private_artifact_event(ev):
                 return
+            if (ev.get("t") == "candidate_ready" or ev.get("selection_auxiliary") or
+                    isinstance(ev.get("coordination"), dict) and ev["coordination"].get("phase") == "candidate_selection"):
+                ev = __import__("project_context").public_selection_value(ev)
             # 2026-09-07里程碑零记录修通:太阳系真跑实锤——dispatch 内部 milestone 只看 DAG
             # worker 路径的 artifact_ready,cc 超时→hermes 接力全走 failover/relay,产物以
             # artifact_recovered 上报,首产物里程碑从未触发(样机12:03就绪但对话流无卡片)。
@@ -4566,7 +4705,9 @@ class Handler(BaseHTTPRequestHandler):
                                     except Exception as _e:
                                         _plan_box["plan"] = {"ok": False,
                                                              "error": f"planner_call:{type(_e).__name__}"}
-                                _plan_thread = _th2.Thread(target=_plan_worker, daemon=True)
+                                import agent_tool_provider
+                                _plan_thread = _th2.Thread(
+                                    target=agent_tool_provider._bind_runtime_call(_plan_worker), daemon=True)
                                 _plan_thread.start()
                                 while True:
                                     _plan_thread.join(timeout=0.5)
@@ -5208,6 +5349,15 @@ class Handler(BaseHTTPRequestHandler):
                         "blocked_before_native": True, "execution_calls": 0,
                     }, _plan, mode)
                     return
+                # Preserve explicit opt-out across native planning. Ordinary PK needs
+                # no benchmark actor fields; core enables selection on actual candidates.
+                if mode == "pk":
+                    _plan["team_policy"] = {**dict(_plan.get("team_policy") or {}),
+                        **{key: _request_team_policy[key] for key in (
+                            "candidate_selection", "candidate_selection_collaboration")
+                           if type(_request_team_policy.get(key)) is bool}}
+                    if isinstance(plan.get("candidate_selection_context"), dict):
+                        _plan["candidate_selection_context"] = deepcopy(plan["candidate_selection_context"])
                 _dispatch_t0 = time.time()   # 记派活起点·enrich 据此扫本次窗口新增文件产物
                 _continuous_team = bool(mode == "orchestrate" and _plan.get("captain")
                                         and len(_plan.get("tasks") or {}) > 1)
@@ -5240,6 +5390,10 @@ class Handler(BaseHTTPRequestHandler):
                         out, out.get("delivery_contract") or _plan.get("delivery_contract"))
                 except Exception:
                     pass
+                if out.get("selection_inconclusive"):
+                    out["outcome"] = {**dict(out.get("outcome") or {}), "selection_inconclusive": True}
+                if out.get("candidate_selection"):
+                    out = __import__("project_context").public_selection_value(out)
                 # ★ 落盘在后台线程内·脱离 SSE 连接:客户端早断了这里照样存,任务不白干。
                 try:
                     info = _save_query_turn(out, mode, _plan)
@@ -5312,7 +5466,9 @@ class Handler(BaseHTTPRequestHandler):
                 _evq.put((_DONE, None, None))
 
         # daemon=False:进程正常运行期不被回收·保证任务真跑完落盘(不随前台连接死)。
-        _t = threading.Thread(target=_worker, name=f"dispatch-{sid[:8]}", daemon=False)
+        import agent_tool_provider
+        _t = threading.Thread(target=agent_tool_provider._bind_runtime_call(_worker),
+                              name=f"dispatch-{sid[:8]}", daemon=False)
         _t.start()
         # 前台只负责把后台事件转发给 SSE;客户端断开→_sse_send 返 False→停止转发但【不动后台线程】。
         client_alive = True
@@ -5486,7 +5642,9 @@ def _schedule_feedback_resume(team_id: str, user_id: str, conversation_id: str):
                 with _feedback_workers_lock:
                     _feedback_workers.discard(team_id)
 
-    threading.Thread(target=work, name=f"feedback:{team_id}", daemon=True).start()
+    import agent_tool_provider
+    threading.Thread(target=agent_tool_provider._bind_runtime_call(work),
+                     name=f"feedback:{team_id}", daemon=True).start()
 
 
 def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,

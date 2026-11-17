@@ -44,6 +44,8 @@ def _plan(case, tasks, *, failover=0, repair=0):
         "_user_selected_mode": True, "tasks": tasks,
         "project_context": {"repo_root": str(case.work)},
         "execution_depth": "quick",
+        # Dispatch resolves per-node/per-member depths, not the single-run field.
+        "execution_depths": {task_id: "quick" for task_id in tasks},
         "team_policy": {
             "adaptive": False, "max_parallel": 1,
             "max_failover": failover, "contract_repair_rounds": repair,
@@ -285,8 +287,9 @@ def test_error_then_absent_relay_continues_actual_relay_cursor_and_node_scope(gr
                for row in saved.get("result_history") or [])
 
 
+@pytest.mark.parametrize("selection_path", ["quick", "collaboration-disabled", "selection-disabled", "solo"])
 @pytest.mark.parametrize("with_independent", [False, True], ids=["only-absent", "independent-contract-gap"])
-def test_contract_repair_excludes_absent_without_disabling_independent_candidate(graph, with_independent):
+def test_contract_repair_excludes_absent_without_disabling_independent_candidate(graph, with_independent, selection_path):
     case = graph
     tasks = {}
     if with_independent:
@@ -295,6 +298,14 @@ def test_contract_repair_excludes_absent_without_disabling_independent_candidate
     # exactly the missing boundary, not an accidental passing input order.
     tasks["A"] = _node("Keep the original CPU work", owner=RELAY)
     plan = _plan(case, tasks, repair=1)
+    if selection_path != "quick":
+        plan["execution_depths"] = dict.fromkeys(tasks, "standard")
+        if selection_path == "collaboration-disabled":
+            plan["team_policy"]["candidate_selection_collaboration"] = False
+        elif selection_path == "selection-disabled":
+            plan["team_policy"]["candidate_selection"] = False
+        else:
+            plan["solo"] = True
     plan["delivery_contract"] = {
         "require_final": True,
         "required_artifacts": [{"kind": "file", "formats": ["txt"]}],

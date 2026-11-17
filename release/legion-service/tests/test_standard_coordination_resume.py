@@ -142,12 +142,62 @@ def case(tmp_path, monkeypatch):
     yield SimpleNamespace(core=core, teams=teams, pc=pc, tm=tm, server=server,
                           mp=monkeypatch, root=tmp_path, post=post, get=get, events=events,
                           members=members, controls=controls, control=control,
-                          member_calls=member_calls)
+                          member_calls=member_calls, port=listener.server_port)
     listener.shutdown()
     listener.server_close()
     thread.join(2)
     assert not thread.is_alive()
     assert not forbidden_calls
+
+
+@pytest.mark.parametrize("selected", ["B", "inconclusive"])
+def test_ordinary_http_pk_default_candidate_selection(case, selected):
+    case.mp.setattr(case.core, "_harness_keys", lambda: {"codex", HARNESS})
+    case.mp.setattr(case.core, "_aigc_ready", lambda **kw: {"runnable_clis": ["codex", HARNESS]})
+    case.mp.setattr(case.core, "_appoint_runtime_captain", lambda *a, **kw: "codex")
+    case.mp.setattr(case.core, "_explicit_provider_binding", lambda *a, **kw: {})
+    case.mp.setattr(case.core, "pilot_settings", lambda *a, **kw: {"enabled": False})
+    case.mp.setattr(case.server.ARTIFACTS, "enrich", lambda *a, **kw: None)
+    case.mp.setattr(case.server.DESKTOP_FS, "materialize_session", lambda *a, **kw: {"ok": True})
+    case.mp.setattr(case.server.DESKTOP_FS, "sync_personal_data", lambda *a, **kw: None)
+    case.mp.setattr(case.core, "run_one", lambda key, prompt, **kw: {
+        "status": "done", "final": "unchanged original " + kw["task_facts"]["task_id"]})
+    controls = []
+    def control(key, prompt, **kw):
+        controls.append(kw)
+        assert kw["task_facts"]["native_read_only"] is True
+        return {"status": "done", "final": "selection receipt only", "orchestration_request": {
+            "coordinate": {"action": "complete", "selected_task_id": selected}}}
+    case.mp.setattr(case.core, "_run_one_with_gateway", control)
+    plan = {"captain": "codex", "tasks": {key: {"task": "original task " + key,
+        "assigned_harness": "codex", "assignment_locked": True} for key in ("A", "B")},
+        "team_policy": {"candidate_harnesses": ["codex"], "min_agents": 2, "max_agents": 2,
+                        "max_failover": 0, "continuous_coordination": False, "contract_repair_rounds": 0}}
+    conn = http.client.HTTPConnection("127.0.0.1", case.port, timeout=10)
+    try:
+        conn.request("POST", "/api/legion/dispatch", json.dumps({"query": "compare original outputs",
+            "mode": "pk", "plan": plan, "team_id": TEAM, "session_id": CONVERSATION}),
+            {"Content-Type": "application/json", "Authorization": "Bearer " + TOKENS[OWNER]})
+        response = conn.getresponse()
+        assert response.status == 200
+        body = response.read().decode()
+    finally:
+        conn.close()
+    events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+    final = next(event for event in reversed(events) if event.get("candidate_selection"))
+    assert len(controls) == 1
+    ready = [event for event in events if event.get("t") == "candidate_ready"]
+    assert len(ready) == 2 and {event["task_id"] for event in ready} == {"A", "B"}
+    assert not any("native_facts" in event.get("result", {}) for event in ready)
+    assert [row["final"] for row in final["results"]] == ["unchanged original A", "unchanged original B"]
+    if selected == "B":
+        assert final["final_result"]["final"] == "unchanged original B"
+        assert final["selection"]["adjudicated"]
+    else:
+        assert not final["winner"] and final["selection_inconclusive"]
+        assert final["outcome"]["status"] == "completed"
+        assert not final.get("coordination_incomplete"), "unselected is not failed delivery"
+        assert "未能择优" in final["winner_note"]
 
 
 def grant_project(case, work, *, user=OWNER):

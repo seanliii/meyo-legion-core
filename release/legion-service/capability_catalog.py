@@ -76,8 +76,12 @@ def inventory() -> dict:
                               "'{\"prompt\":\"<问题>\",\"profile_id\":\"<已绑定的候选ID>\"}'")),
         "profile_requires": "可信父层的本实例私有 profile 与 owner/workspace 绑定；按次调用，不切默认",
     } for row in media_model_cli.model_tool_specs()]
+    import source_audit
+    evolution = [{**row, "ready": row["present"], "description": row["boundary"]}
+                 for row in source_audit.evolution_entrypoints()]
     return {
         "ok": True,
+        "evolution": evolution,
         "discovery": [
             *model_entries,
             *actions,
@@ -92,6 +96,18 @@ def inventory() -> dict:
                 "invoke": "legion_tool.py run runnable:search_sources '{}'",
             },
             _skill_finder(),
+            {
+                "id": "harness_onboard", "name": "受管 Harness 接入",
+                "ready": (HERE / "harness_onboard.py").is_file(), "live_verified": False,
+                "description": "唯一声明式接入流水线；原生调用经运行专属宿主短桥，需既有 source_write 与 install 权限。",
+                "invoke": "legion_tool.py run runnable:harness_onboard '{\"from_github\":\"https://github.com/<owner>/<repo>\"}'",
+            },
+            {
+                "id": "skill_improve", "name": "Skill 反馈改进提案",
+                "ready": (HERE / "skill_improver.py").is_file(),
+                "description": "按需聚合当前用户反馈，只生成提案，不自动改文件。",
+                "invoke": "legion_tool.py run runnable:skill_improve '{\"skill\":\"<技能名>\"}'",
+            },
             {
                 "id": "github_mcp", "name": "GitHub 官方 MCP", "ready": True,
                 "description": "搜索仓库、代码、Issue、PR、Commit 与 Release；先列真实 schema 再调用。",
@@ -128,5 +144,6 @@ def inventory() -> dict:
                 "invoke": "legion_tool.py run runnable:mcp_list '{}'",
             },
         ],
-        "principle": "需要能力时先查看目录；目录只提供事实与入口，由 agent 自己判断调用哪个。",
+        "principle": "需要能力时先查看目录；目录只提供事实与入口，由 agent 自己判断调用哪个。"
+                     "evolution 是按需进化层，不是答题成员池或固定工作流。",
     }

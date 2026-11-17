@@ -1,0 +1,16 @@
+models:
+  - name: meyo-unified
+    display_name: Meyo Unified Gateway
+    use: langchain_openai:ChatOpenAI
+    model: $MEYO_UNIFIED_MODEL
+    api_key: $OPENAI_API_KEY
+    base_url: $OPENAI_BASE_URL
+    request_timeout: 900.0
+    max_retries: 2
+    supports_vision: true
+
+# sandbox 是 AppConfig 必填字段。军团在本机隔离 workdir 里跑,用 local provider
+# (不拉 docker·符合速度底线);allow_host_bash 让它能在本单持久目录真跑工具/写产物。
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+  allow_host_bash: true

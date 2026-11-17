@@ -300,78 +300,87 @@ def main(argv=None):
     if builds.is_symlink():
         raise ValueError("DeerFlow frontend build directory must not be a symlink")
     builds.mkdir(mode=0o700, exist_ok=True)
-    view = Path(tempfile.mkdtemp(prefix="build-", dir=builds))
-    frontend = view / "frontend"
-    shutil.copytree(source / "frontend", frontend, symlinks=True,
-                    ignore=lambda directory, names: [name for name in names if name in SOURCE_EXCLUDES])
-    if args.frontend_only:
-        # Real copies, not hardlinks or an out-of-root node_modules symlink:
-        # build writes cannot modify old dependencies; pnpm's internal links remain relative.
-        shutil.copytree(dependencies, frontend / "node_modules", symlinks=True)
-        if tree_digest(frontend / "node_modules") != dependency_digest:
-            raise ValueError("frontend dependencies changed while copying; no installation attempted")
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
-        env.pop(name, None)
-    env["GIT_CEILING_DIRECTORIES"] = str(builds)
-    env.update(DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=origin, NODE_ENV="production")
-    env.update(UV_PROJECT_ENVIRONMENT=str(runtime / "venv"), UV_PYTHON=sys.executable,
-               UV_PYTHON_DOWNLOADS="never")
-    env["UV_CACHE_DIR"] = env.get("UV_CACHE_DIR") or str(runtime / "uv-cache")
-    env["COREPACK_HOME"] = env.get("COREPACK_HOME") or str(runtime / "corepack")
-    log = private_build_log(runtime, source, repo, env)
-    config_before = sha(frontend / "next.config.js")
-    run([git, "apply", "--check", str(OVERLAY)], view, env, log)
-    run([git, "apply", str(OVERLAY)], view, env, log)
-    if sha(frontend / "next.config.js") == config_before:
-        raise ValueError("DeerFlow source overlay was not applied")
-    if not args.frontend_only:
-        uv = prepare_uv(repo, runtime) if sys.platform.startswith("linux") else Path(shutil.which("uv") or "uv")
-        run([str(uv), "sync", "--frozen", "--no-dev", "--no-editable"], source / "backend", env, log)
-        # Preserve development dependencies required by the normal native build.
-        install_env = dict(env)
-        install_env.pop("NODE_ENV", None)
-        run(["corepack", "pnpm@10.26.2", "install", "--frozen-lockfile"], frontend, install_env, log)
-        require_declared_dependencies(frontend / "node_modules", package)
-        dependency_digest = tree_digest(frontend / "node_modules")
-    cli = frontend / "node_modules/next/dist/bin/next"
-    if not cli.is_file() or not cli.resolve().is_relative_to(frontend):
-        raise ValueError("existing native Next CLI missing or escapes frontend")
-    next_package = frontend / "node_modules/next/package.json"
-    build_command = [node, str(cli), "build"]
-    # package.json's verified build script is exactly "next build". Direct Node
-    # uses the installed CLI without a Corepack download or a second install.
-    run(build_command, frontend, env, log)
-    output = output_facts(frontend, include_artifacts=True)
-    if source_facts(source) != facts:
-        raise ValueError("original DeerFlow frontend source changed during build")
-    record = {
-        "schema_version": 1, "status": "frontend_built",
-        "mode": "frontend-only" if args.frontend_only else "full",
-        "runtime_acceptance": "not_run", "gateway_origin": origin, "source": facts,
-        "overlay": {"file": OVERLAY.name, "sha256": sha(OVERLAY),
-                    "next_config_sha256": sha(frontend / "next.config.js")},
-        "inputs": {
-            "installer_sha256": sha(Path(__file__)), "package_json_sha256": sha(source / "frontend/package.json"),
-            "lockfile_sha256": sha(lock), "dependencies_sha256": dependency_digest,
-            "node_binary_sha256": sha(Path(node).resolve()),
-            "next_version": json.loads(next_package.read_text())["version"],
-            "public_gateway_urls": "unset", "node_env": "production",
-            "build_environment_sha256": {
-                key: hashlib.sha256(value.encode()).hexdigest() for key, value in sorted(env.items())
-                if key.startswith("NEXT_PUBLIC_") or key in ("NODE_OPTIONS", "NEXT_CONFIG_BUILD_OUTPUT")},
-        },
-        "output": {
-            "frontend": frontend.relative_to(runtime).as_posix(), **output,
-        },
-        # Evidence and entry resolution stay relocatable; no build-host roots.
-        "command": ["node", "node_modules/next/dist/bin/next", "build"],
-    }
-    save_frontend_receipt(runtime, record)
-    print(json.dumps({"status": record["status"], "mode": record["mode"],
-                      "receipt": str(runtime / FRONTEND_RECEIPT), "runtime_acceptance": "not_run"}))
-    return 0
+    with tempfile.TemporaryDirectory(prefix="build-", dir=builds) as temporary_view:
+        view = Path(temporary_view)
+        frontend = view / "frontend"
+        shutil.copytree(source / "frontend", frontend, symlinks=True,
+                        ignore=lambda directory, names: [name for name in names if name in SOURCE_EXCLUDES])
+        if args.frontend_only:
+            # Real copies, not hardlinks or an out-of-root node_modules symlink:
+            # build writes cannot modify old dependencies; pnpm's internal links remain relative.
+            shutil.copytree(dependencies, frontend / "node_modules", symlinks=True)
+            if tree_digest(frontend / "node_modules") != dependency_digest:
+                raise ValueError("frontend dependencies changed while copying; no installation attempted")
+        env.pop("PYTHONPATH", None)
+        env.pop("PYTHONHOME", None)
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            env.pop(name, None)
+        env["GIT_CEILING_DIRECTORIES"] = str(builds)
+        env.update(DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=origin, NODE_ENV="production")
+        env.update(UV_PROJECT_ENVIRONMENT=str(runtime / "venv"), UV_PYTHON=sys.executable,
+                   UV_PYTHON_DOWNLOADS="never")
+        env["UV_CACHE_DIR"] = env.get("UV_CACHE_DIR") or str(runtime / "uv-cache")
+        env["COREPACK_HOME"] = env.get("COREPACK_HOME") or str(runtime / "corepack")
+        log = private_build_log(runtime, source, repo, env)
+        config_before = sha(frontend / "next.config.js")
+        run([git, "apply", "--check", str(OVERLAY)], view, env, log)
+        run([git, "apply", str(OVERLAY)], view, env, log)
+        if sha(frontend / "next.config.js") == config_before:
+            raise ValueError("DeerFlow source overlay was not applied")
+        if not args.frontend_only:
+            uv = prepare_uv(repo, runtime) if sys.platform.startswith("linux") else Path(shutil.which("uv") or "uv")
+            run([str(uv), "sync", "--frozen", "--no-dev", "--no-editable"], source / "backend", env, log)
+            # Preserve development dependencies required by the normal native build.
+            install_env = dict(env)
+            install_env.pop("NODE_ENV", None)
+            run(["corepack", "pnpm@10.26.2", "install", "--frozen-lockfile"], frontend, install_env, log)
+            require_declared_dependencies(frontend / "node_modules", package)
+            dependency_digest = tree_digest(frontend / "node_modules")
+        cli = frontend / "node_modules/next/dist/bin/next"
+        if not cli.is_file() or not cli.resolve().is_relative_to(frontend):
+            raise ValueError("existing native Next CLI missing or escapes frontend")
+        next_package = frontend / "node_modules/next/package.json"
+        build_command = [node, str(cli), "build"]
+        # package.json's verified build script is exactly "next build". Direct Node
+        # uses the installed CLI without a Corepack download or a second install.
+        run(build_command, frontend, env, log)
+        output = output_facts(frontend, include_artifacts=True)
+        if source_facts(source) != facts:
+            raise ValueError("original DeerFlow frontend source changed during build")
+        published = builds / ("built-" + view.name.removeprefix("build-"))
+        record = {
+            "schema_version": 1, "status": "frontend_built",
+            "mode": "frontend-only" if args.frontend_only else "full",
+            "runtime_acceptance": "not_run", "gateway_origin": origin, "source": facts,
+            "overlay": {"file": OVERLAY.name, "sha256": sha(OVERLAY),
+                        "next_config_sha256": sha(frontend / "next.config.js")},
+            "inputs": {
+                "installer_sha256": sha(Path(__file__)), "package_json_sha256": sha(source / "frontend/package.json"),
+                "lockfile_sha256": sha(lock), "dependencies_sha256": dependency_digest,
+                "node_binary_sha256": sha(Path(node).resolve()),
+                "next_version": json.loads(next_package.read_text())["version"],
+                "public_gateway_urls": "unset", "node_env": "production",
+                "build_environment_sha256": {
+                    key: hashlib.sha256(value.encode()).hexdigest() for key, value in sorted(env.items())
+                    if key.startswith("NEXT_PUBLIC_") or key in ("NODE_OPTIONS", "NEXT_CONFIG_BUILD_OUTPUT")},
+            },
+            "output": {
+                "frontend": published.relative_to(runtime).as_posix(), **output,
+            },
+            # Evidence and entry resolution stay relocatable; no build-host roots.
+            "command": ["node", "node_modules/next/dist/bin/next", "build"],
+        }
+        # Only validated outputs leave the temporary scope; failed builds are
+        # reclaimed while their private diagnostic log remains available.
+        frontend.rename(published)
+        try:
+            save_frontend_receipt(runtime, record)
+        except BaseException:
+            shutil.rmtree(published)
+            raise
+        print(json.dumps({"status": record["status"], "mode": record["mode"],
+                          "receipt": str(runtime / FRONTEND_RECEIPT), "runtime_acceptance": "not_run"}))
+        return 0
 
 
 if __name__ == "__main__":

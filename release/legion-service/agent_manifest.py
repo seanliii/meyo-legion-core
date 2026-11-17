@@ -52,7 +52,7 @@ def validate(item: dict, locked: bool = True) -> dict:
         if not isinstance(transport, dict) or transport.get("type") not in _TRANSPORTS:
             errors.append("transport 必须是 cli/http/acp/mcp/sdk")
     role = str(item.get("execution_role") or "agent")
-    if role not in {"agent", "capability", "control-plane", "ui-platform"}:
+    if role not in {"agent", "capability", "control-plane", "ui-platform", "evolution"}:
         errors.append(f"不支持的 execution_role:{role}")
     declared = item.get("adapter_capabilities") or {}
     if role == "agent" and declared.get("tools", True) \

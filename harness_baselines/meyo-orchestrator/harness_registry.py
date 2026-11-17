@@ -965,8 +965,9 @@ def _run_task(cmd, timeout=0, **kwargs):
 class _RunEventContext:
     """One CLI call's sink and state, explicitly shared by its two readers."""
 
-    def __init__(self, sink):
+    def __init__(self, sink, private_tokens=()):
         self.sink = sink
+        self.private_tokens = tuple(str(token) for token in private_tokens if token)
         self.state = {"count": 0, "last": ""}
         self.artifact_seen = set()
         self.thinking_depth = {}
@@ -1725,6 +1726,24 @@ def _gateway_no_proxy(env: dict) -> dict:
     return env
 
 
+def _native_member_environment(env, member):
+    """Keep run-owned bridge authority, never personal or another member's keys."""
+    env = dict(env)
+    for name in list(env):
+        if (name.startswith("MEYO_PERSONAL_MEMBER_KEY_")
+                or name in ("LEGION_PERSONAL_TOKEN", "LEGION_API_TOKEN",
+                            "MEYO_PERSONAL_PROVIDER_KEY", "LEGION_MEMBER_MODEL_BINDINGS",
+                            "LEGION_CODEX_RESPONSES_BINDING")):
+            env.pop(name, None)
+    foreign = (("OPENAI_API_KEY", "OPENAI_BASE_URL", "DEEPSEEK_API_KEY") if member == "cc"
+               else ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                     "LEGION_CCR_AUTH_TOKEN", "LEGION_CCR_REQUEST_PROVIDERS",
+                     "OPENAI_API_KEY", "DEEPSEEK_API_KEY"))
+    for name in foreign:
+        env.pop(name, None)
+    return env
+
+
 def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=False,
               native_stdin=None, runtime_activity_fd=None):
     """替代 _sp.run(capture_output=True,text=True):流式读子进程输出,每行往真stderr打一个
@@ -1763,8 +1782,16 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
     # 进程内 adapter 的 ctx 不在 server 全局 os.environ 中；按本线程覆盖到 native CLI，随后
     # CLI 内的 Bash/shell 子进程自然继承。thread-local 隔离并发请求，隔离 worker 未设置则零变化。
     env.update(getattr(_INPROC_RUNTIME_ENV, "values", {}) or {})
+    for name in ("LEGION_PERSONAL_TOKEN", "LEGION_API_TOKEN"):
+        env.pop(name, None)
+    if tag in ("cc", "cc-retry", "codex"):
+        env = _native_member_environment(env, "cc" if tag.startswith("cc") else "codex")
     env = _gateway_no_proxy(env)
-    event_context = _RunEventContext(getattr(_INPROC_EVENT_SINK, "cb", None))
+    event_context = _RunEventContext(getattr(_INPROC_EVENT_SINK, "cb", None),
+                                    (env.get("MEYO_ONBOARD_BRIDGE_TOKEN"),))
+    private_tokens = tuple(str(value) for name, value in env.items() if value and
+                           any(part in name.upper() for part in
+                               ("TOKEN", "API_KEY", "APPID", "PASSWORD", "SECRET")))
     check = getattr(_INPROC_CANCEL_CHECK, "check", None)
     if callable(check) and check():
         _INPROC_CANCEL_CHECK.cancelled = True
@@ -1902,7 +1929,6 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
             chunk = os.read(stream.fileno(), 4096)
             text = decoder.decode(chunk, final=not chunk)
             if text:
-                buf.append(text)
                 if task_run:
                     activity(source="native_output")
                 pending += text
@@ -1918,6 +1944,14 @@ def _run_live(cmd, timeout, env=None, cwd=None, input=None, tag="", *, task_run=
         nonlocal stdin_error
         try:
             for ln in captured_lines(stream, buf):
+                # Readers do not inherit thread-local authority. Redact the
+                # launch snapshot before capture, event parsing or stderr.
+                for token in private_tokens:
+                    ln = ln.replace(token, "[redacted]")
+                    escaped = _json.dumps(token, ensure_ascii=True)[1:-1]
+                    if escaped != token:
+                        ln = ln.replace(escaped, "[redacted]")
+                buf.append(ln)
                 if native_stdin is not None and stream is proc.stdout:
                     try:
                         frame = _json.loads(ln)
@@ -2633,10 +2667,11 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
     ctx = ctx or HarnessCtx.from_env()
     t0 = _t.time()
     _managed_browser = None
+    _cc_private_tokens = set()
 
     def _redact_cc(value):
         if isinstance(value, str):
-            for secret in (ctx.appid, *(_cc_env.get(name) for name in
+            for secret in (ctx.appid, *_cc_private_tokens, *(_cc_env.get(name) for name in
                            ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "LEGION_CCR_AUTH_TOKEN"))):
                 if secret:
                     value = value.replace(str(secret), "[redacted]")
@@ -2644,7 +2679,7 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
         if isinstance(value, list):
             return [_redact_cc(item) for item in value]
         if isinstance(value, dict):
-            return {key: _redact_cc(item) for key, item in value.items()}
+            return {_redact_cc(key): _redact_cc(item) for key, item in value.items()}
         return value
 
     try:
@@ -2771,6 +2806,13 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
         # 改用 --settings 指向一个【无任何 hook】的干净临时配置目录·一次性绕开所有本机 hook 干扰。
         # 派军团的 cc 是干活子进程·本就不该被开发者本机 hook 拦(context not control:关的是拦截·不动 cc 答题)。
         _cc_env = _gateway_no_proxy(dict(os.environ))
+        _runtime_bridge = getattr(_INPROC_RUNTIME_ENV, "values", {}) or {}
+        _cc_env.update({name: _runtime_bridge[name] for name in
+                        ("MEYO_ONBOARD_BRIDGE_URL", "MEYO_ONBOARD_BRIDGE_TOKEN")
+                        if name in _runtime_bridge})
+        _cc_env = _native_member_environment(_cc_env, "cc")
+        if _cc_env.get("MEYO_ONBOARD_BRIDGE_TOKEN"):
+            _cc_private_tokens.add(_cc_env["MEYO_ONBOARD_BRIDGE_TOKEN"])
         _cc_env["MEYO_PILOT_V2"] = "0"
         _cc_cwd = ctx.workdir or None
         if _cc_cwd:
@@ -2819,6 +2861,9 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
 
         def _execute_cc(command, environment, wrap=lambda value: value):
             nonlocal _cc_execution_started
+            environment = _native_member_environment(environment, "cc")
+            if environment.get("MEYO_ONBOARD_BRIDGE_TOKEN"):
+                _cc_private_tokens.add(environment["MEYO_ONBOARD_BRIDGE_TOKEN"])
             wrapped = wrap(command)
             _cc_execution_started = True
             _io = {"native_stdin": _cc_mailbox} if _cc_mailbox is not None else {"input": ""}
@@ -2939,7 +2984,7 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
                     # Keep the existing native timeout/checkpoint contract.
                     # Runtime exceptions may contain the full command/prompt.
                     raise
-                _message = f"CC 原生运行隔离或工具配置未就绪：{type(exc).__name__}: {exc}"
+                _message = _redact_cc(f"CC 原生运行隔离或工具配置未就绪：{type(exc).__name__}: {exc}")
                 return {"status": "error", "final": "", "error": _message,
                         "fail_kind": "harness_runtime", "model_used": ctx.model,
                         "elapsed": round(_t.time() - t0, 1),
@@ -3038,6 +3083,7 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
                                    _cc_env.get("LEGION_CCR_AUTH_TOKEN")):
                 if _private_value:
                     _diagnostic = _diagnostic.replace(str(_private_value), "[redacted]")
+            _diagnostic = _redact_cc(_diagnostic)
             _cc_failure["error"] = _diagnostic[:4000]
             if (_cc_backend == "codex" and not _cc_native_events
                     and _re.search(r"(?im)^usage:\s+codex\s+sandbox\b", _diagnostic)):
@@ -3079,10 +3125,10 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
                                     "code": "authentication_failed", "message": message})
         return {**_cc_failure,
                 "final": _redact_cc(final[:_FINAL_CAP]), "status": _cc_status,
-                "elapsed": round(_t.time() - t0, 1), "usage": _cc_usage or None,
+                "elapsed": round(_t.time() - t0, 1), "usage": _redact_cc(_cc_usage) or None,
                 # provenance(同 deepseek 修复:cc adapter 旧版唯一没回 model_used→run_one 退回 tried_models[-1]
                 # 记到 cc 名下污染 model_health)。cc 用父层给的 ctx.model·如实回传。
-                "model_used": _cc_actual_model, "native_events": _cc_native_events,
+                "model_used": _redact_cc(_cc_actual_model), "native_events": _redact_cc(_cc_native_events),
                 "native_facts": _redact_cc(_cc_facts),
                 "workdir": str(ctx.workdir or ""),
                 "native_checkpoint": ({"kind": "claude_session", "session_id": _native_sid_out,
@@ -3284,8 +3330,18 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
     _usage_cursor = None
 
     def _redact(value):
-        for secret in _mcp_secrets:
-            value = value.replace(secret, "[REDACTED]")
+        if isinstance(value, str):
+            for secret in _mcp_secrets:
+                if secret:
+                    value = value.replace(secret, "[REDACTED]")
+                    escaped = _json.dumps(secret, ensure_ascii=True)[1:-1]
+                    if escaped != secret:
+                        value = value.replace(escaped, "[REDACTED]")
+            return value
+        if isinstance(value, list):
+            return [_redact(item) for item in value]
+        if isinstance(value, dict):
+            return {_redact(key): _redact(item) for key, item in value.items()}
         return value
 
     def _runtime_facts(facts):
@@ -3311,7 +3367,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
             }
         if _managed_cleanup_errors:
             facts["managed_cleanup_errors"] = list(_managed_cleanup_errors)
-        return facts
+        return _redact(facts)
 
     def _enter_owned(stack, scope, label):
         value = scope.__enter__()
@@ -3431,7 +3487,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
             if len(message) > _FINAL_CAP:
                 completion["truncated"] = True
         facts["completion_message"] = completion
-        return thread_id, usage, event_types, facts
+        return thread_id, _redact(usage), _redact(event_types), _redact(facts)
 
     def _reconcile_last_message(text, facts):
         # `-o` is the last assistant message, which may be old progress text.
@@ -3454,8 +3510,15 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
         with _ctx.suppress(Exception):
             out.unlink()
     env = dict(os.environ)
-    if _managed_linux:
-        env.update(getattr(_INPROC_RUNTIME_ENV, "values", {}) or {})
+    _runtime_bridge = getattr(_INPROC_RUNTIME_ENV, "values", {}) or {}
+    env.update(_runtime_bridge if _managed_linux else {
+        name: _runtime_bridge[name] for name in
+        ("MEYO_ONBOARD_BRIDGE_URL", "MEYO_ONBOARD_BRIDGE_TOKEN")
+        if name in _runtime_bridge})
+    for name in ("LEGION_PERSONAL_TOKEN", "LEGION_API_TOKEN"):
+        env.pop(name, None)
+    if env.get("MEYO_ONBOARD_BRIDGE_TOKEN"):
+        _mcp_secrets.append(env["MEYO_ONBOARD_BRIDGE_TOKEN"])
     # Match _run_live's per-call overlay, even outside the managed layout.
     # A named key may be AIGC_APPID: retain the snapshot before legacy rewrites.
     operator_env = dict(env)
@@ -3580,6 +3643,7 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
     _request_key = env.get("AIGC_APPID")
     if isinstance(_request_key, str) and _request_key:
         _mcp_secrets.append(_request_key)
+    env = _native_member_environment(env, "codex")
     _provider_id = ("meyo_responses" if _transport == "responses" else
                     "friday_responses" if _endpoint else "aigc_bridge")
     _provider = (f'name = "Meyo Responses", base_url = {_json.dumps(_endpoint["base_url"])}, '
@@ -3634,13 +3698,16 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
                                  for name in ("MEYO_TOOLBOX_ROOT", "LEGION_PROC_REGISTRY_DIR")
                                  if env.get(name) and _P(env[name]).exists())
                 if any(codex_ws.is_relative_to(p) or p.is_relative_to(codex_ws) for p in protected):
-                    raise NativeProcessSandboxError("Codex workspace overlaps protected runtime or control roots")
+                    from native_process_sandbox import source_workspace_grant
+                    if source_workspace_grant({**env, "MEYO_USER_ID": str(ctx.user_id or "")},
+                                              codex_ws, protected) is None:
+                        raise NativeProcessSandboxError("Codex workspace overlaps protected runtime or control roots")
                 codex_ws.mkdir(parents=True, exist_ok=True)
                 state_roots = [env[name] for name in
                                ("HOME", "CODEX_HOME", "MEYO_LEGION_DIR", "LEGION_HOME_DIR")
                                if env.get(name)]
                 _launch = _enter_owned(_owned_tools, prepare_codex_native(
-                    env, str(codex_ws), protected_roots=protected,
+                    {**env, "MEYO_USER_ID": str(ctx.user_id or "")}, str(codex_ws), protected_roots=protected,
                     writable_state_roots=state_roots,
                     **({"read_only": True} if _read_only else {})), "native_launch")
                 binp = str(_launch.executable)
@@ -3891,6 +3958,11 @@ def _codex_adapter(qhash, question, gold="", ctx=None):
             if _managed_linux:
                 cmd = _launch.wrap(cmd)
             previous_runtime = getattr(_INPROC_RUNTIME_ENV, "values", None)
+            if not _managed_linux:
+                env.update(previous_runtime or {})
+            env = _native_member_environment(env, "codex")
+            if env.get("MEYO_ONBOARD_BRIDGE_TOKEN"):
+                _mcp_secrets.append(env["MEYO_ONBOARD_BRIDGE_TOKEN"])
             try:
                 if _managed_linux:
                     _INPROC_RUNTIME_ENV.values = {}

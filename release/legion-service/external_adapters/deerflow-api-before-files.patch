@@ -1,0 +1,30 @@
+diff --git a/frontend/next.config.js b/frontend/next.config.js
+--- a/frontend/next.config.js
++++ b/frontend/next.config.js
+@@ -26,6 +26,13 @@ const config = {
+   },
+   devIndicators: false,
+   async rewrites() {
++    for (const key of [
++      "NEXT_PUBLIC_BACKEND_BASE_URL", "NEXT_PUBLIC_LANGGRAPH_BASE_URL",
++    ]) {
++      if (process.env[key] !== undefined) {
++        throw new Error(`${key} must be unset for the same-origin API gateway build`);
++      }
++    }
+     const rewrites = [];
+     const gatewayURL = getInternalServiceURL(
+       "DEER_FLOW_INTERNAL_GATEWAY_BASE_URL",
+@@ -74,7 +81,11 @@ const config = {
+       });
+     }
+ 
+-    return rewrites;
++    // API requests still reach the native gateway's auth/CSRF middleware.
++    // Run before filesystem handlers: the native memory proxy otherwise
++    // falls back to port 8001 independently of the selected gateway.
++    // Rebuild with DEER_FLOW_INTERNAL_GATEWAY_BASE_URL; do not edit .next.
++    return { beforeFiles: rewrites, afterFiles: [], fallback: [] };
+   },
+ };
+ 

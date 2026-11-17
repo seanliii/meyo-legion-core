@@ -252,6 +252,49 @@ def test_operator_store_hardlink_in_task_cannot_be_used_as_authority(case):
     assert case.identity.project_grant("alice", str(case.work)) is None
 
 
+@pytest.mark.parametrize("value", [True, False, "true", "false", 1, 0, None, {}, []])
+def test_source_write_requires_exact_boolean_operator_authority(case, value):
+    provision(case, exports=[])
+    records = json.loads(case.tokens.read_text())
+    records[TOKEN]["project_grants"][0]["source_write"] = value
+    case.tokens.write_text(json.dumps(records))
+    grant = case.identity.source_write_grant("alice", str(case.work))
+    if value is True:
+        assert grant["source_write"] is True
+        assert grant["export_paths"] == []
+        assert TOKEN not in repr(grant)
+    else:
+        assert grant is None
+    assert case.identity.source_write_grant("bob", str(case.work)) is None
+    if type(value) is not bool:
+        assert case.identity.project_grant("alice", str(case.work)) is None
+
+
+@pytest.mark.parametrize("other", [False, None])
+def test_conflicting_source_permissions_do_not_merge_to_true(case, other):
+    records = {TOKEN: {"user": "alice", "project_grants": [
+        {"root": str(case.work), "export_paths": [], "source_write": True},
+        {"root": str(case.work), "export_paths": []}]}}
+    if other is not None:
+        records[TOKEN]["project_grants"][1]["source_write"] = other
+    case.tokens.write_text(json.dumps(records))
+    assert case.identity.project_grant("alice", str(case.work)) is None
+    assert case.identity.source_write_grant("alice", str(case.work)) is None
+
+
+def test_source_write_revocation_and_caller_json_do_not_grant(case):
+    provision(case)
+    body = payload(case)
+    body["project_context"]["source_write"] = True
+    assert case.identity.source_write_grant("alice", str(case.work)) is None
+    records = json.loads(case.tokens.read_text())
+    records[TOKEN]["project_grants"][0]["source_write"] = True
+    case.tokens.write_text(json.dumps(records))
+    assert case.identity.source_write_grant("alice", str(case.work))
+    provision(case)
+    assert case.identity.source_write_grant("alice", str(case.work)) is None
+
+
 def test_explicit_invalid_default_grant_does_not_gain_broader_session_fallback(case):
     default = case.root / "data/outputs/native-task"
     default.mkdir(parents=True)

@@ -32,6 +32,8 @@ _PASSTHROUGH = {
     # Non-secret, optional public dependency reference. The native adapter pins
     # its bytes and still allocates each user's own home, memory and session.
     "LEGION_JCODE_PUBLIC_MODEL_CACHE",
+    # Host configuration references, not task grants or caller credentials.
+    "LEGION_EXTERNAL_CATALOG_PATH", "LEGION_BILLD_SELF_HOSTED_ORIGIN",
 }
 
 

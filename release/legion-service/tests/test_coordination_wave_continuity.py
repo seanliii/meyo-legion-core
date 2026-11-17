@@ -111,6 +111,298 @@ def install_native(case, *, cancel_after_failure=False, pause=False):
     return members, controls
 
 
+def selection_plan(case):
+    case.mp.setattr(case.core, "_harness_keys", lambda: {"codex", HARNESS})
+    case.mp.setattr(case.core, "_explicit_provider_binding", lambda *a, **kw: {})
+    plan = {"captain": "codex", "team_policy": {"candidate_selection": True,
+            "candidate_selection_collaboration": True}, "tasks": {"A": {}, "B": {}},
+            "candidate_selection_context": {"max_rounds": 3}}
+    plan["project_context"] = case.pc.initialize(TEAM, "original objective", plan, mode="pk",
+        user_id=OWNER, conversation_id=CONVERSATION)
+    rows = [{"task_id": key, "key": key, "status": "done", "final": key + " original final"}
+            for key in ("A", "B")]
+    return plan, rows
+
+
+def select(case, plan, rows):
+    return case.core._run_candidate_selection_collaboration("original objective", plan, TEAM, rows,
+        sequence=1, user_id=OWNER, conversation_id=CONVERSATION)
+
+
+def test_candidate_selection_public_full_final_and_input_only(case):
+    plan, rows = selection_plan(case)
+    rows[0]["final"] = "exact body " * 900 + "original tail"
+    rows[0]["native_facts"] = {"private_reasoning": "never_project"}
+    context = case.core._candidate_selection_context(TEAM, rows, plan["project_context"])
+    assert context["candidates"][0]["final"] == rows[0]["final"]
+    assert "never_project" not in json.dumps(context)
+    assert case.pc.load(TEAM)["attempts"][0]["original_final"] == rows[0]["final"]
+    assert "candidates" not in case.core._candidate_selection_context(
+        TEAM, rows, plan["project_context"], candidate_view="input_only")
+
+
+def test_candidate_selection_owner_selects_only_original_reference(case):
+    plan, rows = selection_plan(case)
+    calls = []
+    def native(key, prompt, **kw):
+        calls.append(kw)
+        assert kw["task_facts"]["native_read_only"] is True
+        assert kw["task_facts"]["native_session_scope"] == "request"
+        assert "B original final" in prompt
+        return {"status": "done", "final": "not the answer", "usage": {"input_tokens": 2},
+                "orchestration_request": {"coordinate": {"action": "complete", "selected_task_id": "B"}}}
+    case.mp.setattr(case.core, "_run_one_with_gateway", native)
+    proposal = select(case, plan, rows)
+    chosen, facts = case.core._apply_candidate_selection(rows, proposal)
+    assert chosen is rows[1] and chosen["final"] == "B original final"
+    assert facts["adjudicated"] and len(calls) == 1
+    assert len(proposal["_usage_overhead_results"]) == 1
+    assert case.core._apply_candidate_selection(rows, {**proposal, "selected_task_id": "third"})[0] is None
+
+
+def test_selection_admission_uses_adapter_not_model_or_key(case):
+    manifest = importlib.import_module("runtime_manifest")
+    case.mp.setattr(manifest, "load_definitions", lambda: {
+        "other-owner": {"source": "builtin", "adapter": "_codex_adapter"},
+        "codex": {"source": "builtin", "adapter": "_cc_adapter"}})
+    assert case.core._selection_read_only_keys() == {"other-owner"}
+    plan, rows = selection_plan(case)
+    plan["captain"] = HARNESS
+    out = select(case, plan, rows)
+    assert out["error"] == "selection_native_read_only_unavailable"
+    assert rows[0]["status"] == "done" and case.core._apply_candidate_selection(rows, out)[0] is None
+
+
+def test_selection_receipts_exact_dedup_and_format_attempts(case):
+    rows = [{"qhash": request, "key": "owner", "model_used": "model-A",
+             "usage": {"input_tokens": tokens}} for request, tokens in (("original", 2), ("repair", 3))]
+    out = case.core._selection_usage_rows([{"execution_usage_records": rows}, *deepcopy(rows)])
+    assert len(out) == 2 and sum(row["usage"]["input_tokens"] for row in out) == 5
+    assert case.core._selection_usage_rows([*out, *deepcopy(out)]) == out
+
+
+@pytest.mark.parametrize("tamper", [False, "qhash", "sha256", "model"])
+def test_selection_unknown_readback_bound_receipt_without_replay(case, tamper):
+    plan, rows = selection_plan(case)
+    case.mp.setattr(case.core, "_explicit_provider_binding", lambda *a, **kw: {"model": "model-A"})
+    def native(key, prompt, **kw):
+        return {"status": "done", "model_used": "model-A", "orchestration_request": {
+            "coordinate": {"action": "complete", "selected_task_id": "B"}}}
+    case.mp.setattr(case.core, "_run_one_with_gateway", native)
+    select(case, plan, rows)
+    packet = case.pc.load(TEAM)
+    scene = next(iter(packet["selection_collaborations"].values()))
+    scene["owner_calls"][0]["status"] = "unknown"
+    if tamper:
+        next(row for row in packet["decisions"] if row.get("selection_recovery_receipt"))[
+            "selection_recovery_receipt"][tamper] = "another-request"
+    case.pc._atomic_write(case.pc._path(TEAM), packet)
+    case.mp.setattr(case.core, "_run_captain_coordination", lambda *a, **kw: pytest.fail("no replay"))
+    recovered = select(case, plan, rows)
+    if tamper:
+        assert recovered["error"] == "selection_recovery_unknown_no_autoresend"
+        assert recovered["collaboration"]["owner_observation_available"]
+    else:
+        assert case.core._apply_candidate_selection(rows, recovered)[0] is rows[1]
+        assert next(iter(case.pc.load(TEAM)["selection_collaborations"].values()))["rounds_reserved"] == 1
+
+
+def test_selection_public_projection_preserves_prose_and_legal_manifest(case):
+    plan, rows = selection_plan(case)
+    rows[0]["final"] = "合法前文 api_key=live-provider-value-123456789 合法结论"
+    rows[0]["prompt"] = "hidden prompt"
+    context = case.core._candidate_selection_context(TEAM, rows, plan["project_context"])
+    public = case.pc.public_selection_value(context)
+    text = json.dumps(public, ensure_ascii=False)
+    assert "合法前文" in text and "合法结论" in text and "live-provider" not in text
+    ref = public["candidates"][0]["public_result_ref"]
+    assert ref["artifact_id"] == ref["sha256"] and ref["store"] == "artifact_store" and "path" not in ref
+    assert Path(context["candidates"][0]["public_result_ref"]["path"]).is_file()
+    assert case.pc.load(TEAM)["attempts"][0]["original_final"] == rows[0]["final"]
+    assert case.pc.public_selection_value({"prompt": "hidden", "metadata": {"command": "hidden"}}) == {}
+
+
+def test_candidate_selection_unknown_never_auto_resends(case):
+    plan, rows = selection_plan(case)
+    calls = []
+    def interrupted(*a, **kw):
+        calls.append(kw)
+        raise RuntimeError("interrupted native boundary")
+    case.mp.setattr(case.core, "_run_captain_coordination", interrupted)
+    with pytest.raises(RuntimeError):
+        select(case, plan, rows)
+    scene = next(iter(case.pc.load(TEAM)["selection_collaborations"].values()))
+    assert scene["rounds_reserved"] == 1 and scene["owner_calls"][0]["status"] == "unknown"
+    recovered = select(case, plan, rows)
+    assert recovered["error"] == "selection_recovery_unknown_no_autoresend" and len(calls) == 1
+    assert next(iter(case.pc.load(TEAM)["selection_collaborations"].values()))["next_sequence"] == 2
+
+
+def test_candidate_selection_namespace_nonreentrant(case):
+    plan, rows = selection_plan(case)
+    with case.pc._packet_lock(TEAM, namespace="selection", blocking=False) as acquired:
+        assert acquired
+        result = select(case, plan, rows)
+        assert result["error"] == "selection_collaboration_in_progress"
+        case.pc.record_coordination(TEAM, "codex", {"sequence": 99, "ok": False})
+
+
+def test_candidate_selection_private_bytes_withheld_original_preserved(case):
+    plan, rows = selection_plan(case)
+    credential = "api_key=" + "live-provider-value-123456789"
+    rows[0]["final"] = credential
+    rows[1]["final"] = "https://km.sankuai.com/private/reference"
+    context = case.core._candidate_selection_context(TEAM, rows, plan["project_context"])
+    assert credential not in json.dumps(context)
+    assert "km.sankuai.com" not in json.dumps(context)
+    assert case.pc.load(TEAM)["attempts"][0]["original_final"] == credential
+
+
+def test_candidate_selection_probe_returned_to_owner_shared_budget(case):
+    plan, rows = selection_plan(case)
+    calls = []
+    plan["resource_budget"] = {"max_calls": 10}
+    def native(key, prompt, **kw):
+        calls.append(kw)
+        if kw["task_facts"]["role"] == "candidate_selection_probe":
+            assert len(kw["_provider_results"]()) >= 3
+            return {"status": "done", "final": "observed supporting fact"}
+        if len(calls) == 1:
+            return {"status": "done", "orchestration_request": {"coordinate": {
+                "action": "continue", "next_plan": {"tasks": {"inspect": {
+                "task": "inspect original evidence", "assigned_harness": "codex",
+                "supporting_context": True, "candidate_view": "all"}}}}}}
+        assert "observed supporting fact" in prompt
+        return {"status": "done", "orchestration_request": {"coordinate": {
+            "action": "complete", "selected_task_id": "A"}}}
+    case.mp.setattr(case.core, "_run_one_with_gateway", native)
+    proposal = select(case, plan, rows)
+    assert len(calls) == 3 and len(proposal["_usage_overhead_results"]) == 3
+    assert case.core._apply_candidate_selection(rows, proposal)[0] is rows[0]
+    assert rows[0]["final"] == "A original final"
+    assert len({call["qhash"] for call in calls}) == 3
+
+
+@pytest.mark.parametrize("admission_only", [False, True])
+def test_candidate_selection_request_budget_and_admission_only(case, admission_only):
+    plan, rows = selection_plan(case)
+    calls = []
+    denial = {"status": "error", "error_envelope": {"category": "runtime_budget",
+        "scope": "request", "retryable": False, "details": {"admission_only": admission_only}}}
+    def owner(*a, **kw):
+        calls.append(kw)
+        return {"ok": True, "captain": "codex", "action": "complete", "selected_task_id": "A"}
+    case.mp.setattr(case.core, "_run_captain_coordination", owner)
+    out = case.core._run_candidate_selection_collaboration("original objective", plan, TEAM, rows,
+        sequence=1, user_id=OWNER, conversation_id=CONVERSATION,
+        _provider_results=lambda: [*rows, denial])
+    assert len(calls) == int(admission_only)
+    if not admission_only:
+        assert out["collaboration"]["runtime_boundary"] == "execution_pause"
+        assert case.core._apply_candidate_selection(rows, out)[0] is None
+
+
+def test_candidate_selection_identity_binds_source_model_resource(case):
+    plan, rows = selection_plan(case)
+    case.mp.setattr(case.core, "_run_captain_coordination", lambda *a, **kw: {
+        "ok": True, "captain": "codex", "action": "complete", "selected_task_id": "A"})
+    select(case, plan, rows)
+    for field, value in (("model_overrides", {"codex": "model-B"}),
+                         ("resource_budget", {"max_calls": 7})):
+        plan[field] = value
+        select(case, plan, rows)
+    assert len(case.pc.load(TEAM)["selection_collaborations"]) == 3
+    with pytest.raises(PermissionError):
+        case.core._run_candidate_selection_collaboration("original objective", plan, TEAM, rows,
+            sequence=1, user_id="other-owner", conversation_id="other-conversation")
+
+
+def test_candidate_selection_invalid_updates_never_mutate_or_select(case):
+    plan, rows = selection_plan(case)
+    before = deepcopy(rows)
+    case.mp.setattr(case.core, "_run_captain_coordination", lambda *a, **kw: {
+        "ok": True, "captain": "codex", "action": "complete", "selected_task_id": "A",
+        "task_updates": {"A": {"task": "overwrite"}}})
+    proposal = select(case, plan, rows)
+    assert rows == before
+    assert case.core._apply_candidate_selection(rows, proposal)[0] is None
+    assert proposal["collaboration"]["runtime_boundary"] == "max_rounds"
+
+
+@pytest.mark.parametrize("crash_phase", ["owner", "probe", "second_owner"])
+def test_candidate_selection_real_flock_sigkill_unknown(case, crash_phase):
+    import multiprocessing
+    import time
+    plan, rows = selection_plan(case)
+    context = multiprocessing.get_context("fork")
+    entered = context.Event()
+    calls = []
+    def native(key, prompt, **kw):
+        role = kw["task_facts"]["role"]
+        calls.append(role)
+        crash = (crash_phase == "owner" or crash_phase == "probe" and role == "candidate_selection_probe"
+                 or crash_phase == "second_owner" and len(calls) == 3)
+        if crash:
+            entered.set()
+            time.sleep(30)
+        if role == "candidate_selection_probe":
+            return {"status": "done", "final": "actual observation"}
+        return {"status": "done", "orchestration_request": {"coordinate": {
+            "action": "continue", "next_plan": {"tasks": {"inspect": {
+                "task": "inspect original", "assigned_harness": "codex",
+                "supporting_context": True, "candidate_view": "all"}}}}}}
+    case.mp.setattr(case.core, "_run_one_with_gateway", native)
+    process = context.Process(target=select, args=(case, plan, rows))
+    process.start()
+    try:
+        assert entered.wait(5), "native boundary was not reached"
+        with case.pc._packet_lock(TEAM, namespace="selection", blocking=False) as acquired:
+            assert not acquired, "cross-process flock must reject a second owner"
+        process.kill()
+        process.join(5)
+        assert process.exitcode == -9
+        recovered = select(case, plan, rows)
+        assert recovered["error"] == "selection_recovery_unknown_no_autoresend"
+        assert not calls, "parent recovery must never launch native work"
+        scene = next(iter(case.pc.load(TEAM)["selection_collaborations"].values()))
+        assert scene["rounds_reserved"] == (2 if crash_phase == "second_owner" else 1)
+    finally:
+        if process.is_alive():
+            process.kill()
+        process.join(5)
+
+
+@pytest.mark.parametrize("optout,quick", [(False, False), (True, False), (False, True)])
+def test_ordinary_pk_default_selection_and_short_path(case, optout, quick):
+    case.mp.setattr(case.core, "_harness_keys", lambda: {HARNESS})
+    case.mp.setattr(case.core, "_selection_read_only_keys", lambda: {HARNESS})
+    case.mp.setattr(case.core, "_appoint_runtime_captain", lambda *a, **kw: HARNESS)
+    case.mp.setattr(case.core, "run_one", lambda key, prompt, **kw: {"status": "done", "final": "original " + kw["task_facts"]["task_id"]})
+    controls = []
+    def selection(question, plan, team, rows, **kw):
+        controls.append((plan, rows))
+        assert any(ev.get("t") == "candidate_ready" for ev in events)
+        return {"ok": True, "captain": HARNESS, "action": "complete", "selected_task_id": "B",
+                "collaboration": {"enabled": True, "runtime_boundary": "owner_returned"}}
+    case.mp.setattr(case.core, "_run_candidate_selection_collaboration", selection)
+    plan = {"captain": HARNESS, "tasks": {key: {"task": "original " + key,
+        "assigned_harness": HARNESS, "assignment_locked": True} for key in ("A", "B")},
+        "team_policy": {"candidate_harnesses": [HARNESS], "min_agents": 2, "max_agents": 2,
+                        "max_failover": 0, "contract_repair_rounds": 0, "continuous_coordination": False}}
+    if optout:
+        plan["team_policy"]["candidate_selection"] = False
+    if quick:
+        plan["execution_depths"] = {"A": "quick", "B": "quick"}
+    events = []
+    out = case.core.dispatch("compare original candidates", plan, mode="pk", qhash=TEAM,
+        user_id=OWNER, conversation_id=CONVERSATION, cb=events.append)
+    assert len(controls) == (0 if optout or quick else 1)
+    if controls:
+        assert out["final_result"]["task_id"] == "B"
+        assert out["final_result"]["final"] == "original B"
+        assert out["selection"]["adjudicated"]
+
+
 def test_reviewer_is_not_an_implicit_delivery_owner(case):
     work = {"key": "work", "task_id": "work", "status": "done", "final": "user deliverable"}
     review = {"key": "review", "task_id": "review", "status": "done",

@@ -14,9 +14,11 @@ import pathlib
 import threading
 from typing import Any
 
+import legion_paths as _paths
+
 HERE = pathlib.Path(__file__).resolve().parent
 BUILTIN_PATH = HERE / "harness_manifest.json"
-EXTERNAL_PATH = HERE / "external_agents.json"
+EXTERNAL_PATH = _paths.external_catalog_path(HERE / "external_agents.json")
 
 _SPEC_FIELDS = (
     "integration", "streaming", "resume", "checkpoint", "tools",
@@ -96,6 +98,7 @@ def _external_definition(item: dict) -> dict:
         "key": str(item.get("key") or ""),
         "name": str(item.get("name") or item.get("key") or ""),
         "source": "external",
+        "execution_role": str(item.get("execution_role") or "agent"),
         "adapter": "external_transport",
         "direction": str(item.get("direction") or "programming"),
         "scenes": list(item.get("scenes") or []),
@@ -181,7 +184,7 @@ def _validate_definition(key: str, item: dict) -> list[str]:
     if item.get("source") == "external":
         runtime = item.get("runtime") or {}
         transports = [row for row in runtime.get("transports") or [] if isinstance(row, dict)]
-        executable = runtime.get("execution_role", "agent") not in {"control-plane", "ui-platform", "capability"}
+        executable = runtime.get("execution_role", "agent") not in {"control-plane", "ui-platform", "capability", "evolution"}
         if executable and specs.get("resume") == "native" and not any(
                 row.get("resume_command") or row.get("native_resume") for row in transports):
             errors.append("resume=native 但 transport 无 resume_command/native_resume 证据")
@@ -241,7 +244,7 @@ def builtin_adapter_specs() -> dict[str, str]:
             if item.get("source") == "builtin" and item.get("adapter")
             and str((item.get("runtime") or {}).get("execution_role")
                     or item.get("execution_role") or "agent")
-            not in {"capability", "control-plane", "ui-platform"}}
+            not in {"capability", "control-plane", "ui-platform", "evolution"}}
 
 
 def resolve_builtin_adapters(module_name: str = "harness_registry") -> dict[str, Any]:

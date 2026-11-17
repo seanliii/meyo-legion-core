@@ -8,6 +8,13 @@ computer-server readiness is intentionally not used to declare display readiness
 from __future__ import annotations
 
 import json
+import hashlib
+import fcntl
+import stat
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
 import os
 import re
 import shutil
@@ -36,6 +43,247 @@ _SCENE_TTL_S = 10.0
 _SCENE_CACHE: dict[str, tuple[float, dict]] = {}
 _SCENE_REFRESHING: set[str] = set()
 _SCENE_LOCK = threading.RLock()
+
+
+_PERSONAL_DEVICE_LOCK = threading.RLock()
+_PERSONAL_DEVICE_LIMIT = 50
+_PERSONAL_DEVICE_BYTES = 128 * 1024
+_PERSONAL_PLATFORMS = {"windows", "macos", "linux", "android", "other"}
+
+
+def _personal_providers(*, with_errors=False):
+    providers = [{"id": "official", "name": "BilldDesk 官网",
+                  "viewer_url": "https://desk.hsslive.cn/#/remote",
+                  "download_url": "https://desk.hsslive.cn/",
+                  "tutorial_url": "https://desk.hsslive.cn/#/tutorial",
+                  "repository_url": "https://github.com/galaxy-s10/billd-desk",
+                  "mode": "official_pro_manual"}]
+    origin = os.environ.get("LEGION_BILLD_SELF_HOSTED_ORIGIN", "")
+    try:
+        parsed = urlsplit(origin)
+        valid = (origin == origin.strip() and parsed.scheme == "https" and
+                 bool(parsed.hostname) and parsed.username is None and
+                 parsed.password is None and not parsed.path and not parsed.query and
+                 not parsed.fragment and "?" not in origin and "#" not in origin and
+                 not re.search(r"[\s\\\x00-\x1f\x7f]", origin) and
+                 parsed.netloc.isascii() and parsed.port != 0 and
+                 re.fullmatch(r"https://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::[0-9]+)?", origin))
+    except ValueError:
+        valid = False
+    if valid:
+        providers.append({"id": "self_hosted", "name": "BilldDesk 自托管",
+                          "viewer_url": origin + "/#/remote", "mode": "self_hosted_manual"})
+    errors = {"self_hosted": "invalid_self_hosted_origin"} if origin and not valid else {}
+    return (providers, errors) if with_errors else providers
+
+
+def _personal_uid(uid):
+    if not isinstance(uid, str) or not uid.strip() or len(uid) > 4096:
+        raise ValueError("invalid_uid")
+    return uid
+
+
+def _personal_fields(name, device_code, platform, provider):
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+        raise ValueError("invalid_name")
+    if not isinstance(device_code, str):
+        raise ValueError("invalid_device_code")
+    code = device_code.replace(" ", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,80}", code):
+        raise ValueError("invalid_device_code")
+    if not isinstance(platform, str) or platform not in _PERSONAL_PLATFORMS:
+        raise ValueError("invalid_platform")
+    if not isinstance(provider, str) or provider not in {"official", "self_hosted"}:
+        raise ValueError("invalid_provider")
+    return name.strip(), code
+
+
+@contextmanager
+def _personal_store(uid):
+    """Pin untrusted descendants with directory FDs; lock the entire transaction."""
+    uid = _personal_uid(uid)
+    fds = []
+    with _PERSONAL_DEVICE_LOCK:
+        try:
+            configured = legion_paths.legion_dir()
+            if not configured or "~" in configured:
+                raise ValueError("storage_unresolved")
+            # Only the operator-configured root is allowed to resolve symlinks.
+            root = Path(configured).resolve()
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            parent = os.open(root, flags)
+            fds.append(parent)
+            for part in ("personal-devices", hashlib.sha256(uid.encode("utf-8")).hexdigest()):
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
+                parent = os.open(part, flags, dir_fd=parent)
+                fds.append(parent)
+                os.fchmod(parent, 0o700)
+            lock_flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+            # Separate first creation from opening the stable inode on APFS.
+            try:
+                lock = os.open(".lock", lock_flags | os.O_CREAT | os.O_EXCL,
+                               0o600, dir_fd=parent)
+            except FileExistsError:
+                lock = os.open(".lock", lock_flags, dir_fd=parent)
+            fds.append(lock)
+            info = os.fstat(lock)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("storage_unsafe")
+            os.fchmod(lock, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield parent
+        finally:
+            for fd in reversed(fds):
+                os.close(fd)
+
+
+def _personal_read(directory, uid):
+    try:
+        fd = os.open("devices.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+    except FileNotFoundError:
+        return []
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("storage_unsafe")
+        if info.st_size > _PERSONAL_DEVICE_BYTES:
+            raise ValueError("storage_too_large")
+        os.fchmod(handle.fileno(), 0o600)
+        raw = handle.read(_PERSONAL_DEVICE_BYTES + 1)
+    if len(raw) > _PERSONAL_DEVICE_BYTES:
+        raise ValueError("storage_too_large")
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise ValueError("storage_invalid") from None
+    if not isinstance(data, dict) or data.get("owner") != uid:
+        raise ValueError("storage_owner_mismatch")
+    rows = data.get("devices")
+    if not isinstance(rows, list) or len(rows) > _PERSONAL_DEVICE_LIMIT:
+        raise ValueError("storage_invalid")
+    ids, codes = set(), set()
+    clean = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("storage_invalid")
+        name, code = _personal_fields(row.get("name"), row.get("device_code"),
+                                      row.get("platform"), row.get("provider"))
+        device_id = row.get("id")
+        if (not isinstance(device_id, str) or not re.fullmatch(r"[0-9a-f]{32}", device_id) or
+                device_id in ids or (code, row["provider"]) in codes or
+                any(type(row.get(key)) is not int or row[key] < 0
+                    for key in ("created_at", "updated_at"))):
+            raise ValueError("storage_invalid")
+        ids.add(device_id)
+        codes.add((code, row["provider"]))
+        # Whitelist fields: persisted URLs, passwords and claims are never trusted.
+        clean.append({"id": device_id, "name": name, "device_code": code,
+                      "platform": row["platform"], "provider": row["provider"],
+                      "created_at": row["created_at"], "updated_at": row["updated_at"],
+                      "state": "registered", "connection_state": "not_observed",
+                      "agent_control_available": False})
+    return clean
+
+
+def _personal_write(directory, uid, rows):
+    payload = json.dumps({"owner": uid, "devices": rows}, ensure_ascii=False).encode("utf-8")
+    if len(payload) > _PERSONAL_DEVICE_BYTES:
+        raise ValueError("storage_too_large")
+    temporary = ".devices-" + uuid.uuid4().hex + ".tmp"
+    created = False
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        created = True
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, "devices.json", src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        if created:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+
+
+def _personal_view(row, providers):
+    viewer = next((item["viewer_url"] for item in providers if item["id"] == row["provider"]), "")
+    return {**row, "viewer_url": viewer}
+
+
+def _personal_error(error):
+    # Never expose filesystem paths, device codes or exception diagnostics.
+    return {"ok": False, "error": str(error) if isinstance(error, ValueError) and
+            re.fullmatch(r"[a-z_]+", str(error)) else "storage_error"}
+
+
+def personal_devices(uid):
+    """List registrations, not observed connections; no remote requests."""
+    try:
+        with _personal_store(uid) as directory:
+            rows = _personal_read(directory, uid)
+        providers, errors = _personal_providers(with_errors=True)
+        result = {"ok": True, "devices": [_personal_view(row, providers) for row in rows],
+                  "total": len(rows), "providers": providers}
+        if errors:
+            result["configuration_errors"] = errors
+        return result
+    except (OSError, ValueError, RuntimeError, UnicodeError) as error:
+        return _personal_error(error)
+
+
+def register_personal_device(uid, name, device_code, platform="other", provider="official", authorized=False):
+    if authorized is not True:
+        return {"ok": False, "error": "authorization_required"}
+    try:
+        name, code = _personal_fields(name, device_code, platform, provider)
+        providers = _personal_providers()
+        if provider not in {item["id"] for item in providers}:
+            raise ValueError("provider_unavailable")
+        with _personal_store(uid) as directory:
+            rows = _personal_read(directory, uid)
+            prior = next((row for row in rows if row["device_code"] == code and row["provider"] == provider), None)
+            if prior is None and len(rows) >= _PERSONAL_DEVICE_LIMIT:
+                raise ValueError("device_limit")
+            now = int(time.time())
+            device = {"id": prior["id"] if prior else uuid.uuid4().hex,
+                      "name": name, "device_code": code, "platform": platform, "provider": provider,
+                      "created_at": prior["created_at"] if prior else now, "updated_at": now,
+                      "state": "registered", "connection_state": "not_observed",
+                      "agent_control_available": False}
+            if prior is None:
+                rows.append(device)
+            else:
+                rows[rows.index(prior)] = device
+            _personal_write(directory, uid, rows)
+        return {"ok": True, "device": _personal_view(device, providers)}
+    except (OSError, ValueError, RuntimeError, UnicodeError) as error:
+        return _personal_error(error)
+
+
+def remove_personal_device(uid, device_id):
+    try:
+        if not isinstance(device_id, str) or not re.fullmatch(r"[0-9a-f]{32}", device_id):
+            raise ValueError("invalid_device_id")
+        with _personal_store(uid) as directory:
+            rows = _personal_read(directory, uid)
+            retained = [row for row in rows if row["id"] != device_id]
+            removed = len(retained) != len(rows)
+            if removed:
+                _personal_write(directory, uid, retained)
+        return {"ok": True, "removed": removed, "remote_session_terminated": False,
+                "note": "仅移除本地设备登记；未终止任何远程会话，请在 BilldDesk 中自行断开。"}
+    except (OSError, ValueError, RuntimeError, UnicodeError) as error:
+        return _personal_error(error)
 
 
 def _device_docker_host(environment=None):

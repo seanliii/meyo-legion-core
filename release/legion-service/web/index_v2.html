@@ -789,6 +789,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
       <button class="sb-hub-entry" id="openCapabilityHub" type="button"><span class="he-icon">🧰</span><span class="he-main"><b>能力入口</b><small>研究、网页、图片、代码、PPT…</small></span><span class="he-arr">›</span></button>
       <button class="sb-hub-entry" id="openGameWorkbench" type="button"><span class="he-icon">🎮</span><span class="he-main"><b>游戏制作</b><small>参考视频与图片，制作或继续原作品</small></span><span class="he-arr">›</span></button>
       <button class="sb-hub-entry" id="openMobileHub" type="button"><span class="he-icon">📱</span><span class="he-main"><b>云手机</b><small>操作手机、玩 App、安装软件、完成生活任务</small></span><span class="he-arr">›</span></button>
+      <button class="sb-hub-entry" id="openPersonalDevicesHub" type="button"><span class="he-icon" aria-hidden="true">▣</span><span class="he-main"><b>接入个人设备</b><small>保存本人设备，通过 BilldDesk 授权远控</small></span><span class="he-arr" aria-hidden="true">›</span></button>
       <button class="sb-hub-entry" id="openCloudFilesHub" type="button"><span class="he-icon">🖥️</span><span class="he-main"><b>云电脑</b><small>管理文件、开发软件、制作并交付项目</small></span><span class="he-arr">›</span></button>
       <button class="sb-hub-entry" id="openVerificationCenter" type="button" hidden><span class="he-icon">🔬</span><span class="he-main"><b>开发验收中心</b><small>历史、过程、产物、质量与版本升级统一验收</small></span><span class="he-arr">›</span></button>
       <!-- 最近产物:用户2026-08-31 #2 只要单入口不铺列表·点开才进全屏面板(此前容器缺失+从未调用→完全没显示) -->
@@ -2672,6 +2673,7 @@ $('#openGameWorkbench')&&($('#openGameWorkbench').onclick=_openGameWorkbench);
 $('#openMobileHub')&&($('#openMobileHub').onclick=()=>{setMobileSidebar(false);openMobilePanel();});
 $('#openLegionHub')&&($('#openLegionHub').onclick=openLegionHub);
 $('#openCloudFilesHub')&&($('#openCloudFilesHub').onclick=openCloudFilesHub);
+$('#openPersonalDevicesHub')&&($('#openPersonalDevicesHub').onclick=()=>{setMobileSidebar(false);window.openPersonalDevicesPanel?.();});
 $('#openVerificationCenter')&&($('#openVerificationCenter').onclick=openVerificationCenter);
 document.querySelectorAll('.sb-mi[data-adv]').forEach(el=>el.onclick=()=>{
   const fn=ADV_OPENERS[el.dataset.adv];
@@ -3842,7 +3844,8 @@ function renderLegionAnswer(results, data, msgEl){
   const failed=results.filter(r=>_looksInternalFailure(r));
   // 推荐只信后端独立审计/裁判；绝不再用字数、产物数量或耗时拼一个假质量分。
   const selectionSource=data?.selection?.source||'';
-  const unresolvedSelection=selectionSource==='unadjudicated_candidates'||selectionSource==='unresolved_winner';
+  const ownerSelection=data?.selection?.source==='harness'&&data.selection.status==='selected'&&data.selection.adjudicated===true;
+  const unresolvedSelection=selectionSource==='unadjudicated_candidates'||selectionSource==='unresolved_winner'||data?.selection?.fallback==='unadjudicated_candidates'||(data?.selection?.requested===true&&!ownerSelection);
   const audit=data?.success_audit&&typeof data.success_audit==='object'?data.success_audit:null;
   const auditSelected=selectionSource==='success_audit'||(!selectionSource&&Boolean(audit?.winner));
   const rejectedBundle=Boolean(audit?.winner_rejected);
@@ -3854,7 +3857,7 @@ function renderLegionAnswer(results, data, msgEl){
   const visible=scored.filter(r=>r.status==='done'&&!_looksInternalFailure(r));
   const rowFor=id=>{if(!id)return null;for(const field of ['task_id','key']){const matches=visible.filter(row=>row[field]===id);if(matches.length)return matches.length===1?matches[0]:null;}return null;};
   const winnerRow=rowFor(winnerKey),auditRow=rowFor(audit?.winner),judgeRow=rowFor(data?.judge?.winner);
-  const selectedId=data?.selection?.selected_task_id||'';
+  const selectedId=data?.selection?.selected_task_id||data?.selection?.task_id||'';
   const selectedRow=selectedId?rowFor(selectedId):null;
   const auditBound=Boolean(winnerRow&&auditRow===winnerRow&&(!selectedId||selectedRow===winnerRow));
   const judgeBound=Boolean(winnerRow&&judgeRow===winnerRow);
@@ -3882,19 +3885,21 @@ function renderLegionAnswer(results, data, msgEl){
     const usage=r.usage||{};
     // 评分与资源分别展示：审计分只来自独立审计；Token 只来自 Harness 原生数据。
     const scoreLine=r.status==='done'?`<div class="la-scores">${r._score!=null?`<span class="la-score${isRecommended?' win':''}" title="独立质量审计或后端裁判评分">质量 ${r._score}</span>`:''}<span class="la-score tabnum" title="${esc(_usageBrief(usage,r.model_used||r.model,r.elapsed))}">${esc(r.model_used||r.model||'模型未上报')} · ${usage.available?`${usage.complete===false?'用量不完整 · ':''}输入 ${usage.input_tokens==null?'未上报':_num(usage.input_tokens)} / 输出 ${usage.output_tokens==null?'未上报':_num(usage.output_tokens)}`:'Token 未上报'}${usage.cost_usd!=null?` · $${Number(usage.cost_usd).toFixed(4)}`:''}</span>${r.elapsed!=null?`<span class="la-score tabnum">总耗时 ${r.elapsed}s${usage.duration_api_ms!=null?` · API ${(Number(usage.duration_api_ms)/1000).toFixed(2)}s`:''}</span>`:''}</div>`:'';
-    const reasonText=(judgeBound&&data?.judge?.reason)||(!rejectedBundle&&data?.winner_reason)||(auditReasonOnWinner&&audit?.reason);
+    const reasonText=(ownerSelection&&isWinner&&data.selection.reason)||(judgeBound&&data?.judge?.reason)||(!rejectedBundle&&data?.winner_reason)||(auditReasonOnWinner&&audit?.reason);
     const reasonLabel=isRecommended?'🏆 推荐理由':auditSelected&&auditBound?'审计结论':'选择说明';
     const reason=isWinner&&reasonText?`<div class="judge-reason"><b>${reasonLabel}</b>·${esc(reasonText)}</div>`:'';
     const body=r.status==='done'?(rich(r.final||'')+reason):`${fkBadge}<span style="color:var(--err)">${esc(r.error||r.status)}</span>`;
     return `<div class="la-card${isRecommended?' best':''}">
       <div class="la-head" data-i="${i}"><div class="la-av" style="background:${colorOf(actual||r.key)}">${esc(authorName[0]||'A')}</div>
         <div style="min-width:0"><span class="la-name">${esc(authorName)}</span>${attribution?`<div class="as-d la-attribution">${esc(attribution)}</div>`:''}</div>
-        ${isRecommended?'<span class="la-badge">🏆 推荐</span>':isWinner?`<span class="la-badge">${auditSelected?'审计待处理':'当前选中'}</span>`:''}
+        ${isRecommended?'<span class="la-badge">🏆 推荐</span>':isWinner?`<span class="la-badge">${ownerSelection?'首脑采用的原稿':auditSelected?'审计待处理':'当前选中'}</span>`:''}
         <span class="la-meta">${r.status==='done'?(r.elapsed||0)+'s':r.status}</span>${scoreLine}</div>
       <div class="la-body${i>0&&results.length>2?' collapsed':''}">${body}</div></div>`;
   }).join('');
   if(unresolvedSelection&&!winnerKey){
-    ans.insertAdjacentHTML('afterbegin','<div class="as-d" style="margin-bottom:10px">候选结果尚未裁决，按原任务顺序展示；末位不代表更优。</div>');
+    ans.insertAdjacentHTML('afterbegin','<div class="as-d" role="status" style="margin-bottom:10px">首脑尚未采用某份原稿；原候选与文件完整保留，按任务顺序展示，顺序不代表质量。</div>');
+  }else if(ownerSelection&&winnerRow){
+    ans.insertAdjacentHTML('afterbegin','<div class="as-d" role="status" style="margin-bottom:10px">首脑已采用以下原稿，正文与文件未合并改写；其余候选仍可查看。这是本次采用决定，不代表独立评测已证明更优。</div>');
   }
   if(rejectedBundle){
     const notice=document.createElement('div');notice.className='diagnostic-card';
@@ -4180,8 +4185,35 @@ function _renderRuntimePulse(d,ag,agentKey,targetProc,msgEl){
   return false;
 }
 // 成员完成与整单完成分开：只读 team 的持久结果，绝不把 result.x / final_preview 当全文。
+function _renderCandidateReady(d,msgEl){
+  if(d.t!=='candidate_ready'||msgEl._memberDeliveryFinal||!msgEl.isConnected)return false;
+  if(d.team_id&&msgEl.dataset.teamId&&d.team_id!==msgEl.dataset.teamId)return false;
+  const r=d.result;
+  if(!r||typeof r!=='object'||r.supporting_context)return false;
+  const taskId=String(d.task_id||r.task_id||r.key||'');
+  if(!taskId)return false;
+  const arts=(r.artifacts||[]).filter(a=>a&&typeof a==='object'&&typeof a.url==='string');
+  const text=typeof r.final==='string'?r.final:'';
+  if(!text.trim()&&!arts.length)return false;
+  const ans=msgEl.querySelector('.legion-answers');if(!ans)return false;
+  msgEl._memberDeliveryCards=msgEl._memberDeliveryCards||new Map();
+  const signature=JSON.stringify([text,r.status,arts.map(a=>[a.url,a.sha256,a.bytes])]);
+  const prior=msgEl._memberDeliveryCards.get(taskId);
+  if(prior?.signature===signature)return true;
+  const owner=String(r.relay_by||r.harness||r.assigned_harness||d.agent||taskId);
+  const card=prior?.card||document.createElement('section');
+  card.className='la-card member-delivery';card.dataset.taskId=taskId;card.dataset.agent=owner;
+  card.innerHTML=`<div class="la-head"><span class="la-name">${esc(nameOf(owner))}</span><span class="la-meta">原候选已交回 · ${r.status==='partial'?'部分交付 · ':''}尚未择优</span></div><div class="la-body">${rich(text)}${arts.map(artifactHTML).join('')}</div>`;
+  if(!prior)ans.appendChild(card);
+  msgEl._memberDeliveryCards.set(taskId,{signature,card});
+  let note=ans.querySelector('.member-delivery-note');
+  if(!note){note=document.createElement('div');note.className='member-delivery-note';note.setAttribute('role','status');ans.prepend(note);}
+  note.textContent='原候选现在即可打开和下载；首脑仍在查证，尚未选择最终采用稿。';
+  hydrateArtifacts(card);_chatScroll(false);return true;
+}
 function _memberDeliverySignal(d,msgEl){
   if(d.team_id&&!msgEl.dataset.teamId)msgEl.dataset.teamId=d.team_id;
+  if(_renderCandidateReady(d,msgEl))return;
   if(d.t==='task_completed'||(d.t==='task_status'&&d.status==='done'))_loadMemberDeliveries(msgEl);
 }
 function _loadMemberDeliveries(msgEl){
@@ -4325,7 +4357,7 @@ function applyLiveEvent(ev,d,msgEl,state){
     liveTeamId='';return;
   }
   if(ev!=='step'||entry?.complete)return;
-  if(!history)_memberDeliverySignal(d,msgEl);
+  _memberDeliverySignal(d,msgEl);
   // auto 待定卡:后端定了队形就把这张卡升级成对应现场。orchestrate 靠 captain 事件识别(它的 tasklist
   // 复用 pk 执行器会带 mode:pk·会误判);relay/pk 靠 tasklist/dispatch.mode。captain 信号优先。
   if(msgEl._autoMode){

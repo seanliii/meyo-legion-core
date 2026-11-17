@@ -10,6 +10,8 @@ import json
 import pathlib
 import re
 import subprocess
+import sys
+from contextlib import nullcontext
 import tempfile
 import tomllib
 
@@ -233,21 +235,46 @@ def build_spec(key, url, rev, info):
 
 
 def generate(url, key=""):
-    match = re.match(r"https://github\.com/([^/]+)/([^/]+)(?:\.git)?/?$", url)
+    match = re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/?", url)
     if not match:
         raise ValueError(f"不是标准 GitHub URL:{url}")
-    repo = match.group(2)
+    repo = match.group(2).removesuffix(".git")
+    if not repo or repo in {".", ".."}:
+        raise ValueError(f"不是标准 GitHub URL:{url}")
+    url = f"https://github.com/{match.group(1)}/{repo}"
     key = key or repo.lower()[:24]
+    provider = sys.modules.get("agent_tool_provider")
+    bound = getattr(provider, "_bound_native_onboard", None)
+    lease = bound() if bound is not None else None
+    if lease is not None:
+        lease.check()
     # 自动识别只需短暂读取源码；旧实现 mkdtemp 后从不删除，每接一家就永久泄漏一份 clone。
     # TemporaryDirectory 保证成功、异常和超时三条路径都会回收，不把高频 onboarding 变成磁盘炸弹。
     with tempfile.TemporaryDirectory(prefix="autospec-") as tmp:
-        repo_dir = pathlib.Path(tmp) / repo
-        subprocess.run(["git", "clone", "--depth", "1", url, str(repo_dir)],
-                       check=True, capture_output=True, timeout=300)
-        rev = subprocess.run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-                             check=True, capture_output=True, text=True, timeout=30).stdout.strip()
-        info = analyze(repo_dir)
-        spec = build_spec(key, url, rev, info)
+        research_dir = pathlib.Path(tmp).resolve()
+        repo_dir = research_dir / repo
+        scope = lease.research_scope(research_dir) if lease is not None else nullcontext()
+        with scope:
+            import external_agent_registry as R
+            if lease is not None:
+                lease.check()
+            ok, detail = R._run_probe_command(
+                ["git", "clone", "--depth", "1", url, str(repo_dir)],
+                research_dir, timeout_s=300, key=key)
+            if not ok:
+                raise RuntimeError("autospec source clone failed: " + detail[-2000:])
+            ok, detail = R._run_probe_command(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                repo_dir, timeout_s=30, key=key)
+            if not ok or not re.fullmatch(r"[0-9a-f]{40}", detail.strip()):
+                raise RuntimeError("autospec source revision failed: " + detail[-2000:])
+            rev = detail.strip()
+            if lease is not None:
+                lease.check()
+            info = analyze(repo_dir)
+            spec = build_spec(key, url, rev, info)
+            if lease is not None:
+                lease.check()
     return {"spec": spec, "kind": info["kind"], "hint": info["hint"],
             "revision": rev}
 

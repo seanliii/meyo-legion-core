@@ -224,6 +224,7 @@ def project_grant(user_id: str, root: str) -> dict | None:
                     if control.is_relative_to(Path(candidate).resolve()):
                         return None
         selections = []
+        source_write = None
         for record in records.values():
             if not isinstance(record, dict) or record.get("user") != user_id:
                 continue
@@ -233,6 +234,12 @@ def project_grant(user_id: str, root: str) -> dict | None:
             for grant in grants:
                 if not isinstance(grant, dict) or grant.get("root") != str(wanted):
                     continue
+                permission = grant.get("source_write", False)
+                if type(permission) is not bool:
+                    return None
+                if source_write is not None and source_write is not permission:
+                    return None  # Conflicting exact grants must not widen access.
+                source_write = permission
                 exports = grant.get("export_paths")
                 if not isinstance(exports, list) or len(exports) > 5000:
                     return None
@@ -252,11 +259,20 @@ def project_grant(user_id: str, root: str) -> dict | None:
                                for g in record["project_grants"])
                        for record in records.values())
         if matching:
-            return {"source": "operator_project_grant", "user_id": user_id,
-                    "root": str(wanted), "export_paths": selections}
+            result = {"source": "operator_project_grant", "user_id": user_id,
+                      "root": str(wanted), "export_paths": selections}
+            if source_write is True:
+                result["source_write"] = True
+            return result
     except (OSError, ValueError, TypeError, RuntimeError):
         pass
     return None
+
+
+def source_write_grant(user_id: str, root: str) -> dict | None:
+    """Recheck operator authority on every call; caller task JSON cannot grant it."""
+    grant = project_grant(user_id, root)
+    return grant if grant is not None and grant.get("source_write") is True else None
 
 
 def authorized_project_path(user_id: str, root: str, *,
