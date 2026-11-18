@@ -759,7 +759,8 @@ def export_project_artifacts(paths: list[str], *, team_id: str, task_id: str,
             destination = str(pathlib.Path(stored["root"]) / file["relative_path"])
             rows.append({
                 "name": pathlib.Path(destination).name, "path": destination,
-                "url": _url_for(destination), "kind": _kind(destination),
+                "url": _url_for(destination) + "?sid=" + quote(conversation_id, safe=""),
+                "kind": _kind(destination),
                 "bytes": file["bytes"], "sha256": file["sha256"],
                 "user_id": owner, "team_id": team_id, "task_id": task_id,
                 "export_snapshot_id": stored["snapshot_id"],

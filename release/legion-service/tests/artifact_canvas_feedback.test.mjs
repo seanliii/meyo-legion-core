@@ -37,6 +37,52 @@ test("画布引用仅同源授权成果路径，不能接收凭据URL或外站",
   }
 });
 
+test("导出URL只补原会话scope，私有与共享入口保留且download不产生双问号", () => {
+  const context = vm.createContext({ URL, location: { origin: "https://example.test", href: "https://example.test/" } });
+  vm.runInContext(fn("_artifactContextUrl"), context);
+  const plain = "/home-outputs/exports/a/b/data.csv";
+  assert.equal(context._artifactContextUrl(plain, "c6e26df2b25d"), `${plain}?sid=c6e26df2b25d`);
+  const original = `${plain}?sid=original`;
+  assert.equal(context._artifactContextUrl(original, "current"), original, "已有sid不能被当前会话覆盖");
+  const shared = `${plain}?share=shared-token`;
+  assert.equal(context._artifactContextUrl(shared, "current"), shared, "共享scope保持原路径与query");
+  const sharedPath = "/shared/original/home-outputs/exports/a/b/data.csv";
+  assert.equal(context._artifactContextUrl(sharedPath, "current", true), sharedPath);
+  const external = `https://other.test${plain}`;
+  assert.equal(context._artifactContextUrl(external, "current", true), external);
+  const download = context._artifactContextUrl(`${original}&ticket=private`, "current", true);
+  assert.equal(download, `${original}&ticket=private&download=1`);
+  assert.equal((download.match(/\?/g) || []).length, 1);
+  assert.equal(new URL(download, "https://example.test").searchParams.get("download"), "1");
+  assert.equal(new URL(download, "https://example.test").searchParams.get("sid"), "original");
+});
+
+test("跨会话画布优先使用产物原sid，不用当前会话冒认授权", () => {
+  const calls = [];
+  const context = vm.createContext({
+    curSession: "sid-current",
+    openLightbox(...args) { calls.push(args); },
+  });
+  vm.runInContext([fn("_artifactCanvasKind"), fn("openArtifactCanvas")].join("\n"), context);
+  context.openArtifactCanvas({ url: "/home-outputs/exports/a/b/data.csv", name: "data.csv", sid: "sid-original" });
+  assert.equal(calls[0][3].sid, "sid-original");
+  context.openArtifactCanvas({ url: "/home-outputs/exports/a/b/data.csv", name: "data.csv" }, { sid: "sid-context" });
+  assert.equal(calls[1][3].sid, "sid-context");
+});
+
+test("最近产物旧行优先a.sid，缺失时才回退当前curSession", () => {
+  const context = vm.createContext({
+    URL, location: { origin: "https://example.test", href: "https://example.test/" }, curSession: "sid-current",
+    esc: value => String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"),
+    _artIcon: () => "", _artifactPresentationRole: () => "document", _artifactSizeLabel: () => "38 B",
+    _canPreviewInBrowser: () => false,
+  });
+  vm.runInContext([fn("_artifactContextUrl"), fn("_artRowHtml")].join("\n"), context);
+  const row = { url: "/home-outputs/exports/a/b/data.csv", name: "data.csv", bytes: 38 };
+  assert.match(context._artRowHtml({ ...row, sid: "sid-original" }, 0, 0), /sid=sid-original&amp;download=1/);
+  assert.match(context._artRowHtml(row, 0, 0), /sid=sid-current&amp;download=1/);
+});
+
 test("反馈保留现有草稿，注明原会话、文件、文字或位置，不宣称已发送", () => {
   const context = vm.createContext({});
   assert.ok(fn("_canvasFeedbackText"));
@@ -132,6 +178,8 @@ test("截图等待底图解码完成，而不是只有naturalWidth就画空白�
 
 const snapshot = "b".repeat(64);
 const artifactUrl = `/home-outputs/exports/${"a".repeat(64)}/${snapshot}/nested/index.html`;
+const scopedArtifactUrl = `${artifactUrl}?sid=sid-a`;
+const scopedDownloadUrl = `${scopedArtifactUrl}&download=1`;
 const grant = {
   ok: true, preview_url: `/artifact-preview/__ut_cap${artifactUrl}`,
   preview_nonce: "__ut_nonce", observation_token: "__ut_observation_token", snapshot_id: snapshot,
@@ -204,7 +252,7 @@ function previewCanvas(fetcher = () => jsonResponse(grant)) {
     fetch(url, options) { calls.push({ url, options }); return Promise.resolve(fetcher(url, options)); },
   });
   const previewHelpers = Array.from(html.matchAll(/^(?:async )?function ((?:_canvasPreview|_renderCanvasPreview)\w*)\(/gm), m => m[1]);
-  const names = ["esc", "_canvasArtifactUrl", "_canvasDraftKey", "_canvasFeedbackText",
+  const names = ["esc", "_canvasArtifactUrl", "_artifactContextUrl", "_canvasDraftKey", "_canvasFeedbackText",
     "_returnCanvasFeedback", ...previewHelpers, "openLightbox", "closeLightbox"];
   vm.runInContext([...new Set(names)].map(fn).join("\n"), ctx);
   const message = (overrides = {}) => ({
@@ -282,8 +330,20 @@ test("Blob转交只留本地待下载，父页真人点击才发起默认二进�
   assert.match(h.node("#lbExportStatus").textContent, /浏览器/);
   assert.match(h.node("#lbExportStatus").textContent, /是否保存成功请查看/);
   assert.doesNotMatch(h.node("#lbExportStatus").textContent, /(?:^|[；。])(?:保存成功|已保存)/);
-  assert.equal(h.node("#lbDl").href, `${artifactUrl}?download=1`, "原文件下载地址不变");
+  assert.equal(h.node("#lbDl").href, scopedDownloadUrl, "原文件下载地址不变");
   assert.doesNotMatch(h.node("#lbContent").frame.getAttribute("sandbox"), /allow-downloads|allow-same-origin/);
+});
+
+test("文本预览fetch与原文件下载共用URL内原sid，不被当前会话替换", async () => {
+  const h = previewCanvas(() => new Response("real bytes", { status: 200 }));
+  h.ctx.curSession = "sid-current";
+  const original = `${artifactUrl.replace("index.html", "notes.txt")}?sid=sid-original`;
+  await h.ctx.openLightbox("text", original, "notes.txt");
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].url, `${original}&download=1`);
+  assert.equal(h.node("#lbDl").href, `${original}&download=1`);
+  assert.equal(h.ctx._canvasState.sid, "sid-original");
+  assert.equal((h.calls[0].url.match(/\?/g) || []).length, 1);
 });
 
 test("ArrayBuffer和文件名只按字节与纯文字接收，不解析HTML或URL", async () => {
@@ -416,11 +476,11 @@ test("HTML画布和外开共用授权capability，原下载不变且仍为opaque
   await h.ctx.openLightbox("html", artifactUrl, "index.html", { sid: "sid-a" });
   assert.equal(h.calls.length, 1);
   assert.equal(h.calls[0].url, "/api/legion/artifact/preview");
-  assert.deepEqual(JSON.parse(h.calls[0].options.body), { sid: "sid-a", url: artifactUrl });
+  assert.deepEqual(JSON.parse(h.calls[0].options.body), { sid: "sid-a", url: scopedArtifactUrl });
   assert.equal(h.calls[0].options.method, "POST");
   assert.equal(h.node("#lbContent").frame.src, grant.preview_url);
   assert.equal(h.node("#lbExternal").href, grant.preview_url);
-  assert.equal(h.node("#lbDl").href, `${artifactUrl}?download=1`);
+  assert.equal(h.node("#lbDl").href, scopedDownloadUrl);
   assert.equal(h.node("#lbContent").frame.getAttribute("sandbox"), "allow-scripts allow-forms allow-popups");
   assert.equal(h.node("#lbContent").frame.getAttribute("referrerpolicy"), "no-referrer");
   assert.equal(h.listeners.size, 1);
@@ -437,7 +497,7 @@ test("收到失败立刻可见；仅成功回执入原单反馈，仍保留用�
   assert.equal(h.calls.length, 2);
   assert.equal(h.calls[1].url, "/api/legion/artifact/preview-observation");
   const body = JSON.parse(h.calls[1].options.body);
-  assert.equal(body.sid, "sid-a"); assert.equal(body.url, artifactUrl);
+  assert.equal(body.sid, "sid-a"); assert.equal(body.url, scopedArtifactUrl);
   assert.equal(body.observation_token, grant.observation_token);
   assert.equal(body.observation.kind, "network_error");
   assert.equal(body.observation.resource, "https://cdn.test/");
@@ -624,7 +684,7 @@ test("仅明确422不支持可回旧安全预览，鉴权/文件/服务错误必
     ok: false, unsupported: true, error_code: "preview_unsupported",
   }, 422));
   await legacy.ctx.openLightbox("html", artifactUrl, "index.html", { sid: "sid-a" });
-  assert.equal(legacy.node("#lbContent").frame.src, artifactUrl);
+  assert.equal(legacy.node("#lbContent").frame.src, scopedArtifactUrl);
   assert.match(legacy.node("#lbStatus").textContent, /不支持|未提供|无法.*观测/);
   for (const status of [401, 403, 404, 409, 422, 500]) {
     const h = previewCanvas(() => jsonResponse({ ok: false, error: "secret private url?key=hidden" }, status));
@@ -633,7 +693,7 @@ test("仅明确422不支持可回旧安全预览，鉴权/文件/服务错误必
     assert.match(h.node("#lbContent").innerHTML + h.node("#lbStatus").textContent, new RegExp(String(status)));
     assert.doesNotMatch(h.node("#lbContent").innerHTML + h.node("#lbStatus").textContent, /secret|private|hidden/);
     assert.ok(!h.node("#lbExternal").href, "授权失败时不保留绕过能力的外开链接");
-    assert.equal(h.node("#lbDl").href, `${artifactUrl}?download=1`);
+    assert.equal(h.node("#lbDl").href, scopedDownloadUrl);
   }
 });
 

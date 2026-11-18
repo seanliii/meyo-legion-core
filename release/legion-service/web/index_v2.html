@@ -1848,7 +1848,9 @@ function _canPreviewInBrowser(name,kind){
 function _artIcon(n){return({html:'🌐',htm:'🌐',xlsx:'📊',xls:'📊',csv:'📊',pdf:'📄',zip:'🗜',mp4:'🎬',webm:'🎬',mp3:'🎵',wav:'🎵',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',svg:'🖼',md:'📝',txt:'📝',json:'🔧',py:'💻',js:'💻'}[(n||'').split('.').pop().toLowerCase()]||'📦');}
 // 单件产物一行:图标+名称+(浏览器打开/下载/云真机) —— gi=组序 ii=组内序,便于事件回绑
 function _artRowHtml(a,gi,ii){
-  const dl=a.url?(a.url+(a.url.includes('?')?'&':'?')+'download=1'):'';
+  const dl=a.url?(a.url.includes('/home-outputs/exports/')?
+    _artifactContextUrl(a.url,a.sid||(typeof curSession!=='undefined'?curSession:''),true):
+    a.url+(a.url.includes('?')?'&':'?')+'download=1'):'';
   const canOpen=a.url&&_canPreviewInBrowser(a.name,a.kind);
   return `<div class="ra-file"><span class="ra-icon">${_artIcon(a.name)}</span><div class="ra-main"><div class="as-t">${esc(a.name).slice(0,64)}</div><div class="as-d">${_artifactPresentationRole(a)==='template'?'模板源码 · 需构建 · ':''}${esc(_artifactSizeLabel(a.bytes))}</div></div><div class="ra-actions">${canOpen?`<button class="mini-btn" data-ra-open="${gi}_${ii}">↗ 打开</button>`:''}${dl?`<a class="mini-btn" href="${esc(dl)}" download>↓ 下载</a>`:''}<button class="mini-btn" data-ra-cloud="${gi}_${ii}">☁️ 云真机</button></div></div>`;
 }
@@ -3205,9 +3207,22 @@ function _canvasArtifactUrl(value){
     return url.pathname+(url.searchParams.size?'?'+url.searchParams.toString():'');
   }catch{return '';}
 }
+function _artifactContextUrl(value,sid,download=false){
+  const raw=String(value||'');if(!raw)return raw;
+  try{
+    const url=new URL(raw,location.href);
+    if(url.origin!==location.origin||url.username||url.password||
+        !/^\/(?:home-outputs|outputs|media|auto-outputs|desktop-outputs)\//.test(url.pathname))return raw;
+    if(sid&&url.pathname.startsWith('/home-outputs/exports/')&&
+        !url.searchParams.has('sid')&&!url.searchParams.has('share'))url.searchParams.set('sid',String(sid));
+    if(download)url.searchParams.set('download','1');
+    return url.pathname+(url.searchParams.size?'?'+url.searchParams.toString():'')+url.hash;
+  }catch{return raw;}
+}
 function openArtifactCanvas(artifact,context={}){
   if(!artifact||!artifact.url)return;
-  return openLightbox(_artifactCanvasKind(artifact.name,artifact.kind),artifact.url,artifact.name,context);
+  const scoped=artifact.sid?{...context,sid:String(artifact.sid)}:context;
+  return openLightbox(_artifactCanvasKind(artifact.name,artifact.kind),artifact.url,artifact.name,scoped);
 }
 function _openArtifactLink(event){
   if(event.defaultPrevented||(event.button!==undefined&&event.button!==0)||
@@ -3470,18 +3485,19 @@ async function _canvasPreviewMessage(event,state){
 }
 async function openLightbox(kind,url,name,context={}){
   const lb=$('#lightbox'),c=$('#lbContent'),dl=$('#lbDl'),title=$('#lbTitle');if(!lb||!url)return;
-  const safePath=_canvasArtifactUrl(url);
+  const requestedSid=context.sid!==undefined?String(context.sid||''):String(curSession||'');
+  const safePath=_artifactContextUrl(_canvasArtifactUrl(url),requestedSid);
   if(!safePath){toast('此链接不适合在个人成果画布中打开，请使用其原有访问入口。');return;}
   if(!_personalSubject){_openPersonalAuth();return;}
   if(_canvasState)closeLightbox();
-  const sid=context.sid!==undefined?String(context.sid||''):String(curSession||'');
+  const sid=new URL(safePath,location.href).searchParams.get('sid')||requestedSid;
   const state={id:++_canvasSeq,owner:_personalSubject,epoch:_personalEpoch,sid,url:safePath,name:String(name||'成果'),kind,quote:'',note:'',point:null,file:null,imageUrl:''};
   const draft=_canvasDrafts.get(_canvasDraftKey(state));if(draft)Object.assign(state,draft);
   _canvasState=state;url=safePath;
   const current=()=>state===_canvasState&&state.id===_canvasSeq&&state.owner===_personalSubject&&
     state.epoch===_personalEpoch&&!_personalSwitchPending&&state.sid===sid&&state.url===safePath;
   _lightboxReturnFocus=document.activeElement;const safeUrl=esc(url),safeName=esc(name||'产物');
-  dl.href=url+(url.includes('?')?'&':'?')+'download=1';dl.download=name||'';if(title)title.textContent=name||'产物预览';
+  dl.href=_artifactContextUrl(url,sid,true);dl.download=name||'';if(title)title.textContent=name||'产物预览';
   const external=$('#lbExternal');
   if(kind==='html'){external.removeAttribute('href');external.setAttribute('aria-disabled','true');}
   else{external.href=url;external.removeAttribute('aria-disabled');}
@@ -3548,7 +3564,7 @@ async function openLightbox(kind,url,name,context={}){
     else if(kind==='sheet'||kind==='markdown'){
       const to=kind==='sheet'?'table':'md_html',response=await fetch(`/convert?path=${encodeURIComponent(url)}&to=${to}`);if(!response.ok)throw new Error(`预览转换失败（HTTP ${response.status}）`);const body=await response.text();if(current())c.innerHTML=`<div class="lb-document">${body}</div>`;
     }else if(kind==='text'){
-      const response=await fetch(url+(url.includes('?')?'&':'?')+'download=1');if(!response.ok)throw new Error(`文件读取失败（HTTP ${response.status}）`);const body=await response.text();if(current())c.innerHTML=`<div class="lb-document"><pre>${esc(body)}</pre></div>`;
+      const response=await fetch(_artifactContextUrl(url,sid,true));if(!response.ok)throw new Error(`文件读取失败（HTTP ${response.status}）`);const body=await response.text();if(current())c.innerHTML=`<div class="lb-document"><pre>${esc(body)}</pre></div>`;
     }else{window.open(url,'_blank','noopener');closeLightbox();}
   }catch(error){if(current()){
     const message=kind==='html'?(state.preview?.failure||'授权预览暂不可用（网络或身份校验失败）。请重新打开或下载原文件。'):(error.message||'预览暂不可用');
@@ -3596,7 +3612,7 @@ async function renderArtDoc(el){
       el.innerHTML=await r.text();
     }
   }catch(e){
-    el.innerHTML=`<div class="art-loading">预览暂不可用·可<a href="${esc(url)}?download=1" download="${esc(name)}" style="color:var(--brand)">下载查看</a></div>`;
+    el.innerHTML=`<div class="art-loading">预览暂不可用·可<a href="${esc(url+(url.includes('?')?'&':'?')+'download=1')}" download="${esc(name)}" style="color:var(--brand)">下载查看</a></div>`;
   }
 }
 // 新渲染的交付物容器:图片/图表点击放大·文档异步渲染
@@ -3704,12 +3720,15 @@ function _renderSessionOverview(turns){
   const primary=view.primary.map(a=>{
     const role=_artifactPresentationRole(a),isWeb=role==='web'||/\.html?$/i.test(a.name||'');
     const title=a.title||a.description||(isWeb?'网页入口 · 最新已记录版本':a.name||'交付文件');
-    const download=a.url+(a.url.includes('?')?'&':'?')+'download=1';
-    return `<div class="delivery-primary" data-primary-artifact><div><strong>${esc(title)}</strong><small>${esc(a.name||'文件')} · 来自第 ${a._sourceTurn} 轮 · ${esc(_artifactSizeLabel(a.bytes))}</small></div><div class="dp-actions"><a class="dp-open" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${isWeb?'打开作品 ↗':'打开文件 ↗'}</a><button class="mini-btn" data-primary-preview data-url="${esc(a.url)}" data-name="${esc(a.name||'文件')}">查看并反馈</button><a href="${esc(download)}" download="${esc(a.name||'')}">下载原文件</a></div></div>`;
+    const scopeSid=a.sid||(typeof curSession!=='undefined'?curSession:'');
+    const url=a.url.includes('/home-outputs/exports/')?_artifactContextUrl(a.url,scopeSid):a.url;
+    const download=url.includes('/home-outputs/exports/')?_artifactContextUrl(url,scopeSid,true):url+(url.includes('?')?'&':'?')+'download=1';
+    return `<div class="delivery-primary" data-primary-artifact><div><strong>${esc(title)}</strong><small>${esc(a.name||'文件')} · 来自第 ${a._sourceTurn} 轮 · ${esc(_artifactSizeLabel(a.bytes))}</small></div><div class="dp-actions"><a class="dp-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${isWeb?'打开作品 ↗':'打开文件 ↗'}</a><button class="mini-btn" data-primary-preview data-url="${esc(url)}" data-name="${esc(a.name||'文件')}" data-sid="${esc(a.sid||'')}">查看并反馈</button><a href="${esc(download)}" download="${esc(a.name||'')}">下载原文件</a></div></div>`;
   }).join('');
-  box.innerHTML=`<h2>${view.primary.length===1?'先看这里：已保留的成果':'已保留的成果与网页候选'}</h2><div class="sd-state">最新一轮：${esc(state.title)}。${view.fromEarlier?'后续遇阻没有删除前面已经生成的文件。':'文件入口与任务是否完整达标分开记录。'}<br>以下按已记录的文件角色和构建入口展示，不代表已通过质量验收。</div>${primary}<details class="session-files"${filesOpen?' open':''}><summary>全部 ${view.artifactCount} 个文件：其他成果、源码与素材</summary>${view.artifacts.map(a=>{const role=_artifactPresentationRole(a);return `<div class="session-file-row"><span>${esc(a.name||'文件')} <small>· ${role==='template'?'模板源码，需构建':role==='supporting'?'源码或辅助文件':'已记录文件'}</small></span><a href="${esc(a.url+(a.url.includes('?')?'&':'?')+'download=1')}" download="${esc(a.name||'')}">下载</a></div>`;}).join('')}</details>`;
-  const sourceSid=curSession;
-  box.querySelectorAll('[data-primary-preview]').forEach(button=>button.onclick=()=>openArtifactCanvas({url:button.dataset.url,name:button.dataset.name},{sid:sourceSid}));
+  box.innerHTML=`<h2>${view.primary.length===1?'先看这里：已保留的成果':'已保留的成果与网页候选'}</h2><div class="sd-state">最新一轮：${esc(state.title)}。${view.fromEarlier?'后续遇阻没有删除前面已经生成的文件。':'文件入口与任务是否完整达标分开记录。'}<br>以下按已记录的文件角色和构建入口展示，不代表已通过质量验收。</div>${primary}<details class="session-files"${filesOpen?' open':''}><summary>全部 ${view.artifactCount} 个文件：其他成果、源码与素材</summary>${view.artifacts.map(a=>{const role=_artifactPresentationRole(a),scopeSid=a.sid||(typeof curSession!=='undefined'?curSession:''),url=a.url.includes('/home-outputs/exports/')?_artifactContextUrl(a.url,scopeSid):a.url,download=url.includes('/home-outputs/exports/')?_artifactContextUrl(url,scopeSid,true):url+(url.includes('?')?'&':'?')+'download=1';return `<div class="session-file-row"><span>${esc(a.name||'文件')} <small>· ${role==='template'?'模板源码，需构建':role==='supporting'?'源码或辅助文件':'已记录文件'}</small></span><a href="${esc(download)}" download="${esc(a.name||'')}">下载</a></div>`;}).join('')}</details>`;
+  box.querySelectorAll('[data-primary-preview]').forEach(button=>button.onclick=()=>{
+    const sid=button.dataset.sid||curSession;openArtifactCanvas({url:button.dataset.url,name:button.dataset.name},{sid});
+  });
   return view;
 }
 function _artifactPurpose(a,ext){
@@ -3736,7 +3755,9 @@ function artifactHTML(a){
   const isTemplate=_artifactPresentationRole(a)==='template';
   const icon={html:'🌐',xlsx:'📊',xls:'📊',csv:'📊',md:'📝',markdown:'📝',pdf:'📄',zip:'🗜',mp4:'🎬',webm:'🎬',mp3:'🎵',wav:'🎵',m4a:'🎵',ogg:'🎵',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',webp:'🖼',ansi:'🖥',cast:'🖥'}[ext]||'📦';
   // path/name 是文件事实，不据此编造可访问 URL。
-  const url=typeof a.url==='string'&&a.url.trim()?a.url:'';
+  const rawUrl=typeof a.url==='string'&&a.url.trim()?a.url:'';
+  const scopeSid=a.sid||(typeof curSession!=='undefined'?curSession:'');
+  const url=rawUrl.includes('/home-outputs/exports/')?_artifactContextUrl(rawUrl,scopeSid):rawUrl;
   const u=esc(url);const nm=esc(name);
   const isImg=['png','jpg','jpeg','gif','webp'].includes(ext);
   const isVid=['mp4','webm'].includes(ext);
@@ -3757,7 +3778,7 @@ function artifactHTML(a){
   if(url){
     if(!isTemplate)actions+=`<button class="mini-btn" data-canvas-preview data-url="${u}" data-name="${nm}">查看并反馈</button> `;
     if(ext==='html'&&!isTemplate) actions+=`<a href="${u}" target="_blank" style="color:var(--brand);font-weight:600">🚀 在线访问 ↗</a> `;
-    const dlurl=url+(url.includes('?')?'&':'?')+'download=1';
+    const dlurl=url.includes('/home-outputs/exports/')?_artifactContextUrl(url,scopeSid,true):url+(url.includes('?')?'&':'?')+'download=1';
     actions+=`<a href="${esc(dlurl)}" download="${nm}">下载 ↧</a>`;
   }
   if(!actions) actions='<span class="file-raw">暂无可用入口</span>';

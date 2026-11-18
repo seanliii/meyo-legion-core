@@ -12,7 +12,7 @@ import subprocess
 import threading
 import zipfile
 from types import SimpleNamespace
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 from urllib.request import urlopen
 
 import pytest
@@ -110,7 +110,9 @@ def test_same_owner_export_preserves_exact_bytes_and_lineage(case):
     row, = out["artifacts"]
     assert Path(row["path"]).read_bytes() == body == source.read_bytes()
     assert row["url"].startswith("/home-outputs/")
-    assert (case.root / "data/outputs" / unquote(row["url"].removeprefix("/home-outputs/"))).resolve() == Path(row["path"])
+    parsed = urlsplit(row["url"])
+    assert parse_qs(parsed.query) == {"sid": [SESSION]}
+    assert (case.root / "data/outputs" / unquote(parsed.path.removeprefix("/home-outputs/"))).resolve() == Path(row["path"])
     assert row["sha256"] == hashlib.sha256(body).hexdigest()
     assert row["provenance"]["source_path"] == str(source)
     assert row["provenance"]["sha256"] == row["sha256"]
@@ -243,7 +245,9 @@ def test_html_directory_snapshot_keeps_relative_assets_and_all_file_grants(case)
     with served(case, rows) as origin:
         for name, raw in files.items():
             row = by_source[str(case.work / name)]
-            assert row["url"] == entry["url"].removesuffix("index.html") + name.removeprefix("site/")
+            row_url = urlsplit(row["url"])
+            assert row_url.path == urlsplit(entry["url"]).path.removesuffix("index.html") + name.removeprefix("site/")
+            assert parse_qs(row_url.query) == {"sid": [SESSION]}
             with urlopen(origin + row["url"], timeout=2) as response:
                 assert response.read() == raw
     assert any(n["reason"] == "artifact_internal_path" for n in out["artifact_safety_observations"])

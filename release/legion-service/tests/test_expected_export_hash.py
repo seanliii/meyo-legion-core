@@ -132,6 +132,15 @@ def test_real_http_serves_registered_bytes_and_refuses_changed_snapshot(case):
     row = exported(case)
     save(case, [row])
     server = importlib.import_module("server")
+    identity = importlib.import_module("personal_identity")
+    expected_hash = identity.expected_export_hash
+    hash_scopes = []
+
+    def recording_expected_hash(path, user, sid="", share=""):
+        hash_scopes.append((sid, share))
+        return expected_hash(path, user, sid, share)
+
+    case.mp.setattr(identity, "expected_export_hash", recording_expected_hash)
     case.mp.setattr(server.LEGION, "_swr_bg_refresh", lambda *a, **kw: None)
     case.mp.setattr(server.LEGION, "_autonomy_matrix", lambda: {})
     case.mp.setattr(server, "_PUBLIC_ORIGIN", None)
@@ -144,7 +153,7 @@ def test_real_http_serves_registered_bytes_and_refuses_changed_snapshot(case):
     def get():
         connection = http.client.HTTPConnection("127.0.0.1", listener.server_port, timeout=3)
         try:
-            connection.request("GET", row["url"] + "?download=1",
+            connection.request("GET", row["url"] + "&download=1",
                                headers={"Authorization": "Bearer fixture-personal-token"})
             response = connection.getresponse()
             return response.status, response.read()
@@ -158,6 +167,7 @@ def test_real_http_serves_registered_bytes_and_refuses_changed_snapshot(case):
         status, body = get()
         assert status == 409 and b"artifact_version_mismatch" in body
         assert b"unexpected later version" not in body
+        assert hash_scopes and all((sid, share) == (SESSION, "") for sid, share in hash_scopes)
     finally:
         listener.shutdown()
         listener.server_close()
