@@ -58,6 +58,7 @@ class Element {
     for (const tag of this.markup.matchAll(/<([a-z][\w-]*)\b([^>]*)>/gi)) {
       const child = new Element(tag[1]);
       for (const attr of tag[2].matchAll(/([\w-]+)="([^"]*)"/g)) child.setAttribute(attr[1], attr[2]);
+      for (const attr of tag[2].matchAll(/(?:^|\s)(data-[\w-]+)(?=\s|$)/g)) child.setAttribute(attr[1], "");
       this.appendChild(child);
     }
   }
@@ -82,6 +83,8 @@ class Element {
     const all = this.children.flatMap((c) => [c, ...c.querySelectorAll("*")]);
     return all.filter((c) => selector.split(",").some((s) => {
       if (s === "*") return true;
+      const presence = s.match(/^\[(data-[\w-]+)\]$/);
+      if (presence) return c.getAttribute(presence[1]) !== null;
       const data = s.match(/^\[data-([\w-]+)="([^"]+)"\]$/);
       if (data) return c.getAttribute(`data-${data[1]}`) === data[2] ||
         c.dataset[data[1].replace(/-([a-z])/g, (_, x) => x.toUpperCase())] === data[2];
@@ -1081,8 +1084,8 @@ test("会话成果：无效或有歧义的选择不猜第一行，任务 ID 唯�
 });
 
 test("会话成果：仅 current_final_result.selection 改变也更新选择戳并刷新当前主产物", () => {
-  const context = vm.createContext({});
-  vm.runInContext(["_artifactPresentationRole", "_chooseVisibleDeliveries", "_sessionDeliveryOverview", "_renderSessionOverview"]
+  const context = vm.createContext({URL, location: {href: "https://example.test/", origin: "https://example.test"}});
+  vm.runInContext(["_canvasArtifactUrl", "_artifactPresentationRole", "_chooseVisibleDeliveries", "_sessionDeliveryOverview", "_renderSessionOverview"]
     .map(pageFunction).join("\n"), context);
   const codexURL = "/home-outputs/__ut/current/codex/dist/index.html";
   const piURL = "/home-outputs/__ut/current/pi/dist/index.html";
@@ -1116,12 +1119,13 @@ test("会话成果：仅 current_final_result.selection 改变也更新选择戳
   Object.assign(context, {
     document: {createElement: tag => new Element(tag), getElementById: byId},
     curSession: "__ut_selection_stamp", esc: String, _artifactSizeLabel: () => "2 KB",
-    _deliveryDisplay: () => ({title: "本轮已完成"}), openArtifactCanvas() {},
+    _deliveryDisplay: () => ({title: "本轮已完成"}), openArtifactCanvas() {}, _canvasPreviewInline() {},
   });
   context._renderSessionOverview([codexTurn]);
   const box = byId("sessionOverview");
-  const primaryURLs = () => box.querySelectorAll("button")
-    .map(button => button.getAttribute("data-url")).filter(Boolean);
+  const primaryURLs = () => Array.from(new Set(box.querySelectorAll("button")
+    .filter(button => button.getAttribute("data-primary-preview") !== null)
+    .map(button => button.getAttribute("data-url")).filter(Boolean)));
   assert.deepEqual(primaryURLs(), [codexURL]);
   const oldMarkup = box.innerHTML;
   context._renderSessionOverview([piTurn]);
