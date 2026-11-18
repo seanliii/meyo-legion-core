@@ -12,7 +12,7 @@ from pathlib import Path
 import socket
 import threading
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 
@@ -119,7 +119,15 @@ def mint(site, **kwargs):
 
 def resource_url(grant, row):
     prefix = grant["preview_url"].split("/home-outputs/", 1)[0]
-    return prefix + row["url"]
+    # The source export query carries its session authorization. A preview
+    # capability already binds that session and must not copy or leak it.
+    return prefix + urlsplit(row["url"]).path
+
+
+def with_query(url, **extra):
+    parts = urlsplit(url)
+    query = [*parse_qsl(parts.query, keep_blank_values=True), *extra.items()]
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def observe(site, grant, observation=None, **kwargs):
@@ -139,7 +147,9 @@ def test_cookie_parent_mints_without_session_write_and_module_get_needs_no_cooki
     assert grant["ok"] is True
     assert grant["snapshot_id"] == site.entry["export_snapshot_id"]
     assert grant["preview_url"].startswith("/artifact-preview/")
-    assert grant["preview_url"].endswith(site.entry["url"])
+    preview = urlsplit(grant["preview_url"])
+    assert preview.path.endswith(urlsplit(site.entry["url"]).path)
+    assert not preview.query and not preview.fragment
     assert grant["preview_nonce"] and grant["observation_token"]
     assert grant["observation_token"] not in grant["preview_url"]
     assert Path(site.sessions._path(SESSION)).read_bytes() == session_before
@@ -192,7 +202,7 @@ def test_html_uses_nonce_and_parent_origin_but_download_keeps_original_bytes(sit
     assert "allow-same-origin" not in preview.headers["Content-Security-Policy"]
     assert grant["observation_token"].encode() not in preview.raw
     for url in (grant["preview_url"], site.entry["url"]):
-        response = request(site, "GET", url + "?download=1",
+        response = request(site, "GET", with_query(url, download="1"),
                            authenticated=url == site.entry["url"], origin=None)
         assert response.status == 200
         assert response.raw == original
@@ -223,7 +233,7 @@ def test_other_snapshot_document_types_keep_opaque_sandbox(site, name, content, 
     assert response.raw == content
     assert "sandbox allow-scripts" in response.headers.get("Content-Security-Policy", "")
     assert "allow-same-origin" not in response.headers["Content-Security-Policy"]
-    download = request(site, "GET", url + "?download=1", authenticated=False, origin=None)
+    download = request(site, "GET", with_query(url, download="1"), authenticated=False, origin=None)
     assert download.status == 200 and download.raw == content
     assert download.headers["Content-Disposition"].startswith("attachment")
 
