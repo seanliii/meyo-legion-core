@@ -982,6 +982,153 @@ test("会话成果：相同文件名但来源不同不能合并，无来源旧�
   assert.equal(view.primary[0]._sourceTurn, 3, "仅按新旧排序，不宣称质量胜出");
 });
 
+test("会话成果：生产 PK 显式选择消费原生任务事实，同名候选只主显选中项", () => {
+  const context = vm.createContext({});
+  vm.runInContext(["_artifactPresentationRole", "_chooseVisibleDeliveries", "_sessionDeliveryOverview"]
+    .map(pageFunction).join("\n"), context);
+  const team = "web_52b623d121d1_1794989725";
+  const codexURL = `/home-outputs/${team}_task_codex/dist/index.html`;
+  const piURL = `/home-outputs/${team}_task_pi/dist/index.html`;
+  const row = (harness, taskId, url) => ({key: harness, harness, task_id: taskId, status: "done",
+    artifacts: [{name: "index.html", url, kind: "html", bytes: 1024}]});
+  for (const selection of [
+    {source: "harness", status: "selected", adjudicated: true, selected_task_id: "task_codex"},
+    {source: "final_result_reference", selected_task_id: "task_codex"},
+    {source: "explicit_winner", selected_task_id: "task_codex"},
+  ]) {
+    // Production returned Pi first; stable sorting alone must not turn it into the adopted result.
+    const turns = freezeRecord([{result: {team_id: team, status: "completed", selection,
+      results: [row("pi", "task_pi", piURL), row("codex", "task_codex", codexURL)]}}]);
+    const before = JSON.stringify(turns), view = context._sessionDeliveryOverview(turns);
+    assert.deepEqual(Array.from(view.primary, a => a.url), [codexURL], selection.source);
+    assert.equal(view.artifactCount, 2, "非选中产物仍保留在全部文件中");
+    assert.equal(view.primary[0]._sourceTurn, 1);
+    assert.equal(JSON.stringify(turns), before, "只读消费公开原生事实，不改写事件或产物");
+  }
+});
+
+test("会话成果：选中组沿用源码身份采用新快照，末轮无产物错误仍保留成果和原状态", () => {
+  const context = vm.createContext({});
+  vm.runInContext(["_artifactPresentationRole", "_chooseVisibleDeliveries", "_sessionDeliveryOverview"]
+    .map(pageFunction).join("\n"), context);
+  const exported = (snapshot, sourcePath) => ({
+    name: "index.html", url: `/home-outputs/exports/${snapshot}/index.html`, export_snapshot_id: snapshot,
+    provenance: {source: "authorized-project-export", source_path: sourcePath},
+  });
+  const oldFile = exported("codex-old", "/project/codex/index.html");
+  const newFile = exported("codex-new", "/project/codex/index.html");
+  const piFile = exported("pi-new", "/project/pi/index.html");
+  const member = (harness, taskId, artifacts, status = "done") => ({
+    key: harness, harness, task_id: taskId, status, artifacts,
+  });
+  const turns = freezeRecord([
+    {result: {status: "completed", selection: {source: "harness", status: "selected",
+      adjudicated: true, selected_task_id: "task_codex"},
+      results: [member("codex", "task_codex", [oldFile])]}},
+    // No new selection event: the previous selected group follows its source identity,
+    // rather than dropping the selection or adopting the newer Pi candidate.
+    {result: {status: "completed", results: [
+      member("pi", "task_pi", [piFile]), member("codex", "task_codex", [newFile]),
+    ]}},
+    {result: {status: "error", results: [member("codex", "task_codex", [], "error")]}},
+  ]);
+  const before = JSON.stringify(turns), view = context._sessionDeliveryOverview(turns);
+  assert.deepEqual(Array.from(view.primary, a => a.url), [newFile.url]);
+  assert.equal(view.primary[0].export_snapshot_id, "codex-new");
+  assert.equal(view.primary[0]._sourceTurn, 2);
+  assert.equal(view.artifactCount, 3, "旧快照和非选中文件均不删除");
+  assert.equal(view.latest.status, "error");
+  assert.equal(view.fromEarlier, true);
+  assert.equal(JSON.stringify(turns), before);
+});
+
+test("会话成果：无效或有歧义的选择不猜第一行，任务 ID 唯一匹配优先于 key 冲突", () => {
+  const context = vm.createContext({});
+  vm.runInContext(["_artifactPresentationRole", "_chooseVisibleDeliveries", "_sessionDeliveryOverview"]
+    .map(pageFunction).join("\n"), context);
+  const codexURL = "/home-outputs/__ut/codex/dist/index.html";
+  const piURL = "/home-outputs/__ut/pi/dist/index.html";
+  const row = (harness, taskId, url, key = harness) => ({key, harness, task_id: taskId, status: "done",
+    artifacts: [{name: "index.html", url, kind: "html"}]});
+  const pi = () => row("pi", "task_pi", piURL), codex = () => row("codex", "task_codex", codexURL);
+  const adopt = (selected_task_id, extra = {}) => ({source: "harness", status: "selected",
+    adjudicated: true, selected_task_id, ...extra});
+  const invalid = [
+    {name: "重复 task_id", rows: [{...pi(), task_id: "duplicate"}, {...codex(), task_id: "duplicate"}],
+      selection: adopt("duplicate")},
+    {name: "重复 key", rows: [{...pi(), key: "shared"}, {...codex(), key: "shared"}],
+      selection: adopt("shared")},
+    {name: "任务不存在", rows: [pi(), codex()], selection: adopt("not-recorded")},
+    {name: "质量审计不是主入口选择来源", rows: [pi(), codex()],
+      selection: adopt("task_codex", {source: "success_audit"})},
+    {name: "harness 缺少 adjudicated", rows: [pi(), codex()],
+      selection: {source: "harness", status: "selected", selected_task_id: "task_codex"}},
+    {name: "harness 未裁决", rows: [pi(), codex()], selection: adopt("task_codex", {adjudicated: false})},
+  ];
+  for (const fixture of invalid) {
+    const turns = freezeRecord([{result: {status: "completed", selection: fixture.selection, results: fixture.rows}}]);
+    const before = JSON.stringify(turns), view = context._sessionDeliveryOverview(turns);
+    assert.deepEqual(Array.from(view.primary, a => a.url), [piURL, codexURL], fixture.name);
+    assert.equal(view.artifactCount, 2, fixture.name);
+    assert.equal(JSON.stringify(turns), before, fixture.name);
+  }
+  const collision = freezeRecord([{result: {status: "completed",
+    selection: {source: "explicit_winner", selected_task_id: "shared"},
+    // Pi is first and its key collides, but Codex owns the unique exact task_id.
+    results: [{...pi(), key: "shared"}, {...codex(), task_id: "shared"}]}}]);
+  const view = context._sessionDeliveryOverview(collision);
+  assert.deepEqual(Array.from(view.primary, a => a.url), [codexURL]);
+});
+
+test("会话成果：仅 current_final_result.selection 改变也更新选择戳并刷新当前主产物", () => {
+  const context = vm.createContext({});
+  vm.runInContext(["_artifactPresentationRole", "_chooseVisibleDeliveries", "_sessionDeliveryOverview", "_renderSessionOverview"]
+    .map(pageFunction).join("\n"), context);
+  const codexURL = "/home-outputs/__ut/current/codex/dist/index.html";
+  const piURL = "/home-outputs/__ut/current/pi/dist/index.html";
+  const makeTurn = selectedTask => {
+    const row = (harness, taskId, url) => ({key: harness, harness, task_id: taskId, status: "done",
+      artifacts: [{name: "index.html", url, kind: "html", bytes: 2048}]});
+    return {
+      result: {status: "completed", results: [
+        row("pi", "task_pi", piURL), row("codex", "task_codex", codexURL),
+      ]},
+      // The latest native final wrapper is the only place where selection changes.
+      current_final_result: {status: "completed", selection: {
+        source: "explicit_winner", selected_task_id: selectedTask,
+      }},
+    };
+  };
+  const codexTurn = freezeRecord(makeTurn("task_codex")), piTurn = freezeRecord(makeTurn("task_pi"));
+  const before = JSON.stringify([codexTurn, piTurn]);
+  const first = context._sessionDeliveryOverview([codexTurn]);
+  const second = context._sessionDeliveryOverview([piTurn]);
+  assert.deepEqual(Array.from(first.artifacts, a => a.url), Array.from(second.artifacts, a => a.url));
+  assert.deepEqual(Array.from(first.primary, a => a.url), [codexURL]);
+  assert.deepEqual(Array.from(second.primary, a => a.url), [piURL]);
+  assert.ok(first.selectionStamp);
+  assert.ok(second.selectionStamp);
+  assert.notEqual(first.selectionStamp, second.selectionStamp, "文件未变也不能复用旧选择戳");
+  assert.equal(JSON.stringify([codexTurn, piTurn]), before);
+
+  const root = new Element(); root.id = "ci";
+  const byId = id => id === "ci" ? root : root.querySelectorAll("*").find(el => el.id === id) || null;
+  Object.assign(context, {
+    document: {createElement: tag => new Element(tag), getElementById: byId},
+    curSession: "__ut_selection_stamp", esc: String, _artifactSizeLabel: () => "2 KB",
+    _deliveryDisplay: () => ({title: "本轮已完成"}), openArtifactCanvas() {},
+  });
+  context._renderSessionOverview([codexTurn]);
+  const box = byId("sessionOverview");
+  const primaryURLs = () => box.querySelectorAll("button")
+    .map(button => button.getAttribute("data-url")).filter(Boolean);
+  assert.deepEqual(primaryURLs(), [codexURL]);
+  const oldMarkup = box.innerHTML;
+  context._renderSessionOverview([piTurn]);
+  assert.deepEqual(primaryURLs(), [piURL], "选择变化必须击穿相同文件列表的 DOM 缓存");
+  assert.notEqual(box.innerHTML, oldMarkup);
+});
+
 test("产物可达：error 尝试的真实网页、截图和源码仍可下载，不改成完成", () => {
   const results = [{
     key: "codex", harness: "codex", status: "error", error: "已写文件，随后执行失败",
