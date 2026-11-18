@@ -543,6 +543,49 @@ def test_overlay_publication_never_replaces_empty_directory_or_race(tmp_path):
         os.close(fd)
 
 
+@pytest.mark.parametrize("tamper", [None, "content", "extra", "mode", "marker", "symlink"])
+def test_same_overlay_generation_is_reused_only_with_exact_contents(tmp_path, tamper):
+    import runpy, hashlib, base64, io, tarfile
+    stage = runpy.run_path(str(SERVICE / "external_adapters/overlays/penguin-v0.2.4/source_patch_hook.py"))["stage_npm_bundle"]
+    source, overlay, destination = tmp_path / "source", tmp_path / "overlay", tmp_path / "generation"
+    source.mkdir(); overlay.mkdir()
+    files = {"package.json": json.dumps({"name": "fixture", "version": "1"}).encode(),
+             "LICENSE": b"license", "chunk.js": b"original\n"}
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:gz") as archive:
+        for name, content in files.items():
+            member = tarfile.TarInfo("package/" + name)
+            member.size, member.mode = len(content), 0o644
+            archive.addfile(member, io.BytesIO(content))
+            (source / name).write_bytes(content)
+    archive = tmp_path / "official.tgz"; archive.write_bytes(data.getvalue())
+    patch = b"diff --git a/chunk.js b/chunk.js\n--- a/chunk.js\n+++ b/chunk.js\n@@ -1 +1 @@\n-original\n+patched\n"
+    (overlay / "patch").write_bytes(patch)
+    manifest = {"kind": "npm_bundle", "package": "fixture", "version": "1", "license_file": "LICENSE",
+                "patch_file": "patch", "patch_sha256": hashlib.sha256(patch).hexdigest(),
+                "official_integrity": "sha512-" + base64.b64encode(hashlib.sha512(data.getvalue()).digest()).decode(),
+                "files": {"chunk.js": {"before_sha256": hashlib.sha256(b"original\n").hexdigest(),
+                                       "after_sha256": hashlib.sha256(b"patched\n").hexdigest()}}}
+    (overlay / "source-overlay.json").write_text(json.dumps(manifest))
+    assert stage(source, destination, overlay, archive)["reused"] is False
+    identity = destination.stat().st_ino
+    if tamper == "content": (destination / "chunk.js").write_text("unknown\n")
+    elif tamper == "extra": (destination / "unknown.js").write_text("unreviewed")
+    elif tamper == "mode": (destination / "chunk.js").chmod(0o600)
+    elif tamper == "marker": (destination / ".native-overlay.json").write_text("{}")
+    elif tamper == "symlink":
+        (destination / "chunk.js").unlink()
+        (destination / "chunk.js").symlink_to(source / "chunk.js")
+    if tamper is None:
+        assert stage(source, destination, overlay, archive)["reused"] is True
+        assert (destination / "chunk.js").read_bytes() == b"patched\n"
+    else:
+        with pytest.raises(ValueError, match="existing generation"):
+            stage(source, destination, overlay, archive)
+    assert destination.stat().st_ino == identity
+    assert (source / "chunk.js").read_bytes() == b"original\n"
+
+
 def test_catalog_qwen_install_and_run_share_fixed_overlay(cli_stack):
     catalog = json.loads((SERVICE / "external_agents.json").read_text())
     rows = catalog if isinstance(catalog, list) else catalog["agents"]

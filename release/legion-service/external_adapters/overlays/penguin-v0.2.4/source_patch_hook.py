@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import shutil
+import stat
 import tempfile
 import base64
 import ctypes
@@ -193,9 +194,10 @@ def stage_npm_bundle(source: Path, destination: Path, overlay: Path,
     destination = destination.absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination = destination.parent.resolve(strict=True) / destination.name
-    if (destination.exists() or destination.is_symlink() or destination.is_relative_to(source)
+    if (destination.is_symlink() or destination.is_relative_to(source)
             or source.is_relative_to(destination)):
-        raise ValueError("destination must be a new separate generation")
+        raise ValueError("destination must be a separate unlinked generation")
+    reused = False
     with tempfile.TemporaryDirectory(prefix=".native-overlay-", dir=destination.parent) as temp:
         staged = Path(temp) / "package"
         staged.mkdir()
@@ -209,16 +211,47 @@ def stage_npm_bundle(source: Path, destination: Path, overlay: Path,
         for name, hashes in targets.items():
             if sha(staged / name) != hashes["after_sha256"]:
                 raise ValueError("post-patch bundle identity mismatch")
-        (staged / ".native-overlay.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        marker = staged / ".native-overlay.json"
+        marker.write_text(json.dumps(manifest, indent=2) + "\n")
+        marker.chmod(0o600)
+        for directory in (staged, *(path for path in staged.rglob("*") if path.is_dir())):
+            directory.chmod(0o755)
+
+        def verified_existing():
+            if destination.is_symlink() or not destination.is_dir():
+                raise ValueError("existing generation is not a plain directory; preserved")
+            before = destination.lstat()
+            expected = {str(path.relative_to(staged)): path for path in staged.rglob("*")}
+            observed = {str(path.relative_to(destination)): path for path in destination.rglob("*")}
+            if set(expected) != set(observed):
+                raise ValueError("existing generation closure mismatch; preserved")
+            for name, wanted in expected.items():
+                found = observed[name]
+                info = found.lstat()
+                if (found.is_symlink() or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                        or stat.S_IMODE(info.st_mode) != stat.S_IMODE(wanted.stat().st_mode)
+                        or wanted.is_dir() != found.is_dir()
+                        or (wanted.is_file() and (info.st_nlink != 1 or found.read_bytes() != wanted.read_bytes()))):
+                    raise ValueError("existing generation content/mode mismatch; preserved")
+            after = destination.lstat()
+            if ((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                    or stat.S_IMODE(after.st_mode) != 0o755):
+                raise ValueError("existing generation changed during verification; preserved")
+
         parent_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            _publish_noreplace(parent_fd, str(staged.relative_to(destination.parent)), destination.name)
+            try:
+                _publish_noreplace(parent_fd, str(staged.relative_to(destination.parent)), destination.name)
+            except FileExistsError:
+                verified_existing()
+                reused = True
         finally:
             os.close(parent_fd)
     return {"scope": "npm_staging_only", "destination": str(destination),
             "official_integrity_verified": integrity, "official_files_verified": len(contents),
             "package": manifest["package"], "version": manifest["version"],
-            "patch_sha256": manifest["patch_sha256"], "source_changed": False}
+            "patch_sha256": manifest["patch_sha256"], "source_changed": False,
+            "reused": reused}
 
 
 def main() -> int:
