@@ -574,7 +574,7 @@ def conversation_context(sid: str, max_turns: int = 6, max_chars: int = 12000, u
 
 
 def _continuation_delivery_result(turn: dict, packet: dict, sid: str,
-                                  user_id: str) -> tuple[dict, dict] | None:
+                                  user_id: str, *, task_id: str = "") -> tuple[dict, dict] | None:
     """Select a proven sole delivery, never a winner inferred from time or text.
 
     Legacy directoryless relay packets kept their graph but not their result
@@ -583,7 +583,8 @@ def _continuation_delivery_result(turn: dict, packet: dict, sid: str,
     lane merely because it eventually has one sink.
     """
     if (turn.get("status") == "running"
-            or (packet.get("visibility") or {}).get("candidate_isolation") == "strict"):
+            or ((packet.get("visibility") or {}).get("candidate_isolation") == "strict"
+                and not task_id)):
         return None
     nodes = [row for row in packet.get("tasks") or [] if isinstance(row, dict)]
     results = [row for row in turn.get("results") or [] if isinstance(row, dict)]
@@ -595,14 +596,70 @@ def _continuation_delivery_result(turn: dict, packet: dict, sid: str,
     if (not nodes or "" in by_id or "" in rows or len(by_id) != len(nodes)
             or len(rows) != len(results) or set(by_id) != set(rows)):
         return None
-    for task_id, node in by_id.items():
-        row = rows[task_id]
+    for node_id, node in by_id.items():
+        row = rows[node_id]
         assigned = str(row.get("assigned_harness") or row.get("harness") or row.get("key") or "")
         if not node.get("assigned_harness") or assigned != str(node["assigned_harness"]):
             return None
+    def bound_result(selected_id):
+        node, result = by_id[selected_id], rows[selected_id]
+        if node.get("supporting_context") or result.get("supporting_context"):
+            return None
+        if not result.get("workdir"):
+            # Public receipts omit private cursor/directory fields. Bind the
+            # exact published body first, then recover one unique private lane.
+            import hashlib
+            final = result.get("final")
+            if not isinstance(final, str):
+                return None
+            digest = hashlib.sha256(final.encode()).hexdigest()
+            attempts = [attempt for attempt in packet.get("attempts") or []
+                        if isinstance(attempt, dict) and attempt.get("task_id") == selected_id
+                        and attempt.get("harness") == node.get("assigned_harness")
+                        and attempt.get("status") == result.get("status")
+                        and (attempt.get("public_result_ref") or {}).get("final_sha256") == digest
+                        and ("native_checkpoint" not in result
+                             or (attempt.get("native_checkpoint") or {}) == (result.get("native_checkpoint") or {}))
+                        and str(attempt.get("model_used") or "") == str(result.get("model_used") or "")
+                        and isinstance(attempt.get("workdir"), str) and os.path.isabs(attempt["workdir"])]
+            cursors = {}
+            for attempt in attempts:
+                restored = {**result, "workdir": attempt["workdir"],
+                            "native_checkpoint": attempt.get("native_checkpoint") or {}}
+                for field in ("native_conversation_id", "native_session_scope", "native_context_origin"):
+                    if field in attempt:
+                        restored[field] = attempt[field]
+                identity = json.dumps({field: restored.get(field) for field in (
+                    "native_checkpoint", "native_conversation_id", "native_session_scope", "native_context_origin")},
+                    ensure_ascii=False, sort_keys=True) + "\0" + os.path.realpath(restored["workdir"])
+                cursors[identity] = restored
+            if len(cursors) != 1:
+                return None
+            result = next(iter(cursors.values()))
+        return node, result
+
+    selection = turn.get("selection") or {}
+    if not isinstance(selection, dict):
+        return None
+    source = selection.get("source")
+    selected_id = task_id
+    if not selected_id and (
+            source in {"explicit_winner", "final_result_reference"}
+            or (source == "harness" and selection.get("status") == "selected"
+                and selection.get("adjudicated") is True)):
+        reference = turn.get("final_result") or {}
+        selected_id = (selection.get("selected_task_id") or selection.get("task_id")
+                       or (turn.get("winner") if source == "explicit_winner" else "")
+                       or (reference.get("task_id") or reference.get("key")
+                           if source == "final_result_reference" and isinstance(reference, dict) else ""))
+    if selected_id:
+        if not isinstance(selected_id, str) or selected_id not in by_id:
+            return None
+        return bound_result(selected_id)
+    if task_id:
+        return None
     if len(nodes) == 1:
-        task_id = next(iter(by_id))
-        return by_id[task_id], rows[task_id]
+        return bound_result(next(iter(by_id)))
 
     def graph(values):
         entries = values.items() if isinstance(values, dict) else (
@@ -663,7 +720,7 @@ def _continuation_delivery_result(turn: dict, packet: dict, sid: str,
         last = ready[0]
         completed.add(last)
         remaining.pop(last)
-    return by_id[last], rows[last]
+    return bound_result(last)
 
 
 def continuation_project_context(sid: str, user_id: str = "default") -> dict:
@@ -756,7 +813,25 @@ def continuation_native_slot(sid: str, harness: str, user_id: str,
         if (str(packet.get("conversation_id") or "") != str(sid)
                 or str(packet.get("user_id") or "") != str(user_id)):
             continue
-        selected = _continuation_delivery_result(turn, packet, sid, user_id)
+        feedback = context.get("user_feedback_request") or {}
+        target = ""
+        if isinstance(feedback, dict) and feedback.get("source_team_id") == team_id:
+            import team_state
+            if (feedback.get("user_id") != user_id or feedback.get("conversation_id") != sid
+                    or not isinstance(feedback.get("source_task_id"), str)
+                    or not feedback.get("source_task_id") or not feedback.get("request_id")):
+                raise ValueError("native feedback source identity is unavailable")
+            requests = [message.get("continuation") or {} for message in team_state.read_messages(
+                team_id, "commander", mark_read=False)]
+            if not any(request.get("status") in {"pending", "running", "completed"}
+                       and all(request.get(field) == feedback.get(field) for field in (
+                           "source_team_id", "source_task_id", "request_id", "user_id", "conversation_id"))
+                       for request in requests):
+                raise ValueError("native feedback source has no matching owner action")
+            target = feedback["source_task_id"]
+        selected = _continuation_delivery_result(turn, packet, sid, user_id, task_id=target)
+        if target and not selected:
+            raise ValueError("native feedback source result is unavailable")
         rows = [row for row in (turn.get("results") or [])
                 if isinstance(row, dict)
                 and str(row.get("harness") or row.get("assigned_harness") or row.get("key")) == harness]

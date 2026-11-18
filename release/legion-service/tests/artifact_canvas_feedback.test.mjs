@@ -731,7 +731,7 @@ function feedbackHarness(old='/home-outputs/original/index.html',exportFixture=f
   const source={team_id:'team-original',results:[{task_id:'task-a',artifacts:[{url:old,name:'index.html'}]}]};
   let session={sid:'sid-a',user_id:'alice',turns:[source]};
   let team={team_id:'team-original',conversation_id:'sid-a',user_id:'alice',tasks:{'task-a':{}}};
-  let post=body=>jsonResponse({continuation:{request_id:body.request_id,source_team_id:body.team_id,
+  let post=body=>jsonResponse({continuation:{request_id:body.request_id,source_team_id:body.team_id,source_task_id:body.source_task_id,
     conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',status:'pending'}},201);
   Object.assign(h.ctx,{
     crypto:{randomUUID(){ids++;return 'uuid-one';}},liveTeamId:'global-unrelated',
@@ -756,6 +756,7 @@ test('显式续做只送原团队，成功保留草稿，重复点击不重复PO
   assert.equal(h.posts[0].url,'/api/legion/team/message');
   assert.equal(h.posts[0].body.team_id,'team-original');assert.equal(h.posts[0].body.recipient,'commander');
   assert.equal(h.posts[0].body.continue_execution,true);
+  assert.equal(h.posts[0].body.source_task_id,'task-a');
   assert.equal(h.ctx.qEl.value,'用户已有草稿');assert.equal(h.node('#lbFeedback').value,'修改这里');
   assert.equal(h.node('#lbStatus').textContent,'已提交续做，尚未改好');
   assert.equal(h.syncs[0].scope.sid,'sid-a');assert.equal(h.syncs[0].scope.teamId,'feedback-child');
@@ -801,7 +802,7 @@ test('429、timeout和未知回执重试复用ID；pending POST不取消原任�
       if(failure==='timeout')throw Error('timeout');
       if(failure==='wrong-receipt')return jsonResponse({continuation:{request_id:body.request_id,source_team_id:'other',conversation_id:'sid-a',user_id:'alice',team_id:'other-child'}});
       return failure==='429'?jsonResponse({error:'rate limited'},429):jsonResponse({ok:true});
-    }return jsonResponse({continuation:{request_id:body.request_id,source_team_id:'team-original',
+    }return jsonResponse({continuation:{request_id:body.request_id,source_team_id:'team-original',source_task_id:body.source_task_id,
       conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',status:'pending'}},201);});
     await h.click();assert.match(h.node('#lbStatus').textContent,/未确认/);await h.click();
     assert.equal(h.posts.length,2);assert.equal(h.ids(),1);assert.equal(h.posts[0].body.request_id,h.posts[1].body.request_id);
@@ -811,7 +812,7 @@ test('429、timeout和未知回执重试复用ID；pending POST不取消原任�
   assert.equal(h.posts.length,1);assert.equal(h.node('#lbSubmit').disabled,true);
   assert.equal(h.ctx.qEl.value,'用户已有草稿');assert.equal(h.ctx.liveTeamId,'global-unrelated');
   h.ctx.curSession='sid-b';pending.resolve(jsonResponse({continuation:{request_id:'uuid-one',source_team_id:'team-original',
-    conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',status:'pending'}},201));await submitted;
+    conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',source_task_id:'task-a',status:'pending'}},201));await submitted;
   assert.equal(h.syncs.length,0);assert.ok(h.posts.every(x=>x.url!=='/api/legion/cancel'));
   const retry=feedbackHarness();retry.post(()=>{throw Error('unknown');});await retry.click();
   const request=retry.ctx._canvasState.request;

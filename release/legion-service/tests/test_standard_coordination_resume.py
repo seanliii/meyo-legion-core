@@ -141,7 +141,7 @@ def case(tmp_path, monkeypatch):
 
     yield SimpleNamespace(core=core, teams=teams, pc=pc, tm=tm, server=server,
                           mp=monkeypatch, root=tmp_path, post=post, get=get, events=events,
-                          members=members, controls=controls, control=control,
+                          members=members, controls=controls, control=control, member=member,
                           member_calls=member_calls, port=listener.server_port)
     listener.shutdown()
     listener.server_close()
@@ -150,8 +150,8 @@ def case(tmp_path, monkeypatch):
     assert not forbidden_calls
 
 
-@pytest.mark.parametrize("selected", ["B", "inconclusive"])
-def test_ordinary_http_pk_default_candidate_selection(case, selected):
+def _run_saved_pk_source(case, selected, *, split_harnesses=False, supporting_task=""):
+    """Create two real delivery candidates and an optional supporting author."""
     case.mp.setattr(case.core, "_harness_keys", lambda: {"codex", HARNESS})
     case.mp.setattr(case.core, "_aigc_ready", lambda **kw: {"runnable_clis": ["codex", HARNESS]})
     case.mp.setattr(case.core, "_appoint_runtime_captain", lambda *a, **kw: "codex")
@@ -160,19 +160,48 @@ def test_ordinary_http_pk_default_candidate_selection(case, selected):
     case.mp.setattr(case.server.ARTIFACTS, "enrich", lambda *a, **kw: None)
     case.mp.setattr(case.server.DESKTOP_FS, "materialize_session", lambda *a, **kw: {"ok": True})
     case.mp.setattr(case.server.DESKTOP_FS, "sync_personal_data", lambda *a, **kw: None)
-    case.mp.setattr(case.core, "run_one", lambda key, prompt, **kw: {
-        "status": "done", "final": "unchanged original " + kw["task_facts"]["task_id"]})
+    work = case.root / "work"
+    work.mkdir(exist_ok=True)
+    grant_project(case, work)
+    delivery_ids = ("A", "B")
+    supporting_ids = (supporting_task,) if supporting_task else ()
+    assert not set(supporting_ids) & set(delivery_ids)
+    task_ids = delivery_ids + supporting_ids
+    authors = {"A": "codex", "B": HARNESS if split_harnesses else "codex"}
+    authors.update({key: "codex" for key in supporting_ids})
+
+    def source_member(key, prompt, **kw):
+        task_id = kw["task_facts"]["task_id"]
+        assert key in {"codex", HARNESS}
+        assert key == authors[task_id]
+        result = {"status": "done", "final": "unchanged original " + task_id,
+                  "workdir": str(work), "native_conversation_id": f"{CONVERSATION}:task:{task_id}",
+                  "native_checkpoint": {"kind": "fixture", "session_id": "same-native-" + task_id}}
+        if task_id == supporting_task:
+            result["supporting_context"] = True
+        return result
+
     controls = []
+
     def control(key, prompt, **kw):
         controls.append(kw)
         assert kw["task_facts"]["native_read_only"] is True
         return {"status": "done", "final": "selection receipt only", "orchestration_request": {
             "coordinate": {"action": "complete", "selected_task_id": selected}}}
+
+    tasks = {}
+    for key in task_ids:
+        tasks[key] = {"task": "original task " + key, "assigned_harness": authors[key],
+                      "assignment_locked": True}
+        if key == supporting_task:
+            tasks[key]["supporting_context"] = True
+    plan = {"captain": "codex", "tasks": tasks,
+            "project_context": {"repo_root": str(work)},
+            "team_policy": {"candidate_harnesses": list(dict.fromkeys(authors.values())),
+                            "min_agents": 2, "max_agents": len(task_ids), "max_failover": 0,
+                            "continuous_coordination": False, "contract_repair_rounds": 0}}
+    case.mp.setattr(case.core, "run_one", source_member)
     case.mp.setattr(case.core, "_run_one_with_gateway", control)
-    plan = {"captain": "codex", "tasks": {key: {"task": "original task " + key,
-        "assigned_harness": "codex", "assignment_locked": True} for key in ("A", "B")},
-        "team_policy": {"candidate_harnesses": ["codex"], "min_agents": 2, "max_agents": 2,
-                        "max_failover": 0, "continuous_coordination": False, "contract_repair_rounds": 0}}
     conn = http.client.HTTPConnection("127.0.0.1", case.port, timeout=10)
     try:
         conn.request("POST", "/api/legion/dispatch", json.dumps({"query": "compare original outputs",
@@ -183,8 +212,16 @@ def test_ordinary_http_pk_default_candidate_selection(case, selected):
         body = response.read().decode()
     finally:
         conn.close()
+        case.mp.setattr(case.core, "run_one", case.member)
+        case.mp.setattr(case.core, "_run_one_with_gateway", case.control)
     events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
     final = next(event for event in reversed(events) if event.get("candidate_selection"))
+    return events, final, controls, work
+
+
+@pytest.mark.parametrize("selected", ["B", "inconclusive"])
+def test_ordinary_http_pk_default_candidate_selection(case, selected):
+    events, final, controls, _ = _run_saved_pk_source(case, selected)
     assert len(controls) == 1
     ready = [event for event in events if event.get("t") == "candidate_ready"]
     assert len(ready) == 2 and {event["task_id"] for event in ready} == {"A", "B"}
@@ -629,6 +666,232 @@ def test_duplicate_feedback_request_id_does_not_dispatch_twice(case):
     assert len(case.teams.read_messages(TEAM, "commander", mark_read=False)) == 1
     assert case.post()[1]["status"] == "unchanged"
     assert len(case.member_calls) == 1
+
+
+@pytest.mark.parametrize("split_harnesses", [False, True], ids=["same-author", "different-authors"])
+def test_pk_feedback_resumes_only_selected_original_author(case, split_harnesses):
+    _, final, _, work = _run_saved_pk_source(case, "B", split_harnesses=split_harnesses)
+    assert final["winner"] == "B"
+    source_tasks = deepcopy(case.teams.load(TEAM)["tasks"])
+    session = case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)
+    source_turn = next(turn for turn in session["turns"] if turn.get("team_id") == TEAM)
+    source_turn_before = deepcopy(source_turn)
+    source_results = deepcopy(source_turn["results"])
+    source_attempts = deepcopy(case.pc.load(TEAM)["attempts"])
+    expected_harness = HARNESS if split_harnesses else "codex"
+
+    code, receipt = send_feedback(case)
+    assert code == 201, receipt
+    message = wait_for_feedback(case)
+    continuation = message["continuation"]
+    assert continuation["status"] == "completed", message
+    assert continuation["source_task_id"] == "B"
+    assert len(case.member_calls) == 1 and not case.controls
+    call = case.member_calls[0]
+    child = continuation["team_id"]
+    assert call["key"] == expected_harness and call["user_id"] == OWNER
+    assert call["task_facts"]["task_id"] == "B"
+    assert call["conversation_id"] == CONVERSATION + ":task:B"
+    assert call["task_facts"]["_native_resume_conversation"] == CONVERSATION
+    assert call["task_facts"]["project_context"]["repo_root"] == str(work)
+    assert call["qhash"].startswith(child) and child != TEAM
+    assert "compare original outputs" in call["question"]
+    assert "fix the original artifact" in call["question"]
+    child_state = case.teams.load(child)
+    assert set(child_state["tasks"]) == {"B"}
+    assert child_state["tasks"]["B"]["assigned_harness"] == expected_harness
+    assert case.teams.load(TEAM)["tasks"] == source_tasks
+    session = case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)
+    assert len(session["turns"]) == 2 and session["turns"][-1]["team_id"] == child
+    source_turn = next(turn for turn in session["turns"] if turn.get("team_id") == TEAM)
+    assert source_turn == source_turn_before
+    assert source_turn["results"] == source_results
+    assert case.pc.load(TEAM)["attempts"] == source_attempts
+
+    code, duplicate = send_feedback(case)
+    assert code == 201 and duplicate["id"] == message["id"]
+    assert len(case.member_calls) == 1 and not case.controls
+    assert len(case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)["turns"]) == 2
+    source_turn = next(turn for turn in case.server.SESSIONS.load_session(
+        CONVERSATION, user_id=OWNER)["turns"] if turn.get("team_id") == TEAM)
+    assert source_turn == source_turn_before
+    assert source_turn["results"] == source_results
+    assert case.pc.load(TEAM)["attempts"] == source_attempts
+
+
+def test_pk_feedback_explicit_source_overrides_winner_and_binds_request_id(case):
+    _, final, _, _ = _run_saved_pk_source(case, "B", split_harnesses=True)
+    assert final["winner"] == "B"
+    session = case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)
+    source_turn_before = deepcopy(next(
+        turn for turn in session["turns"] if turn.get("team_id") == TEAM))
+    source_attempts = deepcopy(case.pc.load(TEAM)["attempts"])
+    code, receipt = send_feedback(case, source_task_id="A")
+    assert code == 201, receipt
+    message = wait_for_feedback(case)
+    continuation = message["continuation"]
+    assert continuation["status"] == "completed", message
+    assert continuation["source_task_id"] == "A"
+    assert len(case.member_calls) == 1 and not case.controls
+    call = case.member_calls[0]
+    assert call["key"] == "codex" and call["task_facts"]["task_id"] == "A"
+    assert call["conversation_id"] == CONVERSATION + ":task:A"
+    child = continuation["team_id"]
+    assert set(case.teams.load(child)["tasks"]) == {"A"}
+    expected_binding = {"source_team_id": TEAM, "source_task_id": "A",
+                        "request_id": continuation["request_id"], "user_id": OWNER,
+                        "conversation_id": CONVERSATION}
+    assert case.pc.load(child)["user_feedback_request"] == expected_binding
+    runtime_binding = call["task_facts"]["project_context"]["user_feedback_request"]
+    assert all(runtime_binding.get(name) == value for name, value in expected_binding.items())
+
+    code, duplicate = send_feedback(case, source_task_id="A")
+    assert code == 201 and duplicate["id"] == message["id"]
+    assert len(case.member_calls) == 1
+    code, conflict = send_feedback(case, source_task_id="B")
+    assert code == 409 and conflict["error"] == "continuation_request_id_conflict"
+    assert len(case.member_calls) == 1 and not case.controls
+    session = case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)
+    assert len(session["turns"]) == 2
+    source_turn = next(turn for turn in session["turns"] if turn.get("team_id") == TEAM)
+    assert source_turn == source_turn_before
+    assert case.pc.load(TEAM)["attempts"] == source_attempts
+
+
+def test_pk_feedback_explicit_same_author_reuses_proven_native_slot(case):
+    _, final, _, work = _run_saved_pk_source(case, "B")
+    assert final["winner"] == "B"
+    packet = case.pc.load(TEAM)
+    attempts = {row["task_id"]: row for row in packet["attempts"]
+                if row.get("task_id") in {"A", "B"}}
+    assert set(attempts) == {"A", "B"}
+    assert attempts["A"]["native_checkpoint"] != attempts["B"]["native_checkpoint"]
+    for task_id, attempt in attempts.items():
+        slot = CONVERSATION + ":task:" + task_id
+        assert attempt["harness"] == "codex"
+        assert attempt["native_checkpoint"]["session_id"] == "same-native-" + task_id
+        assert Path(attempt["workdir"]).resolve() == work.resolve()
+        # Use the real store's identity encoding, not a fake load or selector.
+        case.tm.update(
+            "conv:codex:" + slot, "codex", user_id=OWNER,
+            conversation_id=CONVERSATION, native_conversation_id=slot,
+            native_checkpoint=deepcopy(attempt["native_checkpoint"]),
+            workdir=attempt["workdir"], model_used=attempt.get("model_used"),
+            native_session_scope=attempt.get("native_session_scope"),
+            native_context_origin=deepcopy(attempt.get("native_context_origin")))
+        cached = case.tm.load("conv:codex:" + slot, "codex")
+        assert cached["team_id"] == "conv:codex:" + slot and cached["key"] == "codex"
+        assert cached["native_checkpoint"] == attempt["native_checkpoint"]
+        assert cached["native_conversation_id"] == slot
+
+    context = {"team_id": TEAM, "user_id": OWNER, "conversation_id": CONVERSATION,
+               "repo_root": str(work), "workspace_root": str(work)}
+    sessions = case.server.SESSIONS
+    assert sessions.continuation_native_slot(
+        CONVERSATION, "codex", OWNER, context) == CONVERSATION + ":task:B"
+    request_id = "__ut_explicit_same_author_native_A"
+    binding = {"source_team_id": TEAM, "source_task_id": "A", "request_id": request_id,
+               "user_id": OWNER, "conversation_id": CONVERSATION}
+    explicit_context = {**context, "user_feedback_request": binding}
+    with pytest.raises(ValueError, match="matching owner action"):
+        sessions.continuation_native_slot(CONVERSATION, "codex", OWNER, explicit_context)
+    with case.mp.context() as queued:
+        queued.setattr(case.server, "_schedule_feedback_resume", lambda *a: None)
+        assert send_feedback(case, source_task_id="A", request_id=request_id)[0] == 201
+    assert sessions.continuation_native_slot(
+        CONVERSATION, "codex", OWNER, explicit_context) == CONVERSATION + ":task:A"
+    observed_slots = []
+
+    def native_boundary(key, question, **kw):
+        assert key == "codex" and kw["task_facts"]["task_id"] == "A"
+        runtime_context = kw["task_facts"]["project_context"]
+        runtime_binding = runtime_context["user_feedback_request"]
+        assert all(runtime_binding.get(name) == value for name, value in binding.items())
+        slot = sessions.continuation_native_slot(CONVERSATION, key, OWNER, runtime_context)
+        assert slot == CONVERSATION + ":task:A", "blank/new/B lane is not the original A cursor"
+        observed_slots.append(slot)
+        return case.member(key, question, **kw)
+
+    case.mp.setattr(case.core, "run_one", native_boundary)
+    code, receipt = send_feedback(case, source_task_id="A", request_id=request_id)
+    assert code == 201, receipt
+    message = wait_for_feedback(case, request_id)
+    continuation = message["continuation"]
+    assert continuation["status"] == "completed", message
+    assert continuation["requested_source_task_id"] == continuation["source_task_id"] == "A"
+    assert observed_slots == [CONVERSATION + ":task:A"]
+    assert len(case.member_calls) == 1 and not case.controls
+    assert case.pc.load(continuation["team_id"])["user_feedback_request"] == binding
+    assert case.tm.load("conv:codex:" + CONVERSATION + ":task:A", "codex")[
+        "native_checkpoint"] == attempts["A"]["native_checkpoint"]
+    assert case.tm.load("conv:codex:" + CONVERSATION + ":task:B", "codex")[
+        "native_checkpoint"] == attempts["B"]["native_checkpoint"]
+
+
+def test_pk_feedback_same_public_final_with_distinct_cursors_is_held(case):
+    _run_saved_pk_source(case, "B", split_harnesses=True)
+    session = case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)
+    source_turn_before = deepcopy(next(
+        turn for turn in session["turns"] if turn.get("team_id") == TEAM))
+    packet = case.pc.load(TEAM)
+    matches = [row for row in packet["attempts"] if row.get("task_id") == "A"]
+    assert len(matches) == 1
+    tampered = deepcopy(matches[0])
+    digest = tampered["public_result_ref"]["final_sha256"]
+    tampered["native_checkpoint"] = {
+        "kind": "fixture", "session_id": "__ut_same_body_different_cursor_A"}
+    assert tampered["public_result_ref"]["final_sha256"] == digest
+    assert tampered["original_final"] == matches[0]["original_final"]
+    packet["attempts"].append(tampered)
+    case.pc._atomic_write(case.pc._path(TEAM), packet)
+    source_attempts = deepcopy(packet["attempts"])
+
+    code, receipt = send_feedback(case, source_task_id="A")
+    assert code == 201, receipt
+    message = wait_for_feedback(case)
+    continuation = message["continuation"]
+    assert continuation["status"] == "held", message
+    assert continuation["requested_source_task_id"] == "A"
+    reason = continuation["reason"]
+    assert reason and reason == reason.lower() and "fix the original artifact" not in reason
+    assert not case.teams.load(continuation["team_id"])
+    assert not case.member_calls and not case.controls
+    session = case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)
+    assert len(session["turns"]) == 1
+    source_turn = next(turn for turn in session["turns"] if turn.get("team_id") == TEAM)
+    assert source_turn == source_turn_before
+    assert case.pc.load(TEAM)["attempts"] == source_attempts
+
+
+@pytest.mark.parametrize("scenario", ["inconclusive", "missing_target", "supporting_context"])
+def test_pk_feedback_without_unique_writable_source_is_held(case, scenario):
+    selected = "inconclusive" if scenario == "inconclusive" else "B"
+    supporting = "C" if scenario == "supporting_context" else ""
+    events, final, controls, _ = _run_saved_pk_source(case, selected, supporting_task=supporting)
+    if scenario == "supporting_context":
+        assert final["winner"] == "B" and len(controls) == 1
+        ready = {event["task_id"] for event in events if event.get("t") == "candidate_ready"}
+        assert ready == {"A", "B"}
+        support = case.teams.load(TEAM)["tasks"]["C"]
+        assert support["status"] == "done" and support["supporting_context"] is True
+    source_tasks = deepcopy(case.teams.load(TEAM)["tasks"])
+    fields = {"source_task_id": "MISSING"} if scenario == "missing_target" else {}
+    if scenario == "supporting_context":
+        fields["source_task_id"] = "C"
+    code, receipt = send_feedback(case, **fields)
+    assert code == 201, receipt
+    message = wait_for_feedback(case)
+    continuation = message["continuation"]
+    assert continuation["status"] == "held", message
+    reason = continuation["reason"]
+    assert reason and reason == reason.lower() and " " not in reason
+    assert "fix the original artifact" not in reason
+    if scenario == "inconclusive":
+        assert reason == "original_executor_ambiguous"
+    assert not case.teams.load(continuation["team_id"])
+    assert not case.member_calls and not case.controls
+    assert case.teams.load(TEAM)["tasks"] == source_tasks
+    assert len(case.server.SESSIONS.load_session(CONVERSATION, user_id=OWNER)["turns"]) == 1
 
 
 @pytest.mark.parametrize("stop", ["runtime_budget", "native_unsettled"])

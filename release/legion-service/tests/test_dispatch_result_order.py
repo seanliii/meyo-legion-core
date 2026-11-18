@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import threading
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -42,13 +44,19 @@ def case(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(SERVICE))
     forbidden_calls = []
 
-    def forbidden(*args, **kwargs):
-        forbidden_calls.append(True)
-        raise AssertionError("real model/network/process access forbidden")
+    def forbidden(target):
+        def call(*args, **kwargs):
+            forbidden_calls.append({
+                "target": target,
+                "thread": threading.current_thread().name,
+                "stack": traceback.format_stack(limit=10),
+            })
+            raise AssertionError("real model/network/process access forbidden")
+        return call
 
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
-    monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden("socket.socket.connect"))
+    monkeypatch.setattr(socket, "create_connection", forbidden("socket.create_connection"))
+    monkeypatch.setattr(subprocess, "Popen", forbidden("subprocess.Popen"))
     core = importlib.import_module("legion_core")
     for module, leaf in (
         ("project_context", "projects"), ("task_memory", "memory"),
@@ -70,7 +78,7 @@ def case(tmp_path, monkeypatch):
         wait_seconds = 0
 
     monkeypatch.setattr(core, "_GatewayLease", lambda *a, **kw: Lease())
-    monkeypatch.setattr(core, "_run_one_with_gateway", forbidden)
+    monkeypatch.setattr(core, "_run_one_with_gateway", forbidden("core._run_one_with_gateway"))
     calls = []
 
     def native_member(key, prompt, **kwargs):

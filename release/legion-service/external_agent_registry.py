@@ -720,7 +720,8 @@ def _credentials(item: dict, env: dict[str, str] | None = None, *,
 
 
 def _run_probe_command(command: list[str], cwd: pathlib.Path, timeout_s: int = 45,
-                       env: dict[str, str] | None = None, key: str = "") -> tuple[bool, str]:
+                       env: dict[str, str] | None = None, key: str = "", *,
+                       output_limit: int | None = 2000) -> tuple[bool, str]:
     """探活子进程必须自立进程组并挂注册表账本(血泪 2026-09-06:
     subprocess.run 超时只杀父进程,make→docker info 等孙进程逃逸成孤儿,
     Docker 不健康时探活挂死堆积→CPU 打满机器卡死)。
@@ -770,7 +771,8 @@ def _run_probe_command(command: list[str], cwd: pathlib.Path, timeout_s: int = 4
             if lease is not None:
                 lease.check()
             completed = True
-            return proc.returncode == 0, (out or "")[-2000:]
+            output = out or ""
+            return proc.returncode == 0, (output if output_limit is None else output[-output_limit:])
         finally:
             try:
                 if not completed or proc.poll() is None:
@@ -800,6 +802,162 @@ def _kill_proc_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=5)
     except Exception:
         pass
+
+
+def _verify_local_git_reuse(item: dict, root: pathlib.Path, revision: str) -> tuple[bool, str]:
+    """Only a pristine, fully local pinned checkout may bypass Git write/network steps."""
+    try:
+        if (not root.is_absolute() or root.is_symlink() or not root.is_dir()
+                or root.resolve(strict=True) != root or "\n" in str(root)):
+            return False, "source root is not a canonical non-symlink directory"
+        git_dir = root / ".git"
+        if (git_dir.is_symlink() or not git_dir.is_dir()
+                or git_dir.resolve(strict=True) != git_dir):
+            return False, ".git must be a real non-symlink directory inside the source root"
+    except OSError as exc:
+        return False, f"source metadata unavailable: {type(exc).__name__}"
+
+    for directory, dirs, files in os.walk(git_dir, followlinks=False):
+        if any((pathlib.Path(directory) / name).is_symlink() for name in dirs + files):
+            return False, "Git metadata contains a symlink; independent objects required"
+    lease = _native_onboard_lease()
+    if lease is not None:
+        _check_install_paths(lease, item, root, pathlib.Path(_context(item)["runtime_dir"]))
+    else:
+        # Host reuse follows the existing operator-controlled source boundary;
+        # leased sources instead retain their issued install_paths authority.
+        from native_process_sandbox import _trusted
+        try:
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                _trusted(pathlib.Path(directory), "local installation source")
+                for name in dirs + files:
+                    path = pathlib.Path(directory) / name
+                    if not path.is_symlink():
+                        _trusted(path, "local installation source")
+        except (OSError, ValueError) as exc:
+            return False, f"source outside existing host trust boundary: {exc}"
+
+    def run(arguments: list[str]) -> tuple[bool, str]:
+        # The native lease filters process env; keep these guards in argv so they
+        # survive that boundary. No ambient Git path/config may redirect inspection.
+        command = [
+            "/usr/bin/env",
+            "-u", "GIT_DIR", "-u", "GIT_WORK_TREE", "-u", "GIT_INDEX_FILE",
+            "-u", "GIT_COMMON_DIR", "-u", "GIT_OBJECT_DIRECTORY",
+            "-u", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "-u", "GIT_NAMESPACE",
+            "-u", "GIT_REPLACE_REF_BASE",
+            "-u", "GIT_CONFIG", "-u", "GIT_CONFIG_PARAMETERS", "-u", "GIT_CONFIG_COUNT",
+            "GIT_NO_REPLACE_OBJECTS=1", "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1",
+            "GIT_CONFIG_NOSYSTEM=1", f"GIT_CONFIG_GLOBAL={os.devnull}",
+            f"GIT_CONFIG_SYSTEM={os.devnull}",
+            "git", "--no-replace-objects", "-c", f"safe.directory={root}", "-c", "core.fsmonitor=false",
+            "-c", f"core.hooksPath={os.devnull}", "-c", "core.untrackedCache=false",
+            "-C", str(root), *arguments,
+        ]
+        return _run_probe_command(command, root, timeout_s=20, env=dict(os.environ),
+                                  key=str(item.get("key") or ""), output_limit=None)
+
+    ok, output = run(["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-path", "objects"])
+    rows = output.rstrip("\n").splitlines()
+    if not ok or len(rows) != 3:
+        return False, "Git root/object inspection failed: " + output.strip()[-300:]
+    try:
+        top = pathlib.Path(rows[0])
+        actual_git = pathlib.Path(rows[1])
+        objects = pathlib.Path(rows[2])
+        if not objects.is_absolute():
+            objects = top / objects
+        if (top.resolve(strict=True) != root or actual_git.resolve(strict=True) != git_dir
+                or not objects.resolve(strict=True).is_relative_to(git_dir)):
+            return False, "Git root, metadata, or object path escapes the authorized source"
+    except (OSError, ValueError) as exc:
+        return False, f"Git path verification failed: {type(exc).__name__}"
+
+    # Disabling replacement is necessary but not sufficient: refuse repositories
+    # whose apparent history depends on replacement/grafts or borrowed objects.
+    if any((objects / "info" / name).exists() or (objects / "info" / name).is_symlink()
+           for name in ("alternates", "http-alternates")):
+        return False, "Git alternates are not an independently complete source"
+    if (git_dir / "info/grafts").exists() or (git_dir / "info/grafts").is_symlink():
+        return False, "Git grafts are not an immutable source"
+    ok, output = run(["for-each-ref", "--format=%(refname)", "refs/replace/"])
+    if not ok or output.strip():
+        return False, "Git replace refs are not an immutable source"
+
+    ok, output = run(["remote", "get-url", "--all", "origin"])
+    remotes = output.rstrip("\n").splitlines() if output else []
+    canonical = str(item.get("url") or "")
+    if not ok or len(remotes) != 1 or remotes[0] not in {canonical, canonical + ".git"}:
+        return False, "origin is not exactly one canonical catalog HTTPS URL"
+
+    ok, output = run(["rev-parse", "--verify", "HEAD^{commit}"])
+    actual_revision = output.strip()
+    if not ok or actual_revision != revision:
+        return False, f"HEAD does not equal immutable catalog revision (actual={actual_revision!r})"
+
+    ok, output = run(["ls-files", "-v", "-z"])
+    if not ok:
+        return False, "Git index flag inspection failed: " + output.strip()[-300:]
+    if any(entry and (entry[0].islower() or entry[0] == "S")
+           for entry in output.split("\0")):
+        return False, "Git index has assume-unchanged or skip-worktree flags; source preserved"
+
+    # status may trust cached stat data even when bytes changed with identical
+    # size/mtime. Compare raw tracked bytes with the immutable tree, not filters
+    # or the index's stat cache. Keep the index flags check above unchanged.
+    ok, output = run(["ls-tree", "-r", "-z", revision])
+    if not ok or not output:
+        return False, "immutable tracked tree inspection failed"
+    try:
+        for entry in output.split("\0"):
+            if not entry:
+                continue
+            metadata, relative = entry.split("\t", 1)
+            mode, kind, oid = metadata.split()
+            path = root / relative
+            if (not path.is_relative_to(root)
+                    or ".." in pathlib.PurePosixPath(relative).parts
+                    or path.parent.resolve(strict=True) != path.parent):
+                return False, "tracked path escapes source or traverses a symlink"
+            if kind != "blob" or mode not in {"100644", "100755", "120000"}:
+                return False, "tracked gitlink requires independent source verification"
+            if mode == "120000":
+                if not path.is_symlink() or not path.resolve().is_relative_to(root):
+                    return False, "tracked symlink escapes source or changed type"
+                raw = os.fsencode(os.readlink(path))
+                digest = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            else:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or bool(info.st_mode & 0o111) != (mode == "100755")):
+                        return False, "tracked file type, links, or executable mode changed"
+                    digest_state = hashlib.sha1(b"blob " + str(info.st_size).encode() + b"\0")
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest_state.update(chunk)
+                    digest = digest_state.hexdigest()
+            if digest != oid:
+                return False, "HEAD/index/worktree tracked bytes differ from immutable revision"
+    except (OSError, ValueError) as exc:
+        return False, f"tracked byte verification failed: {type(exc).__name__}"
+
+    ok, output = run(["status", "--porcelain=v1", "-z", "--untracked-files=all",
+                      "--ignored=matching", "--ignore-submodules=none"])
+    if not ok:
+        return False, "Git clean-state inspection failed: " + output.strip()[-300:]
+    if output:
+        return False, "HEAD/index/worktree contains tracked, untracked, or ignored changes"
+
+    ok, output = run(["submodule", "status", "--recursive"])
+    if not ok or any(row and not row.startswith(" ") for row in output.splitlines()):
+        return False, "submodule is uninitialized, dirty, or not at its recorded gitlink"
+
+    ok, output = run(["rev-list", "--objects", "--quiet", "--missing=error",
+                      "--max-count=1", revision, "--"])
+    if not ok:
+        return False, "pinned revision objects are not fully local: " + output.strip()[-300:]
+    return True, ""
 
 
 def _probe_one(item: dict, env: dict[str, str] | None = None, *,
@@ -1320,6 +1478,9 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
     commands = [] if bundled else [["git", "clone", "--filter=blob:none", "--no-checkout", url + ".git", str(destination)],
                 ["git", "-C", str(destination), "fetch", "--depth", "1", "origin", revision],
                 ["git", "-C", str(destination), "checkout", "--detach", revision]]
+    for command in commands:
+        command[1:1] = ["--no-replace-objects", "-c", f"safe.directory={destination}",
+                        "-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false"]
     commands.extend(_format_argv(step, item) for step in item.get("install") or [])
     if not confirm:
         return {"ok": True, "status": "planned", "key": key, "commands": commands,
@@ -1331,20 +1492,47 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
             return {"ok": False, "status": "build_failed", "key": key,
                     "error": "non-git installation destination is not empty; source preserved",
                     "source_preserved": True}
+    reuse_local = False
+    source_preserved = not bundled and (destination / ".git").exists()
+    if source_preserved:
+        reuse_local, reason = _verify_local_git_reuse(item, destination, revision)
+        if reuse_local:
+            commands = commands[3:]
+        else:
+            # Installation state is a source observation, not a new grant. The
+            # existing lease/path boundary above still controls every mutation.
+            previous = _read_state().get(key) or {}
+            old_revision = str(previous.get("source_revision") or "")
+            managed = (previous.get("source") == str(destination)
+                       and re.fullmatch(r"[0-9a-f]{40}", old_revision)
+                       and old_revision != revision)
+            verified_old, _ = (_verify_local_git_reuse(item, destination, old_revision)
+                               if managed else (False, ""))
+            if not verified_old:
+                return {"ok": False, "status": "requires_independent_source_upgrade", "key": key,
+                        "revision": revision, "source_preserved": True,
+                        "runtime_acceptance": "not_run", "probe": _managed_probe_metadata(item),
+                        "error": f"requires independent source upgrade: {reason}; source preserved"}
+            # A verified managed old revision uses the existing fetch/checkout
+            # sequence. Never clone over it or delete it on an upgrade/failure.
+            commands = commands[1:]
     _write_state(key, {"status": "installing", "phase": "clone", "error": ""})
     _check_install_paths(lease, item, destination, runtime_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _check_install_paths(lease, item, destination, runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     logs = []
+    state = {**_managed_probe_metadata(item), "runtime_acceptance": "not_run"}
     try:
-        if (not bundled and (destination / ".git").exists()
-                and _git_revision(destination, key) != revision):
-            _check_install_paths(lease, item, destination, runtime_dir)
-            shutil.rmtree(destination)
+        source_steps = 0 if bundled or reuse_local else (2 if source_preserved else 3)
         for index, command in enumerate(commands):
+            if index == source_steps and not bundled and not reuse_local:
+                verified, reason = _verify_local_git_reuse(item, destination, revision)
+                if not verified:
+                    raise RuntimeError(f"requires independent source upgrade: {reason}; source preserved")
+                _write_state(key, {"source": str(destination), "source_revision": revision})
             _check_install_paths(lease, item, destination, runtime_dir)
-            if not bundled and index == 0:
+            if not bundled and not reuse_local and not source_preserved and index == 0:
                 if (destination / ".git").exists():
                     continue
                 if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
@@ -1365,6 +1553,13 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
             if not isinstance(install_env, dict) or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) or not isinstance(v, str) or "\x00" in v for k, v in install_env.items()):
                 raise ValueError("invalid install_env")
             step_env.update(install_env)
+            if index < source_steps:
+                for name in list(step_env):
+                    if name.startswith("GIT_"):
+                        step_env.pop(name)
+                step_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                                GIT_CONFIG_SYSTEM=os.devnull, GIT_TERMINAL_PROMPT="0",
+                                GIT_NO_REPLACE_OBJECTS="1")
             # Build each member against its own interpreter, not the server vendor
             # directory. Otherwise pip treats unrelated global packages as installed.
             step_env.pop("PYTHONPATH", None)
@@ -1385,6 +1580,11 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
                 raise RuntimeError(f"install step timed out after {timeout_s}s; log={result['log_path']}")
             if result["exit_code"] != 0:
                 raise RuntimeError((result["stderr"] or result["stdout"] or f"exit {result['exit_code']}")[-1000:])
+        if not bundled and not reuse_local and not item.get("install"):
+            verified, reason = _verify_local_git_reuse(item, destination, revision)
+            if not verified:
+                raise RuntimeError(f"requires independent source upgrade: {reason}; source preserved")
+        _write_state(key, {"source": str(destination), "source_revision": revision})
         if build_only and item.get("build_probe") is not None:
             state = probe_build(item)
             ok = bool(state.get("revision_ok") and state.get("available"))
@@ -1419,15 +1619,21 @@ def install(key: str, confirm: bool = False, timeout_s: int = 1800,
         state = _probe_one(item)
     except Exception as exc:
         _check_install_paths(lease, item, destination, runtime_dir)
-        ok, status = False, "build_failed"
+        ok = False
+        status = ("requires_independent_source_upgrade" if
+                  "requires independent source upgrade:" in str(exc) else "build_failed")
+        state = {**_managed_probe_metadata(item), "runtime_acceptance": "not_run"}
         _write_state(key, {"status": status, "phase": "install", "error": f"{type(exc).__name__}:{exc}"})
     _check_install_paths(lease, item, destination, runtime_dir)
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _LOG_DIR / f"{_safe_key(key)}-{int(time.time())}.json"
     log_path.write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"ok": ok, "status": status, "key": key, "destination": str(destination),
-            "version": item.get("version"), "revision": revision, "probe": _probe_one(item),
-            "log_path": str(log_path), "error": "" if ok else (_read_state().get(key) or {}).get("error", "")}
+    result = {"ok": ok, "status": status, "key": key, "destination": str(destination),
+              "version": item.get("version"), "revision": revision, "probe": state,
+              "log_path": str(log_path), "error": "" if ok else (_read_state().get(key) or {}).get("error", "")}
+    if source_preserved:
+        result["source_preserved"] = True
+    return result
 
 
 def capability_actions(key: str = "", *, catalog: list[dict] | None = None) -> dict:
@@ -2252,6 +2458,18 @@ def apply_update(key: str, target_tag: str = "", target_revision: str = "",
     # 各自独立,单独查 npm 最新替换;查不到就保留原 npm 版本(源码 revision 已更新)。
     npm_package = str(update.get("npm_package") or "")
     new_npm_version = _npm_latest_version(npm_package) if npm_package else ""
+    # Resolve legacy installations through the same source verifier before
+    # changing the catalog. A failed source admission is not a failed build and
+    # must not trigger a second installation/probe of that rejected directory.
+    destination = source_dir(item)
+    if (destination / ".git").exists():
+        verified, reason = _verify_local_git_reuse(item, destination, old_revision)
+        if not verified:
+            return {"ok": False, "status": "requires_independent_source_upgrade", "key": key,
+                    "source_preserved": True, "runtime_acceptance": "not_run",
+                    "probe": _managed_probe_metadata(item),
+                    "error": f"requires independent source upgrade: {reason}; source preserved"}
+        _write_state(key, {"source": str(destination), "source_revision": old_revision})
     # 2) 备份旧条目(回滚用)
     backup_item = json.loads(json.dumps(item))
     # 3) 更新 catalog:version/revision/current_ref + install argv 里的旧版本引用
@@ -2294,6 +2512,9 @@ def apply_update(key: str, target_tag: str = "", target_revision: str = "",
                 if x2.get("key") == key:
                     items_now[i2] = backup_item
             _save_catalog(items_now)
+        if result.get("status") == "requires_independent_source_upgrade":
+            return {**result, "catalog_restored": True,
+                    "attempted": {"version": new_tag, "revision": new_rev}}
         rollback = install(key, confirm=True, timeout_s=timeout_s)
         err_text = str(result.get("error") or state.get("status_detail") or "install failed")[:400]
         return {"ok": False, "status": "rolled_back", "key": key, "error": err_text,

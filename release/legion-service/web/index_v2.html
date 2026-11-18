@@ -3327,10 +3327,10 @@ async function _submitCanvasFeedback(event){
     }
     if(!state.request.receipt){
       const response=await fetch('/api/legion/team/message',{method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(15000),
-        body:JSON.stringify({team_id:state.team,recipient:'commander',text:state.request.text,request_id:state.request.id,continue_execution:true})});
+        body:JSON.stringify({team_id:state.team,recipient:'commander',text:state.request.text,request_id:state.request.id,source_task_id:state.binding.task,continue_execution:true})});
       const body=await response.json(),receipt=body.continuation;
       if(!response.ok||body.error||!receipt||receipt.request_id!==state.request.id||receipt.source_team_id!==state.team||
-        receipt.conversation_id!==state.sid||receipt.user_id!==state.owner||!receipt.team_id)throw Error('未获得匹配的续做回执');
+        receipt.conversation_id!==state.sid||receipt.user_id!==state.owner||receipt.source_task_id!==state.binding.task||!receipt.team_id)throw Error('未获得匹配的续做回执');
       state.request.receipt=receipt;
     }
     if(!_canvasFeedbackCurrent(state)||curSession!==state.sid||view!==_sessionView)return;
@@ -3788,11 +3788,44 @@ function _sessionDeliveryOverview(turns){
     const previous=currentFiles.get(key);
     if(!previous||a._sourceTurn>=previous._sourceTurn)currentFiles.set(key,a);
   });
-  const primary=_chooseVisibleDeliveries(Array.from(currentFiles.values()))
+  let selectedGroup=null,selectedTaskId='',selectionStamp='';
+  records.forEach((turn,index)=>{
+    const result=turn.result&&typeof turn.result==='object'?turn.result:turn;
+    const final=turn.current_final_result||result.current_final_result;
+    const current=final&&typeof final==='object'?{...result,...final}:result;
+    const selection=current.selection||{},source=selection.source||'';
+    const reference=current.final_result||final||{};
+    const id=selection.selected_task_id||selection.task_id||
+      (source==='explicit_winner'?current.winner:'')||
+      (source==='final_result_reference'?(reference.task_id||reference.key):'')||'';
+    const adopted=['final_result_reference','explicit_winner'].includes(source)||
+      (source==='harness'&&selection.status==='selected'&&selection.adjudicated===true);
+    const rows=Array.isArray(result.results)?result.results:[];
+    const exact=adopted&&typeof id==='string'&&id?rows.filter(r=>r&&r.task_id===id&&!r.supporting_context):[];
+    const matches=exact.length?exact:adopted&&typeof id==='string'&&id?rows.filter(r=>r&&r.key===id&&!r.supporting_context):[];
+    if(source||selection.requested){
+      selectionStamp=JSON.stringify([source,selection.status,selection.adjudicated,id,selection.fallback,matches.length]);
+      if(!adopted||!id||matches.length!==1){selectedGroup=null;selectedTaskId='';}
+    }
+    if(matches.length===1){
+      const files=(matches[0].artifacts||[]).filter(a=>a&&typeof a.url==='string'&&
+        /^(?:https?:\/\/|\/(?!\/))/i.test(a.url.trim())).map(a=>({...a,_sourceTurn:index+1}));
+      if(files.length)selectedGroup=files;
+      else if(selectedTaskId!==id)selectedGroup=null;
+      selectedTaskId=id;
+    }
+  });
+  // Follow only recorded source identity into newer snapshots; keep all other
+  // candidates and old versions downloadable without inventing a quality rank.
+  const selectedFiles=selectedGroup?.map(a=>{
+    const source=a.provenance?.source==='authorized-project-export'&&a.provenance?.source_path;
+    return currentFiles.get(source?'source:'+source:'url:'+a.url)||a;
+  });
+  const primary=_chooseVisibleDeliveries(selectedFiles?.length?selectedFiles:Array.from(currentFiles.values()))
     .sort((a,b)=>b._sourceTurn-a._sourceTurn);
   const latestTurn=records[records.length-1]||{};
   const latest=latestTurn.result&&typeof latestTurn.result==='object'?latestTurn.result:latestTurn;
-  return {turnCount:records.length,artifacts,artifactCount:artifacts.length,primary,latest,
+  return {turnCount:records.length,artifacts,artifactCount:artifacts.length,primary,latest,selectionStamp,
     fromEarlier:primary.some(a=>a._sourceTurn<records.length)};
 }
 function _renderSessionOverview(turns){
@@ -3813,7 +3846,7 @@ function _renderSessionOverview(turns){
   summary.hidden=!view.primary.length;box.hidden=!view.primary.length;
   if(!view.primary.length){history.open=true;return view;}
   const state=_deliveryDisplay(view.latest,view.latest.results||[]);
-  const stamp=JSON.stringify([curSession,view.turnCount,state.title,view.artifacts.map(a=>[a.url,a.name,a.bytes,a._sourceTurn,a.provenance?.sha256])]);
+  const stamp=JSON.stringify([curSession,view.turnCount,state.title,view.selectionStamp,view.artifacts.map(a=>[a.url,a.name,a.bytes,a._sourceTurn,a.provenance?.sha256])]);
   if(box._stamp===stamp)return view;box._stamp=stamp;
   const filesOpen=box.querySelector('.session-files')?.open||false;
   const primary=view.primary.map(a=>{

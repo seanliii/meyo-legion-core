@@ -3364,7 +3364,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 message = TEAMS.send_message(
                     team_id, "user" if execute else sender, recipient, text,
-                    execution_request_id=request_id if execute else "", user_id=uid)
+                    execution_request_id=request_id if execute else "", user_id=uid,
+                    source_task_id=payload.get("source_task_id", "") if execute else "")
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, 409)
                 return
@@ -5627,8 +5628,13 @@ def _schedule_feedback_resume(team_id: str, user_id: str, conversation_id: str):
                     response = _resume_saved_team(
                         team_id, explicit=False, user_id=user_id, conversation_id=conversation_id)
                 except Exception as exc:
+                    code = str(exc)
+                    safe_reason = code if isinstance(exc, ValueError) and code in {
+                        "original_executor_ambiguous", "original_executor_unavailable",
+                        "original_executor_context_unavailable", "original_workspace_unavailable",
+                        "continuation_feedback_body_unavailable"} else type(exc).__name__
                     TEAMS.record_continuation(
-                        team_id, request_id, status="held", reason=type(exc).__name__)
+                        team_id, request_id, status="held", reason=safe_reason)
                     continue
                 reason = response.get("reason", "")
                 if response.get("status") == "unchanged":
@@ -5732,15 +5738,51 @@ def _continue_feedback(state: dict, packet: dict, message: dict, *, owner: str,
                     if field not in previous and isinstance(source.get(field), str):
                         previous[field] = source[field]
         if not persistent:
-            if len(tasks) != 1:
-                raise ValueError("original_executor_ambiguous")
-            task_id, previous = next(iter(tasks.items()))
+            source_task_id = request.get("source_task_id") or ""
+            if len(tasks) != 1 or source_task_id:
+                source_turn = next((turn for turn in reversed(session.get("turns") or [])
+                                    if isinstance(turn, dict) and turn.get("team_id") == team_id
+                                    and turn.get("status") != "running"), {})
+                source_packet = project_context.load(team_id)
+                project_context.require_owner(source_packet, user_id, conversation_id)
+                selected = SESSIONS._continuation_delivery_result(
+                    source_turn, source_packet, conversation_id, user_id, task_id=source_task_id)
+                if not selected:
+                    raise ValueError("original_executor_ambiguous")
+                source_node, source_result = selected
+                task_id = str(source_node.get("task_id") or "")
+                previous = tasks.get(task_id) or {}
+                if (not previous or source_result.get("supporting_context")
+                        or previous.get("assigned_harness") != source_node.get("assigned_harness")
+                        or str(previous.get("result", {}).get("model_used") or "")
+                        != str(source_result.get("model_used") or "")
+                        or (previous.get("result", {}).get("native_checkpoint") or {})
+                        != (source_result.get("native_checkpoint") or {})):
+                    raise ValueError("original_executor_context_unavailable")
+                workdir = source_result.get("workdir")
+                if not isinstance(workdir, str) or not os.path.isabs(workdir):
+                    raise ValueError("original_workspace_unavailable")
+                packet.update(repo_root=workdir, workspace_root=workdir)
+                require_project_access(packet)
+                if not TEAMS.record_continuation(
+                        team_id, request_id, owner=owner, source_task_id=task_id):
+                    return {"ok": True, "status": "unchanged", "team_id": team_id,
+                            "reason": "feedback_not_admitted"}
+            else:
+                task_id, previous = next(iter(tasks.items()))
             harness = str(previous.get("assigned_harness") or "")
             if not harness:
                 raise ValueError("original_executor_unavailable")
             node = deepcopy(plan["tasks"].get(task_id) or {})
             node.update(task=question, assigned_harness=harness, assignment_locked=True,
                         depends_on=[], excluded_harnesses=[])
+            # The child owns one author lane; the original PK graph remains in
+            # its original packet, not as phantom nodes in this new invocation.
+            packet["tasks"] = [{**deepcopy(node), "task_id": task_id}]
+            packet["user_feedback_request"] = {
+                "source_team_id": team_id, "source_task_id": task_id,
+                "request_id": request_id, "user_id": user_id,
+                "conversation_id": conversation_id}
             plan.update(tasks={task_id: node}, captain="", _continuous_coordination=False)
             mode = "relay"
         else:

@@ -4,9 +4,12 @@ Slow/member/provider boundaries are test doubles. The report branch and any
 temporary mode-check script execute for real; this is not member acceptance.
 """
 
+import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -356,6 +359,9 @@ def test_cc_build_only_cli_uses_exact_reviewed_host_identity(tmp_path, monkeypat
     source = registry.source_dir(entry)
     (source / ".git").mkdir(parents=True)
     monkeypatch.setattr(registry, "_git_revision", lambda *a: entry["revision"])
+    # This host-identity case intentionally has a synthetic empty .git directory;
+    # the separate real-Git fixtures below exercise strict local-source verification.
+    monkeypatch.setattr(registry, "_verify_local_git_reuse", lambda *a: (True, ""))
     monkeypatch.setattr(registry, "_strip_dead_proxy", lambda env: dict(env))
     install_calls, probe_calls = [], []
 
@@ -702,3 +708,422 @@ def test_build_only_spec_preserves_failed_build_without_runtime_acceptance(
     assert result["status"] == "build_failed"
     assert result["runtime_acceptance"] == "not_run"
     assert not module.REPORT_DIR.exists()
+
+
+def _local_install_case(tmp_path, monkeypatch, *, bundled=False):
+    import external_agent_registry as registry
+
+    source = tmp_path / "source"
+    source.mkdir()
+    revision = "a" * 40
+    git = None
+    if bundled:
+        payload = b"upstream\n"
+        (source / "tracked.txt").write_bytes(payload)
+        (source / ".meyo-source.json").write_text(json.dumps({
+            "revision": revision,
+            "files": {"tracked.txt": {"sha256": hashlib.sha256(payload).hexdigest()}},
+        }))
+    else:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1"}
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                     "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"):
+            env.pop(name, None)
+        subprocess.run(["git", "init", "--quiet", str(source)], check=True,
+                       capture_output=True, text=True, env=env, timeout=10)
+
+        def git_command(*args):
+            return subprocess.run(
+                ["git", "-c", "core.hooksPath=" + os.devnull, "-C", str(source), *args],
+                check=True, capture_output=True, text=True, env=env, timeout=10)
+
+        git = git_command
+        git("config", "user.name", "Install Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        (source / "tracked.txt").write_text("upstream\n")
+        (source / ".gitignore").write_text("*.ignored\n")
+        git("add", "tracked.txt", ".gitignore")
+        git("commit", "--quiet", "-m", "pinned upstream")
+        revision = git("rev-parse", "HEAD").stdout.strip()
+        git("remote", "add", "origin", "https://github.com/example/fixture.git")
+
+    item = {
+        "key": "__ut_local_git_reuse", "name": "Local install fixture", "kind": "agent",
+        "url": "https://github.com/example/fixture", "version": "test", "revision": revision,
+        "install": [[sys.executable, "-c", "dependency_sentinel = True"]],
+        "probe": {"method": "path", "target": "{source}/tracked.txt"},
+    }
+    state = tmp_path / "install-state"
+    monkeypatch.setenv("LEGION_EXTERNAL_RUNTIME_ROOT", str(tmp_path / "runtimes"))
+    monkeypatch.delenv("MEYO_RUNTIME_STORE", raising=False)
+    monkeypatch.delenv("MEYO_RUNTIME_ROOT", raising=False)
+    monkeypatch.setattr(registry, "_STATE_DIR", state)
+    monkeypatch.setattr(registry, "_STATE_PATH", state / "state.json")
+    monkeypatch.setattr(registry, "_LOG_DIR", state / "logs")
+    monkeypatch.setattr(registry, "_native_onboard_lease", lambda: None)
+    monkeypatch.setattr(registry, "load_catalog", lambda: [item])
+    monkeypatch.setattr(registry, "source_dir", lambda _: source)
+    steps, probes, git_commands = [], [], []
+
+    def install_step(command, *_args, **_kwargs):
+        steps.append(command)
+        return {"command": command, "exit_code": 0, "stdout": "", "stderr": "",
+                "timed_out": False, "log_path": str(tmp_path / "dependency.log")}
+
+    monkeypatch.setattr(registry, "_run_install_step", install_step)
+    real_probe_one = registry._probe_one
+    monkeypatch.setattr(registry, "_probe_one", lambda *a, **k: probes.append(True) or {
+        "available": True, "revision_ok": True, "status": "ready", "status_detail": ""})
+    real_probe_command = registry._run_probe_command
+
+    def observe_git(command, *args, **kwargs):
+        if "git" in command:
+            git_commands.append(command)
+        return real_probe_command(command, *args, **kwargs)
+
+    monkeypatch.setattr(registry, "_run_probe_command", observe_git)
+    return {"registry": registry, "item": item, "source": source, "git": git,
+            "steps": steps, "probes": probes, "git_commands": git_commands,
+            "real_probe_one": real_probe_one}
+
+
+def test_verified_local_git_reuse_skips_only_source_sync(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch)
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+
+    assert result["ok"] is True and result["source_preserved"] is True
+    assert len(case["steps"]) == 1 and "dependency_sentinel" in case["steps"][0][2]
+    assert case["probes"]
+    assert case["git_commands"]
+    assert all("GIT_NO_LAZY_FETCH=1" in command for command in case["git_commands"])
+    assert all("core.fsmonitor=false" in command for command in case["git_commands"])
+    assert not any({"clone", "fetch", "checkout"} & set(command)
+                   for command in case["git_commands"] + case["steps"])
+
+
+@pytest.mark.parametrize("fault", [
+    "dirty", "staged", "untracked", "ignored", "origin", "wrong_revision", "git_symlink",
+])
+def test_unverified_local_git_is_preserved_without_dependency_steps(tmp_path, monkeypatch, fault):
+    case = _local_install_case(tmp_path, monkeypatch)
+    source, git = case["source"], case["git"]
+    if fault in {"dirty", "staged", "wrong_revision"}:
+        (source / "tracked.txt").write_text(fault + "\n")
+        if fault in {"staged", "wrong_revision"}:
+            git("add", "tracked.txt")
+        if fault == "wrong_revision":
+            git("commit", "--quiet", "-m", "different local revision")
+    elif fault == "untracked":
+        (source / "untracked.txt").write_text("preserve me")
+    elif fault == "ignored":
+        (source / "local.ignored").write_text("preserve me")
+    elif fault == "origin":
+        git("remote", "set-url", "origin", "https://github.com/example/wrong.git")
+    else:
+        (source / ".git").rename(source / "git-metadata")
+        (source / ".git").symlink_to(source / "git-metadata", target_is_directory=True)
+    before = (source / "tracked.txt").read_text()
+
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+
+    assert result["ok"] is False and result["status"] == "requires_independent_source_upgrade"
+    assert result["source_preserved"] is True and case["steps"] == []
+    assert case["probes"] == [] and result["runtime_acceptance"] == "not_run"
+    assert (source / "tracked.txt").read_text() == before
+    assert (source / ".git").exists()
+    if fault == "wrong_revision":
+        assert "HEAD does not equal" in result["error"]
+    elif fault == "origin":
+        assert "origin" in result["error"]
+    elif fault == "git_symlink":
+        assert "non-symlink" in result["error"]
+    else:
+        assert "HEAD/index/worktree" in result["error"]
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+@pytest.mark.parametrize("long_listing", [False, True])
+def test_hidden_tracked_changes_reject_reuse_without_truncating_index(
+    tmp_path, monkeypatch, flag, long_listing,
+):
+    case = _local_install_case(tmp_path, monkeypatch)
+    source, git = case["source"], case["git"]
+    if long_listing:
+        for index in range(150):
+            (source / f"zzz-padding-{index:04d}.txt").write_text("clean\n")
+        git("add", ".")
+        git("commit", "--quiet", "-m", "long tracked listing")
+        case["item"]["revision"] = git("rev-parse", "HEAD").stdout.strip()
+    git("update-index", flag, "tracked.txt")
+    (source / "tracked.txt").write_text("real dirty source hidden from status\n")
+    assert git("status", "--porcelain=v1").stdout == ""
+    listing = git("ls-files", "-v", "-z").stdout
+    prefix = "h" if flag == "--assume-unchanged" else "S"
+    dangerous = prefix + " tracked.txt\0"
+    assert dangerous in listing
+    if long_listing:
+        assert len(listing) > 2000 and dangerous not in listing[-2000:]
+    index_before = (source / ".git/index").read_bytes()
+
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+
+    assert result["ok"] is False and result["source_preserved"] is True
+    assert "assume-unchanged or skip-worktree" in result["error"]
+    assert case["steps"] == [] and case["probes"] == []
+    assert (source / "tracked.txt").read_text() == "real dirty source hidden from status\n"
+    assert (source / ".git/index").read_bytes() == index_before
+    assert git("ls-files", "-v", "-z").stdout == listing
+
+
+def test_probe_output_limit_defaults_to_tail_and_allows_private_full_output(tmp_path, monkeypatch):
+    import external_agent_registry as registry
+
+    monkeypatch.setattr(registry, "_native_onboard_lease", lambda: None)
+    command = [sys.executable, "-c", "print('prefix-' + 'x' * 2500, end='')"]
+    ok, output = registry._run_probe_command(command, tmp_path, timeout_s=5)
+    assert ok and output == "x" * 2000
+    ok, output = registry._run_probe_command(command, tmp_path, timeout_s=5, output_limit=None)
+    assert ok and output == "prefix-" + "x" * 2500
+
+
+def test_bundled_source_still_skips_git_and_runs_dependencies(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch, bundled=True)
+    marker = (case["source"] / ".meyo-source.json").read_text()
+
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+
+    assert result["ok"] is True and len(case["steps"]) == 1
+    assert case["git_commands"] == []
+    assert (case["source"] / ".meyo-source.json").read_text() == marker
+
+
+@pytest.mark.parametrize("fault", ["replace", "alternates", "grafts", "stat_cache", "symlink", "hardlink"])
+def test_local_reuse_checks_actual_bytes_and_independent_objects(tmp_path, monkeypatch, fault):
+    case = _local_install_case(tmp_path, monkeypatch)
+    source, git = case["source"], case["git"]
+    tracked = source / "tracked.txt"
+    if fault == "replace":
+        original = case["item"]["revision"]
+        tracked.write_text("replacement\n")
+        git("add", ".")
+        git("commit", "--quiet", "-m", "replacement tree")
+        replacement = git("rev-parse", "HEAD").stdout.strip()
+        git("update-ref", "HEAD", original)
+        git("replace", original, replacement)
+        assert git("status", "--porcelain=v1").stdout == ""
+    elif fault == "alternates":
+        (source / ".git/objects/info/alternates").write_text(str(tmp_path / "external-objects") + "\n")
+    elif fault == "grafts":
+        (source / ".git/info/grafts").write_text(case["item"]["revision"] + "\n")
+    elif fault == "stat_cache":
+        git("update-index", "--refresh")
+        info = tracked.stat()
+        tracked.write_bytes(b"tampered\n")  # Same size, restored timestamp; index is untouched.
+        os.utime(tracked, ns=(info.st_atime_ns, info.st_mtime_ns))
+    elif fault == "symlink":
+        outside = tmp_path / "outside"
+        outside.write_text("upstream\n")
+        tracked.unlink()
+        tracked.symlink_to(outside)
+    else:
+        os.link(tracked, tmp_path / "outside-link")
+    index_before = (source / ".git/index").read_bytes()
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+    assert not result["ok"] and result["status"] == "requires_independent_source_upgrade"
+    assert case["steps"] == case["probes"] == []
+    assert (source / ".git/index").read_bytes() == index_before
+    if fault in {"replace", "alternates", "grafts"}:
+        assert fault in result["error"]
+    else:
+        assert "tracked" in result["error"]
+
+
+def _upgrade_fixture(case):
+    git, source = case["git"], case["source"]
+    old = case["item"]["revision"]
+    (source / "tracked.txt").write_text("new upstream\n")
+    git("add", ".")
+    git("commit", "--quiet", "-m", "new upstream")
+    new = git("rev-parse", "HEAD").stdout.strip()
+    git("checkout", "--detach", old)
+    return old, new
+
+
+@pytest.mark.parametrize("fetch_failure", [False, True])
+def test_managed_revision_upgrade_preserves_repository_and_uses_sync(tmp_path, monkeypatch, fetch_failure):
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry, item = case["registry"], case["item"]
+    old, new = _upgrade_fixture(case)
+    registry._write_state(item["key"], {"source": str(case["source"]), "source_revision": old})
+    item["revision"] = new
+    sentinel = case["source"] / ".git/preserved-local-history"
+    sentinel.write_text("never delete\n")
+
+    def sync(command, *_args):
+        case["steps"].append(command)
+        if "fetch" in command and fetch_failure:
+            return dict(exit_code=1, timed_out=False, stdout="TLS (-110)", stderr="")
+        if "checkout" in command:
+            case["git"]("checkout", "--detach", new)
+        return dict(exit_code=0, timed_out=False, stdout="", stderr="")
+
+    monkeypatch.setattr(registry, "_run_install_step", sync)
+    result = registry.install(item["key"], confirm=True, timeout_s=5)
+    assert result["ok"] is not fetch_failure
+    assert sentinel.read_text() == "never delete\n"
+    assert "fetch" in case["steps"][0] and not any("clone" in c for c in case["steps"])
+    assert case["git"]("rev-parse", "HEAD").stdout.strip() == (old if fetch_failure else new)
+    if fetch_failure:
+        assert case["probes"] == [] and len(case["steps"]) == 1
+    else:
+        assert "checkout" in case["steps"][1] and len(case["steps"]) == 3
+        assert registry._read_state()[item["key"]]["source_revision"] == new
+
+
+def test_ignored_postbuild_residue_is_not_laundered_by_install_state(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry, item = case["registry"], case["item"]
+    assert registry.install(item["key"], confirm=True, timeout_s=5)["ok"]
+    (case["source"] / "build.ignored").write_text("legitimate but not independently verified")
+    case["steps"].clear()
+    case["probes"].clear()
+    result = registry.install(item["key"], confirm=True, timeout_s=5)
+    assert result["status"] == "requires_independent_source_upgrade" and not result["ok"]
+    assert case["steps"] == case["probes"] == []
+    assert (case["source"] / "build.ignored").exists()
+
+
+def test_apply_update_admits_verified_old_source_through_existing_interface(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry, item = case["registry"], case["item"]
+    old, new = _upgrade_fixture(case)
+    item["update"] = {"strategy": "github_commit"}
+    monkeypatch.setattr(registry, "catalog_lock", __import__("contextlib").nullcontext)
+    monkeypatch.setattr(registry, "_save_catalog", lambda rows: item.update(rows[0]))
+
+    def sync(command, *_args):
+        case["steps"].append(command)
+        if "checkout" in command:
+            case["git"]("checkout", "--detach", new)
+        return dict(exit_code=0, timed_out=False, stdout="", stderr="")
+
+    monkeypatch.setattr(registry, "_run_install_step", sync)
+    result = registry.apply_update(item["key"], target_tag="new", target_revision=new, timeout_s=5)
+    assert result["status"] == "updated" and result["ok"]
+    assert result["from"]["revision"] == old and item["revision"] == new
+    assert "fetch" in case["steps"][0] and "checkout" in case["steps"][1]
+
+
+def test_apply_update_dirty_source_does_not_change_catalog_or_reinstall(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry, item = case["registry"], case["item"]
+    item["update"] = {"strategy": "github_commit"}
+    (case["source"] / "tracked.txt").write_text("dirty\n")
+    before = json.dumps(item, sort_keys=True)
+    result = registry.apply_update(item["key"], target_tag="new", target_revision="b" * 40, timeout_s=5)
+    assert not result["ok"] and result["status"] == "requires_independent_source_upgrade"
+    assert json.dumps(item, sort_keys=True) == before
+    assert case["steps"] == case["probes"] == []
+
+
+@pytest.mark.parametrize("caller_uid", [999, os.getuid()])
+def test_source_owner_uses_existing_operator_boundary_not_fixed_uid_blacklist(tmp_path, monkeypatch, caller_uid):
+    case = _local_install_case(tmp_path, monkeypatch)
+    original_stat = Path.stat
+
+    def owned_stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if path.is_relative_to(case["source"]):
+            values = list(info)
+            values[4] = 999
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(Path, "stat", owned_stat)
+    monkeypatch.setattr(os, "getuid", lambda: caller_uid)
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+    assert result["ok"] == (caller_uid == 999)
+    if caller_uid != 999:
+        assert "host trust boundary" in result["error"]
+        assert case["steps"] == case["probes"] == []
+
+
+def test_dependency_failure_never_runs_probe(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(case["registry"], "_run_install_step", lambda *a: dict(
+        exit_code=1, timed_out=False, stdout="dependency failed", stderr=""))
+    result = case["registry"].install(case["item"]["key"], confirm=True, timeout_s=5)
+    assert not result["ok"] and result["status"] == "build_failed"
+    assert case["probes"] == []
+
+
+def test_reuse_keeps_real_install_subprocess_and_probe(tmp_path, monkeypatch):
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry, item = case["registry"], case["item"]
+    # No package/network work: exercise the production spawn/registry/lock and
+    # probe plumbing with a real isolated Python sentinel.
+    sentinel = tmp_path / "dependency-ran"
+    item["execution_role"] = "capability"  # Build/path acceptance, not a fake answer transport.
+    item["probe"] = {"method": "command", "command": [sys.executable, "-I", "-c",
+                     f"from pathlib import Path; assert Path({str(sentinel)!r}).read_text() == 'built'"]}
+    item["install"] = [[sys.executable, "-I", "-c",
+                        f"from pathlib import Path; Path({str(sentinel)!r}).write_text('built')"]]
+    monkeypatch.setenv("LEGION_INSTALL_LOCK_FILE", str(tmp_path / "install.lock"))
+    monkeypatch.setattr(registry, "_run_install_step", registry._run_install_step_locked)
+    monkeypatch.setattr(registry, "_host_probe_trusted", lambda _: True)
+    monkeypatch.setattr(registry, "_probe_one", case["real_probe_one"])
+    result = registry.install(item["key"], confirm=True, timeout_s=5)
+    assert result["ok"], result
+    assert sentinel.read_text() == "built"
+    assert result["probe"]["revision_ok"] and result["probe"]["available"]
+
+
+def test_leased_source_reuses_existing_path_authority_not_host_owner_rule(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry = case["registry"]
+    checks = []
+    lease = SimpleNamespace(check=lambda: checks.append("live"),
+                            install_paths=lambda *args: checks.append("paths"))
+    monkeypatch.setattr(registry, "_native_onboard_lease", lambda: lease)
+    real_command = registry._run_probe_command
+
+    def host_git_only_for_fixture(command, *args, **kwargs):
+        with monkeypatch.context() as patch:
+            patch.setattr(registry, "_native_onboard_lease", lambda: None)
+            return real_command(command, *args, **kwargs)
+
+    monkeypatch.setattr(registry, "_run_probe_command", host_git_only_for_fixture)
+    import native_process_sandbox
+    monkeypatch.setattr(native_process_sandbox, "_trusted", lambda *a: pytest.fail(
+        "leased path must not inherit the host-owner rule"))
+    result = registry.install(case["item"]["key"], confirm=True, timeout_s=5)
+    assert result["ok"] and "paths" in checks
+
+
+def test_apply_update_rejection_restores_catalog_without_second_install(tmp_path, monkeypatch):
+    import copy
+    import contextlib
+    case = _local_install_case(tmp_path, monkeypatch)
+    registry = case["registry"]
+    case["item"]["update"] = {"strategy": "github_commit"}
+    rows = [copy.deepcopy(case["item"])]
+    before = copy.deepcopy(rows)
+    monkeypatch.setattr(registry, "load_catalog", lambda: copy.deepcopy(rows))
+    monkeypatch.setattr(registry, "catalog_lock", contextlib.nullcontext)
+    monkeypatch.setattr(registry, "_save_catalog", lambda value: rows.__setitem__(slice(None), copy.deepcopy(value)))
+    calls = []
+
+    def rejected(key, **kwargs):
+        calls.append(key)
+        return dict(ok=False, status="requires_independent_source_upgrade",
+                    error="requires independent source upgrade", source_preserved=True,
+                    runtime_acceptance="not_run")
+
+    monkeypatch.setattr(registry, "install", rejected)
+    result = registry.apply_update(case["item"]["key"], target_tag="new", target_revision="b" * 40, timeout_s=5)
+    assert result["status"] == "requires_independent_source_upgrade" and result["catalog_restored"]
+    assert rows == before and calls == [case["item"]["key"]]
+    assert case["probes"] == []
