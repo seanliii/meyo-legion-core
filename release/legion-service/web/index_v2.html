@@ -3312,10 +3312,10 @@ async function _submitCanvasFeedback(event){
     }
     if(!state.request.receipt){
       const response=await fetch('/api/legion/team/message',{method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(15000),
-        body:JSON.stringify({team_id:state.team,recipient:'commander',text:state.request.text,request_id:state.request.id,continue_execution:true})});
+        body:JSON.stringify({team_id:state.team,recipient:'commander',text:state.request.text,request_id:state.request.id,source_task_id:state.binding.task,continue_execution:true})});
       const body=await response.json(),receipt=body.continuation;
       if(!response.ok||body.error||!receipt||receipt.request_id!==state.request.id||receipt.source_team_id!==state.team||
-        receipt.conversation_id!==state.sid||receipt.user_id!==state.owner||!receipt.team_id)throw Error('未获得匹配的续做回执');
+        receipt.conversation_id!==state.sid||receipt.user_id!==state.owner||receipt.source_task_id!==state.binding.task||!receipt.team_id)throw Error('未获得匹配的续做回执');
       state.request.receipt=receipt;
     }
     if(!_canvasFeedbackCurrent(state)||curSession!==state.sid||view!==_sessionView)return;

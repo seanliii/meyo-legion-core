@@ -1278,7 +1278,7 @@ def send_messages(team_id: str, sender: str, messages: list[dict], *,
 def send_message(team_id: str, sender: str, recipient: str, text: str,
                  artifact_refs: list[dict] | None = None, *,
                  execution_request_id: str = "", user_id: str = "",
-                 idempotency_key: str = "", owner_check=None) -> dict:
+                 source_task_id: str = "", idempotency_key: str = "", owner_check=None) -> dict:
     """成员/总指挥直达持久邮箱；长正文自动转内容引用，不塞爆 team JSON。"""
     with _state_lock(team_id):
         state = load(team_id)
@@ -1302,11 +1302,14 @@ def send_message(team_id: str, sender: str, recipient: str, text: str,
             project_context.require_owner(state, user_id, str(state.get("conversation_id") or team_id))
             if not user_id or recipient != "commander" or len(execution_request_id) > 128:
                 raise ValueError("invalid_continuation_request")
+            if not isinstance(source_task_id, str) or len(source_task_id) > 256 or "\0" in source_task_id:
+                raise ValueError("invalid_continuation_source")
             digest = hashlib.sha256(str(text).encode()).hexdigest()
             for old in state.get("mailboxes", {}).get(recipient, []):
                 request = old.get("continuation") or {}
                 if request.get("request_id") == execution_request_id:
-                    if request.get("text_sha256") != digest or request.get("user_id") != user_id:
+                    if (request.get("text_sha256") != digest or request.get("user_id") != user_id
+                            or request.get("requested_source_task_id", "") != source_task_id):
                         raise ValueError("continuation_request_id_conflict")
                     return old
             suffix = hashlib.sha256(
@@ -1316,6 +1319,7 @@ def send_message(team_id: str, sender: str, recipient: str, text: str,
                 "conversation_id": str(state.get("conversation_id") or team_id),
                 "source_team_id": team_id, "team_id": f"feedback_{suffix}",
                 "text_sha256": digest, "status": "pending",
+                "requested_source_task_id": source_task_id, "source_task_id": source_task_id,
                 "cancel_boundaries": {team_id: cancellation_boundary(state)},
             }
             # Capture the latest existing child while accepting this new user
@@ -1398,7 +1402,7 @@ def record_continuation(team_id: str, request_id: str, *, owner: str = "", **fac
                     if not admission["eligible"] or selected.get("request_id") != request_id:
                         return False
                 request.update({key: value for key, value in facts.items()
-                                if key in {"status", "reason", "started_at", "returned_at"}})
+                                if key in {"status", "reason", "started_at", "returned_at", "source_task_id"}})
                 _write(state)
                 return True
     return False

@@ -1593,6 +1593,11 @@ def snapshot(team_id: str, task_id: str = "", *, packet: dict | None = None,
         "packet_path": str(source.get("packet_path") or _path(team_id)),
         "updated_at": source.get("updated_at"),
     }
+    feedback = source.get("user_feedback_request")
+    if isinstance(feedback, dict):
+        view["user_feedback_request"] = {key: feedback[key] for key in (
+            "source_team_id", "source_task_id", "request_id", "user_id", "conversation_id")
+            if isinstance(feedback.get(key), str)}
     if isolation == "strict" and task_id and (source.get("quality_context") or {}).get("member_reports"):
         view.pop("packet_path", None)
     # Running in an inherited project needs the same directory facts as the
@@ -1612,8 +1617,8 @@ def snapshot(team_id: str, task_id: str = "", *, packet: dict | None = None,
             "schema_version", "team_id", "conversation_id", "user_id", "repo_root",
             "workspace_root", "objective", "source_ref",
             "input_snapshot", "version_identity", "execution_role", "mode", "current_stage",
-            "task_view", "delivery_contract", "acceptance", "open_gaps", "verification_findings",
-                "artifacts", "attempts", "packet_path", "updated_at")
+                "task_view", "delivery_contract", "acceptance", "open_gaps", "verification_findings",
+                "artifacts", "attempts", "user_feedback_request", "packet_path", "updated_at")
                 if view.get(key) not in (None, "", [], {})}
     if isolation != "strict" and view.get("artifacts"):
         view["artifacts"] = _snapshot_artifacts(
