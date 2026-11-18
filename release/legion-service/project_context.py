@@ -918,6 +918,71 @@ def _ingest_anchor_artifacts_unlocked(packet: dict, result: dict, task_id: str) 
     _commit_anchor_rows(packet, normalized, change_reason="concept_anchor_artifact_ingest")
 
 
+_PUBLIC_RESULT_FACTS = {
+    "elapsed", "attempts", "execution_calls", "execution_depth", "via_relay",
+    "relay_by", "relayed_from", "checkpoint_writes", "native_conversation_id",
+    "native_session_scope", "native_context_origin", "artifact_export",
+    "artifact_safety_observations", "version_identity",
+}
+
+
+def _public_result_fact(key: str, value: Any) -> Any:
+    """Keep typed parallel facts, not arbitrary provider/context descriptors."""
+    def locator(item):
+        return (isinstance(item, str) and len(item) <= 256
+                and re.fullmatch(r"[A-Za-z0-9_.:@-]+", item) is not None
+                and ".." not in item)
+
+    def fields(item, types):
+        if not isinstance(item, dict):
+            return {}
+        return {name: val for name, val in item.items()
+                if name in types and types[name](val)}
+
+    number = lambda item: type(item) in (int, float) and 0 <= item < float("inf")
+    count = lambda item: type(item) is int and item >= 0
+    boolean = lambda item: type(item) is bool
+    text = lambda item: (isinstance(item, str) and len(item) <= 512
+                         and not re.search(r"(?:^|\s)/(?:Users|home|tmp|private|var)/", item))
+    if key == "elapsed":
+        return value if number(value) else None
+    if key in {"attempts", "execution_calls"}:
+        return value if count(value) else None
+    if key == "via_relay":
+        return value if boolean(value) else None
+    if key == "execution_depth":
+        return value if isinstance(value, str) and value in {"quick", "standard", "deep"} else None
+    if key == "native_session_scope":
+        return value if isinstance(value, str) and value in {"request", "conversation"} else None
+    if key in {"relay_by", "relayed_from", "native_conversation_id"}:
+        return value if locator(value) else None
+    if key == "checkpoint_writes":
+        return fields(value, {"request": boolean, "conversation": boolean})
+    if key == "native_context_origin":
+        return fields(value, {name: locator for name in (
+            "user_id", "harness", "conversation_id", "logical_session_id", "request_id", "task_id")})
+    if key == "artifact_safety_observations":
+        return [fields(item, {**{name: text for name in (
+            "name", "reason", "scan_status", "message", "phase", "error_type")},
+            "file_preserved": boolean, "downloadable": boolean})
+            for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    if key == "artifact_export":
+        out = fields(value, {"source": locator, "exported_files": count, "conversation_id": locator})
+        if isinstance(value, dict) and "observations" in value:
+            out["observations"] = _public_result_fact("artifact_safety_observations", value["observations"])
+        return out
+    if key == "version_identity":
+        digest = lambda item: isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) is not None
+        out = fields(value, {"commit": lambda item: isinstance(item, str) and re.fullmatch(
+            r"[0-9a-f]{7,40}", item) is not None, "branch": text, "service": text,
+            "team_id": locator, "source_id": locator})
+        if isinstance(value, dict) and isinstance(value.get("working_files_sha256"), dict):
+            out["working_files_sha256"] = {name: item for name, item in value["working_files_sha256"].items()
+                                          if locator(name) and digest(item)}
+        return out
+    return None
+
+
 def public_selection_value(value: Any) -> Any:
     """Project auxiliary evidence, never expose credentials or private runtime stores.
 
@@ -930,14 +995,18 @@ def public_selection_value(value: Any) -> Any:
                "prompt", "private_prompt", "runtime_brief", "native_facts", "native_checkpoint",
                "tool_trace", "tool_execution_evidence", "command", "arguments", "metadata",
                "raw", "output", "original_final", "raw_orchestration_request", "orchestration_request",
-               "selection_recovery_receipt", "native_raw", "private_reasoning", "reasoning_content",
+               "selection_recovery_receipt", "native_raw", "private_native", "ctx", "private_reasoning", "reasoning_content",
                "tool_command", "command_metadata", "task_facts", "original_source"}
     if isinstance(value, dict):
         if "final" in value:
-            value = {key: item for key, item in value.items() if key in {
+            value = {key: item for key, item in value.items() if key in _PUBLIC_RESULT_FACTS | {
                 "final", "status", "error", "task_id", "key", "harness", "assigned_harness",
                 "model_used", "usage", "role", "supporting_context", "candidate_view", "public_result_ref",
                 "artifacts", "discovered_artifacts", "fail_kind", "error_envelope"}}
+        fact_keys = _PUBLIC_RESULT_FACTS if "final" in value else _PUBLIC_RESULT_FACTS - {
+            "elapsed", "attempts", "execution_calls", "execution_depth", "via_relay", "relay_by", "relayed_from"}
+        value = {key: _public_result_fact(key, item) if key in fact_keys else item
+                 for key, item in value.items()}
         return {key: public_selection_value(item) for key, item in value.items()
                 if key not in private and (not safety.sensitive_key(str(key))
                                           or key in {"key", "task_id", "harness", "artifact_id"})}
@@ -999,10 +1068,10 @@ def _record_result_unlocked(team_id: str, task_id: str, result: dict, *,
     for field in ("orchestration_request", "raw_orchestration_request", "collaboration_protocol"):
         if field in result:
             row[field] = _json_safe(result[field])
-    public = {key: _json_safe(result[key]) for key in (
+    public = {key: _json_safe(result[key]) for key in _PUBLIC_RESULT_FACTS | {
         "final", "status", "error", "artifacts", "discovered_artifacts",
         "role", "supporting_context", "candidate_view",
-        "assigned_harness", "fail_kind", "error_envelope", "usage", "model_used") if key in result}
+        "assigned_harness", "fail_kind", "error_envelope", "usage", "model_used"} if key in result}
     public.update(task_id=task_id, key=str(result.get("key") or task_id), harness=owner)
     public = public_selection_value(public)
     encoded = json.dumps(public, ensure_ascii=False, sort_keys=True).encode("utf-8")

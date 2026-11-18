@@ -222,6 +222,89 @@ def test_selection_public_projection_preserves_prose_and_legal_manifest(case):
     assert case.pc.public_selection_value({"prompt": "hidden", "metadata": {"command": "hidden"}}) == {}
 
 
+def test_selection_short_final_retains_typed_public_facts_and_manifest(case):
+    plan, rows = selection_plan(case)
+    facts = {
+        "elapsed": 1.25, "attempts": 1, "execution_calls": 2, "execution_depth": "standard",
+        "via_relay": True, "relay_by": "codex", "relayed_from": HARNESS,
+        "checkpoint_writes": {"request": True, "conversation": False},
+        "native_conversation_id": "codex:fixture-conversation",
+        "native_session_scope": "conversation",
+        "native_context_origin": {"user_id": OWNER, "harness": "codex",
+                                  "conversation_id": CONVERSATION,
+                                  "logical_session_id": "fixture-conversation"},
+        "version_identity": {"commit": "ebca9182", "branch": "codex/pk-production-20261118",
+                             "service": "LegionService/1.0", "team_id": TEAM,
+                             "working_files_sha256": {"project_context.py": "a" * 64}},
+        "artifact_export": {"source": "authorized-project-export", "exported_files": 1,
+                            "conversation_id": CONVERSATION, "observations": []},
+        "artifact_safety_observations": [{"name": "project", "scan_status": "not_exported",
+            "reason": "artifact_workdir_unmapped", "file_preserved": True, "downloadable": False}],
+    }
+    rows[0].update(deepcopy(facts), final="好", native_checkpoint={"provider": {"path": "/tmp/private"}},
+                   private_native={"raw": "private-chain"}, metadata={"prompt": "hidden"})
+    rows[0]["checkpoint_writes"]["raw"] = "private-chain"
+    rows[0]["native_context_origin"].update(ctx="/tmp/private", provider={"raw": "private-chain"})
+    rows[0]["artifact_export"].update(workdir="/tmp/private", api_key="live-provider-value-123456789")
+    rows[0]["version_identity"].update(repo_root="/tmp/private", metadata={"prompt": "hidden"})
+    rows[0]["artifacts"] = [{"name": "candidate.txt", "provenance": {
+        "source": "authorized-project-export", "sha256": "b" * 64, "verified": True}}]
+    public = case.pc.public_selection_value(rows[0])
+    assert public["final"] == "好" and public["status"] == "done"
+    for key, expected in facts.items():
+        assert public[key] == expected
+    assert public["artifacts"][0]["provenance"]["sha256"] == "b" * 64
+    text = json.dumps(public)
+    assert all(secret not in text for secret in ("private-chain", "/tmp/private", "live-provider", "hidden"))
+    assert "native_checkpoint" not in public and "private_native" not in public
+    context = case.core._candidate_selection_context(TEAM, rows, plan["project_context"])
+    candidate = case.pc.public_selection_value(context)["candidates"][0]
+    for key, expected in facts.items():
+        assert candidate[key] == expected
+    ref = candidate["public_result_ref"]
+    store = importlib.import_module("artifact_store")
+    saved = json.loads(store.read_text(context["candidates"][0]["public_result_ref"]))
+    for key, expected in facts.items():
+        assert saved[key] == expected
+    assert case.pc.public_selection_value(public) == public
+    assert case.pc.load(TEAM)["attempts"][0]["native_checkpoint"] == rows[0]["native_checkpoint"]
+
+
+def test_selection_public_top_structure_and_metadata_counterexamples(case):
+    result = {"final": "2", "status": "done", "elapsed": {"raw": "private-chain"},
+              "attempts": [{"prompt": "hidden"}], "execution_calls": True,
+              "execution_depth": {"ctx": "/tmp/private"}, "via_relay": "true",
+              "native_conversation_id": "/tmp/private", "native_session_scope": "unknown",
+              "checkpoint_writes": {"request": "true", "conversation": {"raw": "private-chain"}},
+              "native_context_origin": {"conversation_id": "/tmp/private", "ctx": "hidden"},
+              "version_identity": {"working_files_sha256": {"/tmp/private": "a" * 64,
+                                    "server.py": "not-a-hash"}, "prompt": "hidden"},
+              "artifact_export": {"source": {"raw": "private-chain"}, "exported_files": "1",
+                                  "workdir": "/tmp/private", "observations": [
+                                      {"message": "/tmp/private", "prompt": "hidden"}]},
+              "metadata": {"prompt": "hidden"}, "private_native": {"raw": "private-chain"}}
+    # The outer session/selection packet's attempts is a list, not a result count.
+    packet = {"results": [result], "attempts": [{"task_id": "A", "status": "done"}],
+              "summary": {"completed": 1}, "metadata": {"prompt": "hidden"},
+              "prompt": "hidden", "api_key": "live-provider-value-123456789"}
+    public = case.pc.public_selection_value(packet)
+    assert public["attempts"] == [{"task_id": "A", "status": "done"}]
+    assert public["summary"] == {"completed": 1}
+    row = public["results"][0]
+    assert row["final"] == "2" and row["status"] == "done"
+    for key in ("elapsed", "attempts", "execution_calls", "execution_depth", "via_relay",
+                "native_conversation_id", "native_session_scope"):
+        assert row[key] is None
+    assert row["checkpoint_writes"] == {} and row["native_context_origin"] == {}
+    assert row["version_identity"] == {"working_files_sha256": {}}
+    assert row["artifact_export"] == {"observations": [{}]}
+    assert all(secret not in json.dumps(public) for secret in (
+        "private-chain", "/tmp/private", "live-provider", "hidden", "private_native"))
+    # Generic body strings still use span redaction, not wholesale withholding.
+    body = case.pc.public_selection_value({"body": '{"text":"前文 api_key=live-provider-value-123456789 结论"}'})
+    assert "前文" in body["body"] and "结论" in body["body"] and "live-provider" not in body["body"]
+
+
 def test_candidate_selection_unknown_never_auto_resends(case):
     plan, rows = selection_plan(case)
     calls = []

@@ -227,7 +227,7 @@ function previewCanvas(fetcher = () => jsonResponse(grant)) {
     return nodes.get(selector);
   }
   const ctx = vm.createContext({
-    URL: ParentURL, Blob, ArrayBuffer, Request, Response, AbortController, DOMException,
+    URL: ParentURL, Blob, ArrayBuffer, Request, Response, AbortController, AbortSignal, DOMException,
     setTimeout(fn) { const id = ++nextTimer; timers.set(id, fn); return id; },
     clearTimeout(id) { timers.delete(id); },
     location: { href: "https://meyo.test/", origin: "https://meyo.test" },
@@ -249,11 +249,17 @@ function previewCanvas(fetcher = () => jsonResponse(grant)) {
     curSession: "sid-a", _sessionView: 1, running: false, qEl: { value: "用户已有草稿", focus() {} }, uploads: [],
     _openPersonalAuth() {}, toast() {}, _savePersonalDraft() {}, autosize() {}, _closeAdvPanel() {},
     _captureCanvasFrame() {}, _captureCanvasSelection() {}, _setCanvasScreenshot() {},
-    fetch(url, options) { calls.push({ url, options }); return Promise.resolve(fetcher(url, options)); },
+    fetch(url, options) {
+      // 归属 GET 单独由续做用例验证，不混入原预览 capability / observation 请求计数。
+      if(url.startsWith('/api/legion/session?'))return Promise.resolve(jsonResponse({sid:'sid-a',user_id:'alice',turns:[]}));
+      calls.push({ url, options }); return Promise.resolve(fetcher(url, options));
+    },
   });
   const previewHelpers = Array.from(html.matchAll(/^(?:async )?function ((?:_canvasPreview|_renderCanvasPreview)\w*)\(/gm), m => m[1]);
   const names = ["esc", "_canvasArtifactUrl", "_artifactContextUrl", "_canvasDraftKey", "_canvasFeedbackText",
-    "_returnCanvasFeedback", ...previewHelpers, "openLightbox", "closeLightbox"];
+    "_returnCanvasFeedback", "_canvasFeedbackCurrent", "_canvasRecordedArtifacts", "_canvasFeedbackOwner",
+    "_canvasSubmitAvailability", "_canvasBindFeedback", "_submitCanvasFeedback", "_canvasRefreshFeedback",
+    ...previewHelpers, "openLightbox", "closeLightbox"];
   vm.runInContext([...new Set(names)].map(fn).join("\n"), ctx);
   const message = (overrides = {}) => ({
     type: "meyo-artifact-preview", nonce: grant.preview_nonce,
@@ -717,4 +723,120 @@ test("非法或不完整capability不加载；无会话及非HTML沿用原安全
   await h.ctx.openLightbox("img", "/media/image.png", "image.png", { sid: "sid-a" });
   assert.equal(h.calls.length, 0);
   assert.match(h.node("#lbContent").innerHTML, /<img /);
+});
+
+function feedbackHarness(old='/home-outputs/original/index.html',exportFixture=false){
+  const h=previewCanvas(),posts=[],reads=[],syncs=[];let ids=0;
+  const next='/home-outputs/revised/index.html';
+  const source={team_id:'team-original',results:[{task_id:'task-a',artifacts:[{url:old,name:'index.html'}]}]};
+  let session={sid:'sid-a',user_id:'alice',turns:[source]};
+  let team={team_id:'team-original',conversation_id:'sid-a',user_id:'alice',tasks:{'task-a':{}}};
+  let post=body=>jsonResponse({continuation:{request_id:body.request_id,source_team_id:body.team_id,
+    conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',status:'pending'}},201);
+  Object.assign(h.ctx,{
+    crypto:{randomUUID(){ids++;return 'uuid-one';}},liveTeamId:'global-unrelated',
+    _syncSessionOnce:(s,scope)=>{syncs.push({s,scope});},
+    fetch(url,options){
+      if(options?.method==='POST'){const body=JSON.parse(options.body);posts.push({url,body});return Promise.resolve(post(body));}
+      reads.push(url);return Promise.resolve(jsonResponse(url.startsWith('/api/legion/team?')?team:session));
+    },
+  });
+  const stateUrl=exportFixture?old+'?sid=sid-a':old;
+  h.ctx._canvasState={id:1,owner:'alice',epoch:1,sid:'sid-a',team:'team-original',url:stateUrl,name:'index.html',note:'修改这里',quote:''};
+  h.ctx._canvasSeq=1;h.node('#lbFeedback').value='修改这里';h.node('#lbDl').href=stateUrl+(exportFixture?'&download=1':'?download=1');
+  return {...h,posts,reads,syncs,old,next,source,session(value){session=value;},team(value){team=value;},post(value){post=value;},ids:()=>ids,
+    click:()=>h.ctx._submitCanvasFeedback({isTrusted:true})};
+}
+
+test('显式续做只送原团队，成功保留草稿，重复点击不重复POST、不伪称改好',async()=>{
+  const h=feedbackHarness();
+  await h.ctx._submitCanvasFeedback({isTrusted:false});assert.equal(h.posts.length,0);
+  await h.click();await h.click();
+  assert.equal(h.posts.length,1);assert.equal(h.ids(),1);
+  assert.equal(h.posts[0].url,'/api/legion/team/message');
+  assert.equal(h.posts[0].body.team_id,'team-original');assert.equal(h.posts[0].body.recipient,'commander');
+  assert.equal(h.posts[0].body.continue_execution,true);
+  assert.equal(h.ctx.qEl.value,'用户已有草稿');assert.equal(h.node('#lbFeedback').value,'修改这里');
+  assert.equal(h.node('#lbStatus').textContent,'已提交续做，尚未改好');
+  assert.equal(h.syncs[0].scope.sid,'sid-a');assert.equal(h.syncs[0].scope.teamId,'feedback-child');
+  assert.equal(h.ctx.liveTeamId,'global-unrelated');
+});
+
+test('真实export旧记录无sid、预览scoped URL仍可绑定并POST原team',async()=>{
+  const h=feedbackHarness(artifactUrl,true),state=h.ctx._canvasState;
+  state.team='';
+  assert.equal(h.source.results[0].artifacts[0].url,artifactUrl,'原始record保持无sid真实export形态');
+  assert.equal(state.url,scopedArtifactUrl,'预览URL带原会话sid');
+  await h.ctx._canvasBindFeedback(state);
+  assert.equal(h.node('#lbSubmit').disabled,false,'无sid record与scoped preview必须规范化匹配');
+  await h.click();
+  assert.equal(h.posts.length,1);
+  assert.equal(h.posts[0].body.team_id,'team-original');
+});
+
+test('错误owner、epoch、sid、原团队、task及重复URL轮次不能偷派，缺绑定禁用',async()=>{
+  for(const scenario of ['owner','epoch','sid','team','team-sid','user','task','duplicate','url','url-sid','missing']){
+    const h=feedbackHarness(),state=h.ctx._canvasState;
+    if(scenario==='owner')h.ctx._personalSubject='bob';
+    if(scenario==='epoch')h.ctx._personalEpoch=2;
+    if(scenario==='sid')h.ctx.curSession='sid-b';
+    if(scenario==='team')state.team='wrong-team';
+    if(scenario==='team-sid')h.team({team_id:'team-original',conversation_id:'sid-b',user_id:'alice',tasks:{'task-a':{}}});
+    if(scenario==='url-sid')state.url=h.old+'?sid=sid-b';
+    if(scenario==='user')h.team({team_id:'team-original',conversation_id:'sid-a',user_id:'bob',tasks:{'task-a':{}}});
+    if(scenario==='task')h.team({team_id:'team-original',conversation_id:'sid-a',user_id:'alice',tasks:{}});
+    if(scenario==='duplicate')h.session({sid:'sid-a',user_id:'alice',turns:[h.source,h.source]});
+    if(scenario==='url')state.url=h.next;
+    if(scenario==='missing'){state.team='';h.session({sid:'sid-a',user_id:'alice',turns:[]});await h.ctx._canvasBindFeedback(state);assert.equal(h.node('#lbSubmit').disabled,true);assert.match(h.node('#lbSubmitHint').textContent,/原任务|草稿/);}
+    await h.click();assert.equal(h.posts.length,0,scenario);
+  }
+  const h=feedbackHarness();h.ctx._canvasState.team='';await h.click();
+  assert.equal(h.posts[0].body.team_id,'team-original','只从精确原成果记录找team，不用global liveTeam');
+});
+
+test('429、timeout和未知回执重试复用ID；pending POST不取消原任务或触碰草稿',async()=>{
+  for(const failure of ['429','timeout','receipt','wrong-receipt']){
+    const h=feedbackHarness();let attempts=0;
+    h.post(body=>{attempts++;if(attempts===1){
+      if(failure==='timeout')throw Error('timeout');
+      if(failure==='wrong-receipt')return jsonResponse({continuation:{request_id:body.request_id,source_team_id:'other',conversation_id:'sid-a',user_id:'alice',team_id:'other-child'}});
+      return failure==='429'?jsonResponse({error:'rate limited'},429):jsonResponse({ok:true});
+    }return jsonResponse({continuation:{request_id:body.request_id,source_team_id:'team-original',
+      conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',status:'pending'}},201);});
+    await h.click();assert.match(h.node('#lbStatus').textContent,/未确认/);await h.click();
+    assert.equal(h.posts.length,2);assert.equal(h.ids(),1);assert.equal(h.posts[0].body.request_id,h.posts[1].body.request_id);
+  }
+  const h=feedbackHarness(),pending=deferred();h.post(()=>pending.promise);
+  const submitted=h.click();await new Promise(resolve=>setImmediate(resolve));await h.click();
+  assert.equal(h.posts.length,1);assert.equal(h.node('#lbSubmit').disabled,true);
+  assert.equal(h.ctx.qEl.value,'用户已有草稿');assert.equal(h.ctx.liveTeamId,'global-unrelated');
+  h.ctx.curSession='sid-b';pending.resolve(jsonResponse({continuation:{request_id:'uuid-one',source_team_id:'team-original',
+    conversation_id:'sid-a',user_id:'alice',team_id:'feedback-child',status:'pending'}},201));await submitted;
+  assert.equal(h.syncs.length,0);assert.ok(h.posts.every(x=>x.url!=='/api/legion/cancel'));
+  const retry=feedbackHarness();retry.post(()=>{throw Error('unknown');});await retry.click();
+  const request=retry.ctx._canvasState.request;
+  retry.ctx._canvasDrafts.set('other-draft',{note:'别清掉'});
+  retry.ctx.closeLightbox();
+  await retry.ctx.openLightbox('img',retry.old,'index.html',{sid:'sid-a',team_id:'team-original'});
+  await retry.click();assert.equal(retry.ids(),1);assert.equal(retry.ctx._canvasState.request.id,request.id);
+  assert.equal(retry.ctx._canvasDrafts.get('other-draft').note,'别清掉');
+  retry.node('#lbFeedback').value='另一条意见';await retry.click();assert.equal(retry.posts.length,2,'未知结果不能换text偷偷生成新ID');
+});
+
+test('截图不能静默丢弃；新版本仅原session最后新增child真实artifact，old URL仍可下载',async()=>{
+  const h=feedbackHarness();h.ctx._canvasState.file={name:'shot.png'};
+  await h.click();assert.equal(h.posts.length,0);assert.match(h.node('#lbStatus').textContent,/截图.*带回原对话/);
+  h.ctx._canvasState.file=null;await h.click();
+  const state=h.ctx._canvasState;
+  for(const scenario of ['wrong-user','wrong-sid','wrong-child','old-url','valid']){
+    const session={sid:scenario==='wrong-sid'?'sid-b':'sid-a',user_id:scenario==='wrong-user'?'bob':'alice',turns:[h.source,
+      {team_id:scenario==='wrong-child'?'other':'feedback-child',results:[{task_id:'child-task',artifacts:[{url:scenario==='old-url'?h.old:h.next,name:'new.html'}]}]}]};
+    h.node('#lbNewVersion').hidden=true;
+    await h.ctx._canvasRefreshFeedback(state,session);
+    assert.equal(h.node('#lbNewVersion').hidden,scenario!=='valid',scenario);
+  }
+  assert.equal(h.node('#lbNewVersion').href,h.next);assert.equal(h.node('#lbDl').href,h.old+'?download=1');
+  assert.equal(state.url,h.old);assert.doesNotMatch(h.node('#lbStatus').textContent,/已改好|已保存|修改完成/);
+  assert.doesNotMatch(fn('_submitCanvasFeedback'),/Date\.now|cancelLegion|uploads\s*=|qEl\.value\s*=/);
+  assert.match(fn('_syncSessionOnce'),/scope\.sid!==sid/);assert.match(fn('_syncSessionOnce'),/x\.team_id===scope\.teamId/);
 });
