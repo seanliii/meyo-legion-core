@@ -246,14 +246,23 @@ def material_scope(tmp_path, monkeypatch):
             + extra + "console.log(JSON.stringify(materials));", str(ENTRY),
         ], env=env, capture_output=True, text=True, timeout=8)
 
+    # Recovery mocks the Node backend, so its tamper anchor must be consumed
+    # by the real Python preflight for this host, not only by the Node loader.
+    preflight_material = (package / "index.js" if sys.platform == "darwin"
+                          else Path(fields["font_path"]))
     return SimpleNamespace(roots=roots, package=package, core=core, env=env,
-                           node=node, worker=worker, lease=lease, inspect=inspect)
+                           node=node, worker=worker, lease=lease, inspect=inspect,
+                           preflight_material=preflight_material)
 
 
 def test_material_scope_matches_host_and_passes_real_validators(material_scope):
     case = material_scope
     profile = json.loads(Path(case.env["MEYO_PLAYWRIGHT_RUNTIME_PROFILE"]).read_text())
     assert profile["platform"] == sys.platform
+    assert case.preflight_material == (
+        Path(profile["mcp_package_path"]).parent / "index.js" if sys.platform == "darwin"
+        else Path(profile["font_path"]))
+    assert case.preflight_material.is_file() and not case.preflight_material.is_symlink()
     case.lease._validate_materials(case.node, case.worker)
     result = case.inspect()
     assert result.returncode == 0, result.stderr

@@ -1,0 +1,49 @@
+{
+  "key": "cc-runtime",
+  "name": "Official Claude Code builtin Linux runtime",
+  "kind": "tool",
+  "execution_role": "capability",
+  "url": "https://github.com/anthropics/claude-code",
+  "version": "2.1.317",
+  "revision": "964d69565952a176ac1975ed218362991db71433",
+  "platform_target": "linux-native",
+  "runtime": {"node": ">=22.0.0", "npm": true},
+  "install_env": {"DISABLE_AUTOUPDATER": "1", "npm_config_engine_strict": "true"},
+  "install": [
+    ["{node}", "-e", "if(process.platform!=='linux'||!['x64','arm64'].includes(process.arch)||Number(process.versions.node.split('.')[0])<22)throw Error('Official CC runtime requires Linux x64/arm64 and Node >=22')"],
+    ["{python}", "-c", "import pathlib,sys; r=pathlib.Path(sys.argv[1]); a=pathlib.Path(sys.argv[2]); pairs=[(r/'package.json',a/'cc-runtime-package.json'),(r/'package-lock.json',a/'cc-runtime-package-lock.json')]; assert not r.is_symlink(); assert all(not dst.is_symlink() and (not dst.exists() or dst.read_bytes()==src.read_bytes()) for dst,src in pairs), 'Existing runtime lock differs; preserved'; [(dst.write_bytes(src.read_bytes()) if not dst.exists() else None) for dst,src in pairs]", "{runtime_dir}", "{adapter_dir}"],
+    ["{node}", "{npm_cli}", "ci", "--prefix", "{runtime_dir}", "--include=optional", "--ignore-scripts", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org"],
+    ["{node}", "-e", "const fs=require('fs'),path=require('path'),r=path.resolve(process.argv[1]),base=path.join(r,'node_modules'),p=path.join(base,'@anthropic-ai/claude-code'),script=path.join(p,'install.cjs'),req=require('module').createRequire(script),target=process.platform+'-'+process.arch+(process.report.getReport().header.glibcVersionRuntime?'':'-musl'),name='@anthropic-ai/claude-code-'+target,selected=path.join(base,name); for(const file of [r,p,selected,path.join(selected,'claude'),script])if(fs.realpathSync(file)!==file)throw Error('Native path alias'); if(req.resolve(name+'/package.json')!==path.join(selected,'package.json'))throw Error('Ancestor native package rejected'); const m=req(name+'/package.json'); if(m.name!==name||m.version!=='2.1.317'||fs.statSync(path.join(selected,'claude')).nlink!==1)throw Error('Native identity/hardlink rejected'); require(script)", "{runtime_dir}"]
+  ],
+  "probe": {
+    "method": "cli",
+    "target": "{runtime_dir}/node_modules/.bin/claude",
+    "command": ["{runtime_dir}/node_modules/.bin/claude", "--version"]
+  },
+  "build_probe": {
+    "method": "command",
+    "command": ["{python}", "-c", "import hashlib,json,os,pathlib,platform,struct,sys,tempfile\nr=pathlib.Path(sys.argv[1]).absolute(); adapter=pathlib.Path(sys.argv[3]); sys.path.insert(0,str(adapter.parent)); import external_agent_registry as registry\nassert platform.system()=='Linux'\nassert all(not p.is_symlink() for p in (r,*r.parents)), 'Runtime root alias rejected'\nok,target=registry._run_probe_command([sys.argv[2],'-p',\"process.platform+'-'+process.arch+(process.report.getReport().header.glibcVersionRuntime?'':'-musl')\"],r,timeout_s=10,key='cc-runtime')\nassert ok and target.strip() in ('linux-x64','linux-arm64','linux-x64-musl','linux-arm64-musl'), 'Unsupported native target'\nname='@anthropic-ai/claude-code-'+target.strip(); p=r/'node_modules/@anthropic-ai/claude-code'; selected=r/'node_modules'/name; native=selected/'claude'; b=p/'bin/claude.exe'; e=r/'node_modules/.bin/claude'\nfor file in (p/'package.json',selected/'package.json',native,b):\n assert file.is_file() and all(not x.is_symlink() for x in (file,*file.parents)), 'Native package must be local, without symlink ancestors'\n assert file.resolve(strict=True).is_relative_to(r), 'Native package escapes runtime'\nlock=json.loads((adapter/'cc-runtime-package-lock.json').read_text()); installed=json.loads((r/'package-lock.json').read_text()); assert installed==lock, 'Runtime lock differs'\nfor directory,pkg in ((p,'@anthropic-ai/claude-code'),(selected,name)):\n metadata=json.loads((directory/'package.json').read_text()); pinned=lock['packages']['node_modules/'+pkg]; assert metadata['name']==pkg and metadata['version']==pinned['version']=='2.1.317'\nassert e.resolve(strict=True)==b.resolve(strict=True)\nsame=os.path.samefile(native,b); assert native.stat().st_nlink<=(2 if same else 1) and b.stat().st_nlink<=(2 if same else 1), 'Cross-source hardlink rejected'\nassert native.stat().st_mode&0o111 and b.stat().st_mode&0o111\ndef digest(file):\n with file.open('rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()\nassert digest(native)==digest(b), 'Wrapper is not the complete selected native binary'\nsize=native.stat().st_size\nwith native.open('rb') as stream:\n header=stream.read(64); assert len(header)==64 and header[:7]==bytes.fromhex('7f454c46020101'), 'Invalid ELF64 header'\n kind,machine,version,entry,phoff,shoff,flags,ehsize,phentsize,phnum,shentsize,shnum,shstr=struct.unpack('<HHIQQQIHHHHHH',header[16:]); expected=183 if 'arm64' in target else 62\n assert kind in (2,3) and machine==expected and version==1 and ehsize==64 and phentsize==56 and 0<phnum<65535 and phoff>=64 and phoff+phnum*56<=size, 'Invalid ELF program table'\n assert not shnum or (shentsize==64 and shoff>=64 and shoff+shnum*64<=size and shstr<shnum), 'Invalid ELF section table'\n stream.seek(phoff); segments=[struct.unpack('<IIQQQQQQ',stream.read(56)) for _ in range(phnum)]\n assert all(offset+filesz<=size and (typ!=1 or filesz<=memsz) and (align in (0,1) or (align&(align-1)==0 and vaddr%align==offset%align)) for typ,perm,offset,vaddr,paddr,filesz,memsz,align in segments), 'Invalid ELF segment bounds'\n assert any(typ==1 and perm&1 and vaddr<=entry<vaddr+memsz for typ,perm,offset,vaddr,paddr,filesz,memsz,align in segments), 'No executable entry segment'\nwith tempfile.TemporaryDirectory(prefix='cc-version-') as home:\n env=dict(os.environ,HOME=home,CLAUDE_CONFIG_DIR=home,DISABLE_AUTOUPDATER='1'); ok,output=registry._run_probe_command([str(e),'--version'],r,timeout_s=20,env=env,key='cc-runtime')\n assert ok and output.strip()=='2.1.317 (Claude Code)', 'Official native version probe failed'\nprint('CC local native identity, full SHA256, ELF and version checked; task acceptance not_run')", "{runtime_dir}", "{node}", "{adapter_dir}"]
+  },
+  "adapter_capabilities": {"tools": false, "resume": false, "artifacts": false},
+  "provenance": {
+    "official": true,
+    "description": "Installation-only capability for existing builtin cc; no task transport, provided_by alias, credential or model configuration. Official _cc_adapter remains unchanged."
+  },
+  "source_evidence": {
+    "public_repository_scope": "Public release documentation and plugins, not the proprietary CLI implementation source",
+    "tag_url": "https://api.github.com/repos/anthropics/claude-code/git/ref/tags/v2.1.317",
+    "npm_url": "https://registry.npmjs.org/@anthropic-ai/claude-code/2.1.317",
+    "npm_shasum": "e0940e4de0a4ea860e41af8af01248a11e85a1db",
+    "npm_integrity": "sha512-k467+KT/LcqJXr3Ye/C4lXnfRNmxOa/TZcIiWKoiyc/XbZGzAR0fxiI/IEOkpic+BFhYRP6BiXa7cvTx4fsOSg==",
+    "license_sha256": "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a",
+    "legal_url": "https://code.claude.com/docs/en/legal-and-compliance",
+    "setup_url": "https://code.claude.com/docs/en/setup",
+    "checked_at": "2026-11-18",
+    "linux_targets": ["x64-glibc", "arm64-glibc", "x64-musl", "arm64-musl"]
+  },
+  "verification_notes": {
+    "distribution": "Declaration and dependency locks only. Each authorized user installs from official npm upstream in private runtime; no official CLI source/binary public bundle or macOS login copy.",
+    "entry": "{runtime_dir}/node_modules/.bin/claude; prepend this directory to the existing builtin cc process PATH",
+    "acceptance": "build_only and native ELF proof do not certify builtin cc health, authentication, model usage or all-harness Linux migration"
+  }
+}

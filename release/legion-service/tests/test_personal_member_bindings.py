@@ -192,6 +192,7 @@ def test_claude_code_member_binding_connects_directly_with_only_its_own_key(
         if name.startswith(("MEYO_PERSONAL_", "LEGION_CODEX_", "LEGION_MEMBER_")):
             monkeypatch.setenv(name, value)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-inherited-direct-key")
+    monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     monkeypatch.syspath_prepend(str(ORCHESTRATOR))
     registry = importlib.import_module("harness_registry")
     seen = {}
@@ -216,6 +217,7 @@ def test_claude_code_member_binding_connects_directly_with_only_its_own_key(
     child = seen["env"]
     assert child["ANTHROPIC_BASE_URL"] == "https://claude.example.invalid/anthropic"
     assert child["ANTHROPIC_AUTH_TOKEN"] == "fake-member-key-claude"
+    assert child["DISABLE_AUTOUPDATER"] == "1"
     assert "ANTHROPIC_API_KEY" not in child
     leaked = [name for name in child if name.startswith("MEYO_PERSONAL_MEMBER_KEY_")
               or name in ("MEYO_PERSONAL_PROVIDER_KEY", "LEGION_CODEX_RESPONSES_BINDING",

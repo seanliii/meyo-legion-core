@@ -2811,6 +2811,7 @@ def _cc_adapter(qhash, question, gold="", ctx=None):
                         ("MEYO_ONBOARD_BRIDGE_URL", "MEYO_ONBOARD_BRIDGE_TOKEN")
                         if name in _runtime_bridge})
         _cc_env = _native_member_environment(_cc_env, "cc")
+        _cc_env["DISABLE_AUTOUPDATER"] = "1"
         if _cc_env.get("MEYO_ONBOARD_BRIDGE_TOKEN"):
             _cc_private_tokens.add(_cc_env["MEYO_ONBOARD_BRIDGE_TOKEN"])
         _cc_env["MEYO_PILOT_V2"] = "0"

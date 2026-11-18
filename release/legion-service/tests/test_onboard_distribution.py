@@ -85,6 +85,141 @@ def write_modes(core, *, mode_names=MODES, exit_code=0, write_report=True):
     return script
 
 
+def test_official_cc_runtime_spec_is_locked_capability(onboard, monkeypatch, tmp_path):
+    module, _ = onboard
+    path = SERVICE_DIR / "external_adapters/cc-runtime.spec.json"
+    entry = json.loads(path.read_text())
+    lock = json.loads(path.with_name("cc-runtime-package-lock.json").read_text())
+    package = json.loads(path.with_name("cc-runtime-package.json").read_text())
+    assert module.R.agent_manifest.validate(entry)["ok"]
+    assert entry["key"] == "cc-runtime" and entry["execution_role"] == "capability"
+    assert not entry.get("transports") and not entry.get("provided_by")
+    assert entry["version"] == "2.1.317"
+    assert entry["revision"] == "964d69565952a176ac1975ed218362991db71433"
+    assert package["dependencies"] == lock["packages"][""]["dependencies"]
+    wrapper = lock["packages"]["node_modules/@anthropic-ai/claude-code"]
+    assert wrapper["integrity"] == entry["source_evidence"]["npm_integrity"]
+    assert wrapper["engines"]["node"] == ">=22.0.0"
+    for name, version in wrapper["optionalDependencies"].items():
+        native = lock["packages"]["node_modules/" + name]
+        assert native["version"] == version == "2.1.317"
+        assert native["integrity"].startswith("sha512-") and native["optional"]
+        assert native["resolved"].startswith("https://registry.npmjs.org/")
+    for command in [*entry["install"], entry["build_probe"]["command"]]:
+        assert module.R._safe_step(module.R._format_argv(command, entry))
+    assert "--include=optional" in entry["install"][2]
+    assert "--ignore-scripts" in entry["install"][2]
+    assert "require(script)" in entry["install"][3][2]
+    assert "req.resolve" in entry["install"][3][2]
+    saved = []
+    monkeypatch.setattr(module.R, "load_catalog", lambda: [{"key": "cc", "execution_role": "agent"}])
+    monkeypatch.setattr(module.R, "_save_catalog", lambda rows: saved.extend(rows))
+    monkeypatch.setattr(module.R, "catalog_lock", __import__("contextlib").nullcontext)
+
+    def install(key, **kwargs):
+        assert key == "cc-runtime" and kwargs["build_only"] is True
+        assert saved == [{"key": "cc", "execution_role": "agent"}, entry]
+        return {"ok": True, "status": "built", "runtime_acceptance": "not_run"}
+
+    monkeypatch.setattr(module.R, "install", install)
+    monkeypatch.setattr(module, "_run_agent", lambda *a, **k: pytest.fail("capability answered"))
+    result = module.onboard(key="cc-runtime", spec=str(path), build_only=True)
+    assert result["report"]["scope"] == "build_only"
+    assert result["report"]["runtime_acceptance"] == "not_run"
+
+
+@pytest.mark.parametrize("fault", ["ancestor", "symlink", "hardlink", "metadata", "ok"])
+def test_cc_official_postinstall_cannot_borrow_ancestor_package(tmp_path, fault):
+    import os
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node unavailable; no installation attempted")
+    runtime = tmp_path.resolve() / "runtime"
+    wrapper = runtime / "node_modules/@anthropic-ai/claude-code"
+    wrapper.mkdir(parents=True)
+    (wrapper / "install.cjs").write_text("throw Error('fixture-official-script-reached')")
+    ancestor = tmp_path.resolve() / "node_modules/@anthropic-ai/claude-code-linux-x64"
+    local = runtime / "node_modules/@anthropic-ai/claude-code-linux-x64"
+    selected = ancestor if fault in ("ancestor", "symlink") else local
+    selected.mkdir(parents=True)
+    (selected / "package.json").write_text(json.dumps(dict(
+        name="wrong" if fault == "metadata" else "@anthropic-ai/claude-code-linux-x64", version="2.1.317")))
+    (selected / "claude").write_bytes(b"never-executed")
+    if fault == "symlink":
+        local.symlink_to(ancestor, target_is_directory=True)
+    if fault == "hardlink":
+        os.link(selected / "claude", tmp_path / "outside-native")
+    entry = json.loads((SERVICE_DIR / "external_adapters/cc-runtime.spec.json").read_text())
+    prefix = "Object.defineProperty(process,'platform', {value:'linux'}); Object.defineProperty(process,'arch', {value:'x64'}); process.report.getReport=()=>({header:{glibcVersionRuntime:'fixture'}}); "
+    result = subprocess.run([node, "-e", prefix + entry["install"][3][2], str(runtime)],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode != 0
+    assert ("fixture-official-script-reached" in result.stderr) == (fault == "ok")
+
+
+@pytest.mark.parametrize("fault", ["short", "arch", "table", "segment", "content", "missing", "symlink", "hardlink", "metadata", "version", "ok"])
+def test_cc_native_install_proof_rejects_false_evidence(tmp_path, monkeypatch, fault):
+    import os
+    import struct
+    import external_agent_registry as registry
+    entry = json.loads((SERVICE_DIR / "external_adapters/cc-runtime.spec.json").read_text())
+    runtime = tmp_path.resolve() / "runtime"
+    package = runtime / "node_modules/@anthropic-ai/claude-code"
+    selected = runtime / "node_modules/@anthropic-ai/claude-code-linux-x64"
+    (package / "bin").mkdir(parents=True)
+    selected.mkdir()
+    for directory, name in ((package, "@anthropic-ai/claude-code"), (selected, "@anthropic-ai/claude-code-linux-x64")):
+        (directory / "package.json").write_text(json.dumps(dict(name=name, version="2.1.317")))
+    (runtime / "package-lock.json").write_bytes((SERVICE_DIR / "external_adapters/cc-runtime-package-lock.json").read_bytes())
+    # Structurally plausible fixture only; native execution is always mocked.
+    header = b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack(
+        "<HHIQQQIHHHHHH", 2, 183 if fault == "arch" else 62, 1, 0x400078,
+        9999 if fault == "table" else 64, 0, 0, 64, 56, 1, 0, 0, 0)
+    payload = header + struct.pack("<IIQQQQQQ", 1, 5, 0, 0x400000, 0,
+                                   9999 if fault == "segment" else 121, 121, 4096) + b"x"
+    if fault == "short":
+        payload = payload[:20]
+    binary, native = package / "bin/claude.exe", selected / "claude"
+    binary.write_bytes(payload)
+    native.write_bytes(payload + (b"different-tail" if fault == "content" else b""))
+    binary.chmod(0o755)
+    native.chmod(0o755)
+    (runtime / "node_modules/.bin").mkdir()
+    (runtime / "node_modules/.bin/claude").symlink_to(binary)
+    if fault == "missing":
+        native.unlink()
+    elif fault == "symlink":
+        native.unlink()
+        native.symlink_to(binary)
+    elif fault == "hardlink":
+        os.link(native, tmp_path / "external-binary")
+    elif fault == "metadata":
+        (selected / "package.json").write_text(json.dumps(dict(name="wrong", version="2.1.317")))
+    calls = []
+
+    def probe(command, cwd, **kwargs):
+        calls.append(command)
+        if command[1] == "-p":
+            return True, "linux-x64"
+        assert kwargs["env"]["DISABLE_AUTOUPDATER"] == "1"
+        assert kwargs["env"]["HOME"] != str(Path.home())
+        return True, "wrong version" if fault == "version" else "2.1.317 (Claude Code)"
+
+    monkeypatch.setattr(registry, "_run_probe_command", probe)
+    monkeypatch.setattr(__import__("platform"), "system", lambda: "Linux")
+    monkeypatch.setattr(sys, "argv", ["proof", str(runtime), "fixture-node", str(SERVICE_DIR / "external_adapters")])
+    script = entry["build_probe"]["command"][2]
+    if fault == "ok":
+        exec(compile(script, "cc-build-proof", "exec"), {})
+        assert len(calls) == 2
+    else:
+        with pytest.raises((AssertionError, FileNotFoundError)):
+            exec(compile(script, "cc-build-proof", "exec"), {})
+        assert len(calls) == (2 if fault == "version" else 1)
+
+
 def test_missing_optional_matrix_preserves_passed_checks_but_not_full_pass(onboard, monkeypatch):
     code, report = invoke(onboard, monkeypatch)
 

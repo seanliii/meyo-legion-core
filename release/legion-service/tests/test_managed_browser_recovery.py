@@ -385,12 +385,16 @@ def test_recovery_rejects_missing_or_changed_native_tool_contract(case, new_tool
 def test_recovery_revalidates_original_materials_before_start(case):
     lease = case.start({"tool_error": True})
     fail(lease)
-    entry = case.materials.package / "index.js"
+    entry = case.materials.preflight_material
     original = entry.read_bytes()
     entry.unlink()
     target = case.materials.roots["work"] / "untrusted.js"
     target.write_text("not an authorized runtime")
     entry.symlink_to(target)
+    # Exercise the real parent check: the fake Node backend must not make an
+    # unrelated package mutation look like a preflight rejection on Linux.
+    with pytest.raises(case.mb.BrowserUnavailable, match="outside all native-writable roots"):
+        lease._validate_materials(case.materials.node, case.materials.worker)
     result = lease.call(RECOVER)
     assert result.get("isError") is True
     assert state(result)["recoverable"] is True

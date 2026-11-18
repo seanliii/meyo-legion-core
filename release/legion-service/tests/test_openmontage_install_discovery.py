@@ -114,6 +114,7 @@ def case(tmp_path, monkeypatch):
     return SimpleNamespace(
         root=tmp_path, sources=sources, current=current, legacy=old_source,
         registry=registry, installs=installs, media=media, spec=spec, catalog=catalog,
+        synthetic_key=spec["key"],
     )
 
 
@@ -125,7 +126,11 @@ def test_unreviewed_declaration_preserves_managed_probe_status(case, monkeypatch
     assert fact["declared"] is True
     assert fact["status"] == "requires_managed_probe"
     assert fact["source"] == ""
-    assert fact["status_detail"] == case.registry.probe("openmontage")["status_detail"]
+    # Bound to the fixture's synthetic declaration, never the real release catalog.
+    assert case.registry.CATALOG == case.catalog
+    assert case.registry.load_catalog() == [case.spec]
+    assert case.synthetic_key == case.spec["key"]
+    assert fact["status_detail"] == case.registry.probe(case.synthetic_key)["status_detail"]
     assert "未安装" not in fact["error"]
 
 

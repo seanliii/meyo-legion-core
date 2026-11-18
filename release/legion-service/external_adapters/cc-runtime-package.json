@@ -1,0 +1,7 @@
+{
+  "name": "meyo-official-cc-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {"node": ">=22.0.0"},
+  "dependencies": {"@anthropic-ai/claude-code": "2.1.317"}
+}
