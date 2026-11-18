@@ -39,6 +39,36 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/python-dependencies.txt"
           npm ci --prefix connectors/dsh-plugin-legion \
             2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/connector-dependencies.txt"
+      - name: Install the evidence-matched official Codex native test dependency
+        timeout-minutes: 5
+        env:
+          CODEX_VERSION: "0.167.0-alpha.3.2"
+          # Official npm platform package, not a model/provider credential.
+          # https://registry.npmjs.org/@openai/codex/0.167.0-alpha.3.2-linux-x64
+          CODEX_INTEGRITY: "sha512-eTQqFUYAKKbqv1C5Usi8ibDaDq/JbdHEiLcl2OeluOnvuUqOM1+1BUQVP2HWqJaY1SG+SlTW9ztdVMc2lTEmCA=="
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          prefix="$RUNNER_TEMP/runtime/node-tools/packages/codex"
+          archive="$RUNNER_TEMP/codex-${CODEX_VERSION}-linux-x64.tgz"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 120 \
+            "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-x64.tgz" \
+            --output "$archive"
+          test "sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)" = "$CODEX_INTEGRITY"
+          # Reuse deployment's npm isolated-prefix mechanism; no member onboarding,
+          # lifecycle scripts, dependency resolution or unpinned optional packages.
+          flock /tmp/meyo-harness-build.lock npm install --global --prefix "$prefix" \
+            --ignore-scripts --offline --no-audit --no-fund "$archive" \
+            2>&1 | tee "$RUNNER_TEMP/legion-pair/logs/codex-dependency.txt"
+          package="$prefix/lib/node_modules/@openai/codex"
+          node -e 'const p=require(process.argv[1]); if(p.name!=="@openai/codex" || p.version!==process.argv[2]+"-linux-x64") process.exit(1)' \
+            "$package/package.json" "$CODEX_VERSION"
+          # Native path from the same official tag's codex-cli/bin/codex.js:
+          # https://github.com/openai/codex/blob/rust-v0.167.0-alpha.3.2/codex-cli/bin/codex.js
+          native="$(realpath -e "$package/vendor/x86_64-unknown-linux-musl/bin/codex")"
+          test -f "$native" && test -x "$native"
+          test "$("$native" --version)" = "codex-cli $CODEX_VERSION"
+          printf 'LEGION_TEST_CODEX_CLI=%s\n' "$native" >> "$GITHUB_ENV"
       - name: Core isolated unit and protocol tests
         env:
           MEYO_LEGION_DIR: ${{ runner.temp }}/core-tests/meyo

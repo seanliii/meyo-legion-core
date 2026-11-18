@@ -5,6 +5,7 @@ import json
 import pytest
 
 import legion_core as _legion_core  # noqa: F401  # 注册真实 harness_registry 源码路径
+from legion_concurrency import _mem_used_pct as real_mem_used_pct
 from collaboration_protocol_fixtures import (  # noqa: F401
     HARNESS, OWNER, SID, TEAM, captain_scene, done, isolated, plan, scene,
 )
@@ -264,3 +265,101 @@ def test_v1_artifact_only_message_is_valid_and_persisted(scene):
     assert result["ok"] is True and len(result["message_receipts"]) == 1
     persisted = project_context.load(TEAM)["decisions"][-1]
     assert persisted["message_receipts"] == result["message_receipts"]
+
+
+@pytest.mark.parametrize("meminfo, expected", [
+    ("MemTotal: 1000 kB\nMemAvailable: 250 kB\nMemFree: 10 kB\n", 75.0),
+    ("MemTotal: 1000 kB\nMemFree: 100 kB\nBuffers: 50 kB\nCached: 200 kB\n"
+     "SReclaimable: 100 kB\nShmem: 50 kB\n", 60.0),
+    ("MemTotal: 0 kB\nMemAvailable: 0 kB\n", 0.0),
+    ("MemTotal: 1000 kB\nMemAvailable: 1100 kB\n", 0.0),
+    ("MemTotal: 1000 kB\nMemAvailable: -1 kB\n", 0.0),
+    ("MemTotal: invalid kB\n", 0.0),
+    ("MemTotal: 1000 bytes\nMemAvailable: 250 kB\n", 0.0),
+    ("MemTotal: 1000 kB\n", 0.0),
+])
+def test_linux_memory_fallback_reads_proc_without_spawning(isolated, monkeypatch, meminfo, expected):
+    import builtins
+    import io
+    import sys
+    from unittest.mock import Mock
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    stream = io.StringIO(meminfo)
+    read = Mock(wraps=stream.read)
+    stream.read = read
+    opened = Mock(return_value=stream)
+    monkeypatch.setattr(builtins, "open", opened)
+    assert real_mem_used_pct() == pytest.approx(expected)
+    opened.assert_called_once_with("/proc/meminfo", encoding="ascii")
+    read.assert_called_once_with(65536)
+    assert stream.closed
+
+
+@pytest.mark.parametrize("platform", ["linux", "freebsd14", "win32"])
+def test_unobservable_memory_fallback_is_nonblocking(isolated, monkeypatch, platform):
+    import builtins
+    import sys
+    from unittest.mock import Mock
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", platform)
+    opened = Mock(side_effect=OSError("proc unavailable"))
+    monkeypatch.setattr(builtins, "open", opened)
+    assert real_mem_used_pct() == 0.0
+    assert opened.call_count == int(platform == "linux")
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_darwin_memory_fallback_communicates_with_bounded_timeout(isolated, monkeypatch, timeout):
+    import subprocess
+    import sys
+    from unittest.mock import MagicMock
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    output = ("Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+              "Pages free: 10.\nPages inactive: 10.\nPages speculative: 5.\n"
+              "Pages active: 50.\nPages wired down: 15.\n"
+              "Pages occupied by compressor: 10.\n")
+    process = MagicMock()
+    process.__enter__.return_value = process
+    process.poll.return_value = 0
+    process.communicate.side_effect = (
+        [subprocess.TimeoutExpired(["vm_stat"], 3), (output, "")]
+        if timeout else [(output, "")])
+    popen = MagicMock(return_value=process)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    assert real_mem_used_pct() == pytest.approx(0.0 if timeout else 75.0)
+    popen.assert_called_once_with(["vm_stat"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+    assert process.communicate.call_args_list[0].kwargs == {"timeout": 3}
+    assert process.communicate.call_count == 1
+    assert process.kill.call_count == int(timeout)
+    assert process.wait.call_count == int(timeout)
+    process.__exit__.assert_called_once()
+
+
+def test_memory_fallback_does_not_swallow_offline_pytest_failure(isolated, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with pytest.raises(pytest.fail.Exception, match="offline regression must not"):
+        real_mem_used_pct()
+
+
+def test_memory_prefers_optional_psutil_without_proc_or_process(isolated, monkeypatch):
+    import builtins
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    memory = Mock(return_value=SimpleNamespace(percent=42.5))
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(virtual_memory=memory))
+    opened = Mock(side_effect=AssertionError("psutil must short-circuit proc reads"))
+    monkeypatch.setattr(builtins, "open", opened)
+    assert real_mem_used_pct() == 42.5
+    memory.assert_called_once_with()
+    opened.assert_not_called()

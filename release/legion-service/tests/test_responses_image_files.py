@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from test_codex_output_budget_transport import (
-    runtime, MODEL, KEY, LOCAL_TOKEN, NATIVE, capture_native, context, declare,
+    runtime, MODEL, KEY, LOCAL_TOKEN, capture_native, context, declare,
 )
 
 OPTION = {"profile": "deepseek-files-v1", "ttl_seconds": 3600}
@@ -328,7 +328,7 @@ def test_project_state_is_rejected_and_old_bridge_guard_is_unchanged(runtime):
 
 
 def test_real_native_direct_to_files_resume_keeps_original_thread(runtime):
-    assert NATIVE.is_file(), "需要已安装原生 CLI，不能静默跳过"
+    assert runtime.native.is_file(), "需要已安装原生 CLI，不能静默跳过"
     with provider() as (base, seen, *_):
         declare(runtime, base=base, cap=None)
         first = runtime.hr._codex_adapter("__ut_files_native_first", "Acknowledge the fixture; do not use tools.",

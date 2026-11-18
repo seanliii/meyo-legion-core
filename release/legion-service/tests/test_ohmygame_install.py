@@ -1,6 +1,7 @@
 """Offline installer tests: real fixture files, mocked HTTP/macOS command boundaries."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import io
@@ -146,6 +147,15 @@ def offline_release(module, monkeypatch, data=None):
         raise AssertionError(f"installer tried to execute an application: {command}")
 
     monkeypatch.setattr(module, "_run", run_fixture)
+
+    def publish_fixture(source, destination):
+        # Only offline installation uses this serial filesystem simulation.
+        # The real Darwin RENAME_EXCL primitive has its own unmocked test below.
+        if os.path.lexists(destination):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(destination))
+        os.rename(source, destination)
+
+    monkeypatch.setattr(module, "_publish", publish_fixture)
     return calls
 
 
@@ -303,6 +313,53 @@ def test_unowned_target_is_never_overwritten(load_worker, monkeypatch, tmp_path,
     if kind == "populated":
         assert (target / "keep").read_text() == "keep target"
     assert not calls.commands and not calls.downloads
+
+
+@pytest.mark.parametrize("kind", ["empty", "populated", "file", "symlink", "dangling_symlink"])
+def test_offline_publish_refuses_target_created_after_install_preflight(
+        load_worker, monkeypatch, tmp_path, kind):
+    module = load_worker()
+    offline_release(module, monkeypatch)
+    publish = module._publish
+    destination = tmp_path / "runtime/app"
+    outside = tmp_path / "outside"
+    outside.write_text("other owner")
+    observed = {}
+
+    def claim_before_publish(source, target):
+        assert target == destination and not os.path.lexists(target)
+        if kind in {"empty", "populated"}:
+            target.mkdir()
+            if kind == "populated":
+                (target / "keep").write_text("other target")
+        elif kind == "file":
+            target.write_text("other target")
+        else:
+            target.symlink_to(outside if kind == "symlink" else tmp_path / "missing")
+        before = target.lstat()
+        with pytest.raises(FileExistsError) as error:
+            publish(source, target)
+        assert error.value.errno == errno.EEXIST
+        assert target.lstat().st_ino == before.st_ino
+        assert (source / APP / "Contents/Resources/app.asar").read_bytes() == (
+            b"complete fixture application")
+        observed["refused"] = True
+        raise error.value
+
+    monkeypatch.setattr(module, "_publish", claim_before_publish)
+    with pytest.raises(FileExistsError):
+        module.install(tmp_path / "runtime")
+    assert observed == {"refused": True}
+    assert outside.read_text() == "other owner"
+    if kind == "populated":
+        assert (destination / "keep").read_text() == "other target"
+    elif kind == "file":
+        assert destination.read_text() == "other target"
+    elif kind in {"symlink", "dangling_symlink"}:
+        assert destination.is_symlink()
+    else:
+        assert list(destination.iterdir()) == []
+    assert not list(destination.parent.glob(".ohmygame-stage-*"))
 
 
 def test_install_then_reuse_and_check_preserve_full_bundle(

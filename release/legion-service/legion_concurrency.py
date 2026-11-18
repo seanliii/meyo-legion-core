@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import sys
 import time
 
 import legion_paths as _paths
@@ -46,14 +47,38 @@ _SLOT_DIR = _paths.under("concurrency", "slots")   # ~/.meyo/legion/concurrency/
 
 
 def _mem_used_pct() -> float:
-    """当前内存已用百分比。psutil 有就用;没有退回 vm_stat 解析;都失败返 0(不拦)。"""
+    """当前内存实占百分比；不可观测时返 0，沿用不阻塞的退化语义。"""
     try:
         import psutil  # noqa
         return float(psutil.virtual_memory().percent)
     except Exception:
         pass
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo", encoding="ascii") as stream:
+                raw = stream.read(65536)
+            memory = {}
+            for line in raw.splitlines():
+                key, separator, value = line.partition(":")
+                fields = value.split()
+                if separator and len(fields) == 2 and fields[1] == "kB":
+                    memory[key] = int(fields[0])
+            total = memory["MemTotal"]
+            available = memory.get("MemAvailable")
+            if available is None:
+                # 旧内核没有 MemAvailable：扣除可回收缓存，不将缓存算实占。
+                available = (memory["MemFree"] + memory["Buffers"] + memory["Cached"]
+                             + memory.get("SReclaimable", 0) - memory.get("Shmem", 0))
+            if total <= 0 or not 0 <= available <= total:
+                return 0.0
+            return (total - available) / total * 100.0
+        except Exception:
+            return 0.0
+    if sys.platform != "darwin":
+        return 0.0
     try:
         import subprocess
+        # run 使用 communicate 排空管道，timeout 后回收同一个 vm_stat 子进程。
         out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=3).stdout
         pages = {}
         page_size = 4096

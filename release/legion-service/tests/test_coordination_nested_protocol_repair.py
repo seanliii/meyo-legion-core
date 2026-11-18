@@ -219,3 +219,35 @@ def test_coordination_message_delivers_artifact_refs_with_protocol_receipt(
     assert receipt["artifact_ref_count"] == 1
     assert receipt["correlation_id"] == result["collaboration_protocol"]["correlation_id"]
     assert open(original[0], "rb").read() == original[1]
+
+
+@pytest.mark.parametrize("case", ["first-tmp-path", "next-tmp-path"])
+def test_offline_fixture_pins_current_slot_directory(isolated, tmp_path, monkeypatch, case):
+    import legion_concurrency as concurrency
+
+    assert concurrency._SLOT_DIR == tmp_path / "MEYO_LEGION_DIR" / "concurrency" / "slots"
+    assert concurrency._mem_used_pct() == 0.0
+    monkeypatch.setattr(concurrency, "_OFF", False)
+    monkeypatch.setattr(concurrency, "_SLOTS", 1)
+    with concurrency.slot(case) as acquired:
+        assert acquired is True
+        assert concurrency.status()["busy"] == 1
+        assert (concurrency._SLOT_DIR / "slot_0.lock").is_file()
+    assert concurrency.status()["busy"] == 0
+
+
+def test_memory_pressure_still_reports_and_cancels_without_grabbing_slot(
+        isolated, tmp_path, monkeypatch):
+    import legion_concurrency as concurrency
+
+    monkeypatch.setattr(concurrency, "_OFF", False)
+    monkeypatch.setattr(concurrency, "_MEM_PCT", 88.0)
+    monkeypatch.setattr(concurrency, "_WAIT_S", 1.0)
+    monkeypatch.setattr(concurrency, "_mem_used_pct", lambda: 95.0)
+    notices = []
+    with concurrency.slot("pressure", cancel_check=lambda: bool(notices),
+                          on_wait=notices.append) as acquired:
+        assert acquired is False
+    assert notices[0]["reason"] == "memory_pressure"
+    assert notices[0]["memory_used_pct"] == 95.0
+    assert not concurrency._SLOT_DIR.exists()

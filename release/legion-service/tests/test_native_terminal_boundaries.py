@@ -473,9 +473,12 @@ def test_existing_external_entry_receives_project_intent_and_native_context(
     peer.mkdir()
     (peer / "keep.txt").write_text("existing source")
 
-    def prepare(key, destination, *, preserve_project=False):
-        observed.update(key=key, destination=destination, preserve_project=preserve_project)
-        return original_prepare(key, destination, preserve_project=preserve_project)
+    def prepare(key, destination, *, preserve_project=False, user_id=""):
+        observed.update(key=key, destination=destination, preserve_project=preserve_project,
+                        user_id=user_id)
+        assert user_id == "alice"
+        return original_prepare(key, destination, preserve_project=preserve_project,
+                                user_id=user_id)
 
     def transport(spec, context, env, timeout_s, event_cb=None):
         observed.update(context=copy.deepcopy(context), env_workdir=env["MEYO_WORKDIR"],
@@ -495,6 +498,7 @@ def test_existing_external_entry_receives_project_intent_and_native_context(
     assert observed["destination"] == observed["env_workdir"] == result["workdir"]
     assert observed["context"]["session_id"] == "external-native"
     assert observed["context"]["model"] == "fixture-model"
+    assert observed["user_id"] == observed["context"]["user_id"] == "alice"
     assert observed["peer_context"]
     if root_field:
         assert result["workdir"] == str(native_stack.project)

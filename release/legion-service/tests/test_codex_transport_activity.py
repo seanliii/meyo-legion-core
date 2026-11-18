@@ -14,7 +14,7 @@ import tomllib
 import pytest
 
 from test_codex_output_budget_transport import (
-    runtime, declare, context, capture_native, loopback_provider, NATIVE, MODEL, KEY,
+    runtime, declare, context, capture_native, loopback_provider, MODEL, KEY,
 )
 
 
@@ -251,7 +251,7 @@ def test_pending_provider_never_defeats_cancel_or_budget_and_keeps_checkpoint(ru
 def test_actual_native_loopback_keeps_checkpoint_and_emits_only_private_metadata(runtime, capsys):
     """同版本真实 Codex CLI；上游仅本机夹具，不是模型调用。"""
     case = runtime
-    assert NATIVE.is_file()
+    assert case.native.is_file()
     with loopback_provider() as (base, observed):
         value = declare(case, base=base, cap=4096)
         value["stream_idle_timeout_ms"] = 600000

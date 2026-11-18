@@ -133,9 +133,9 @@ def test_files_rewrite_and_cache_restart_keep_native_encoding_contract(runtime):
 
 def test_real_native_direct_then_files_resume_with_compression_capable_provider(runtime):
     import copy
-    from test_codex_output_budget_transport import NATIVE, declare, context
+    from test_codex_output_budget_transport import declare, context
     from test_responses_image_files import provider, enable
-    assert NATIVE.is_file(), '需要真实本地 CLI，不静默跳过'
+    assert runtime.native.is_file(), '需要真实本地 CLI，不静默跳过'
     with provider(sse_gzip_if_accepted=True) as (base, seen, *_):
         declare(runtime, base=base, cap=None)
         first = runtime.hr._codex_adapter('__ut_encoding_direct', 'Acknowledge this fixture; no tools.',

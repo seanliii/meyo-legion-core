@@ -33,6 +33,11 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("LEGION_GATEWAY_RETRIES", "1")
     monkeypatch.setenv("LEGION_MAX_FAILOVER", "0")
     monkeypatch.syspath_prepend(str(SERVICE))
+    import legion_concurrency
+
+    monkeypatch.setattr(legion_concurrency, "_mem_used_pct", lambda: 0.0)
+    monkeypatch.setattr(legion_concurrency, "_SLOT_DIR",
+                        tmp_path / "MEYO_LEGION_DIR" / "concurrency" / "slots")
 
     def forbidden(*args, **kwargs):
         pytest.fail("offline regression must not use network or spawn an external process")

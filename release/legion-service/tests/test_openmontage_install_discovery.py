@@ -83,6 +83,11 @@ def case(tmp_path, monkeypatch):
     catalog = tmp_path / "external-agents-fixture.json"
     catalog.write_text(json.dumps({"agents": [spec]}))
     monkeypatch.setattr(registry, "CATALOG", catalog)
+    # Explicitly review this synthetic declaration only; changed specs need a new review.
+    monkeypatch.setattr(registry, "_TRUSTED_PROBE_SPECS", {
+        **registry._TRUSTED_PROBE_SPECS,
+        spec["key"]: registry._probe_spec_identity(spec),
+    })
     monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "external-state.json")
     monkeypatch.setattr(registry, "_LOG_DIR", tmp_path / "external-logs")
     monkeypatch.setattr(registry, "_PROBE_CACHE", {"data": None, "ts": 0.0})
@@ -110,6 +115,30 @@ def case(tmp_path, monkeypatch):
         root=tmp_path, sources=sources, current=current, legacy=old_source,
         registry=registry, installs=installs, media=media, spec=spec, catalog=catalog,
     )
+
+
+def test_unreviewed_declaration_preserves_managed_probe_status(case, monkeypatch):
+    monkeypatch.setattr(case.registry, "_TRUSTED_PROBE_SPECS", {})
+    monkeypatch.setattr(case.registry, "source_dir", forbidden)
+    fact = case.installs.openmontage_source_status()
+    assert fact["ok"] is False
+    assert fact["declared"] is True
+    assert fact["status"] == "requires_managed_probe"
+    assert fact["source"] == ""
+    assert fact["status_detail"] == case.registry.probe("openmontage")["status_detail"]
+    assert "未安装" not in fact["error"]
+
+
+def test_changed_declaration_requires_explicit_identity_review(case, monkeypatch):
+    revised = {**case.spec, "revision": "2" * 40, "version": "2" * 40}
+    case.catalog.write_text(json.dumps({"agents": [revised]}))
+    source_fixture(case.current, revision=revised["revision"])
+    fact = case.installs.openmontage_source_status()
+    assert fact["ok"] is False
+    assert fact["status"] == "requires_managed_probe"
+    monkeypatch.setitem(case.registry._TRUSTED_PROBE_SPECS, revised["key"],
+                        case.registry._probe_spec_identity(revised))
+    assert case.installs.openmontage_source_status()["ok"] is True
 
 
 def test_declared_personal_source_wins_over_existing_old_checkout(case):
@@ -393,6 +422,9 @@ def native_checker(case, monkeypatch):
     catalog.write_text(json.dumps({"agents": [entry]}))
     monkeypatch.setattr(case.registry, "HERE", service)
     monkeypatch.setattr(case.registry, "CATALOG", catalog)
+    # This fixture replaces the earlier synthetic catalog with the reviewed release spec.
+    monkeypatch.setitem(case.registry._TRUSTED_PROBE_SPECS, entry["key"],
+                        case.registry._probe_spec_identity(entry))
     source_fixture(case.current, revision=UPSTREAM_REVISION)
     environment = {
         name: os.environ[name] for name in (
@@ -553,7 +585,7 @@ def forbidden(*args, **kwargs):
 socket.socket.connect = socket.create_connection = socket.getaddrinfo = forbidden
 service, source, mode = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
 sys.path.insert(0, str(service))
-import install_registry, media_tools
+import external_agent_registry, install_registry, media_tools
 media_tools.seedance_gateway_video = forbidden
 fallback = ModuleType('openmontage_local_provider')
 fallback.LegionStillMotionVideo = type('LocalFixture', (), {'name': 'local_fixture'})
@@ -574,6 +606,13 @@ if mode != 'unchanged':
         entry['agents'][0]['version'] = data['revision']
         catalog.write_text(json.dumps(entry))
     marker.write_text(json.dumps(data))
+    if mode == 'revision':
+        unreviewed = install_registry.openmontage_source_status()
+        assert not unreviewed['ok'] and unreviewed['status'] == 'requires_managed_probe'
+        # This test explicitly reviews the replacement before checking cache invalidation.
+        reviewed = external_agent_registry.load_catalog()[0]
+        external_agent_registry._TRUSTED_PROBE_SPECS[reviewed['key']] = (
+            external_agent_registry._probe_spec_identity(reviewed))
 state = install_registry.openmontage_source_status()
 after = media_tools.video_provider_status()
 print(json.dumps({'before': before, 'source': state, 'after': after,

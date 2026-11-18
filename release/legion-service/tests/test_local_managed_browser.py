@@ -176,7 +176,9 @@ def material_scope(tmp_path, monkeypatch):
              for name in ("work", "control", "runtime", "native-tmp", "home")}
     for root in roots.values():
         root.mkdir()
-    package = roots["runtime"] / "mcp"
+    package = roots["runtime"] / (
+        "mcp" if sys.platform == "darwin" else
+        "node-tools/packages/playwright-mcp/lib/node_modules/@playwright/mcp")
     core = package / "node_modules" / "playwright-core"
     (core / "lib").mkdir(parents=True)
     manifest = package / "package.json"
@@ -194,14 +196,37 @@ def material_scope(tmp_path, monkeypatch):
     for target in (node, worker, executable):
         target.write_text("fixture, never executed\n")
         target.chmod(0o700)
-    profile = roots["control"] / "profile.json"
-    profile.write_text(json.dumps({
-        "schema_version": 1, "platform": "darwin", "runtime_root": str(roots["runtime"]),
+    fields = {
+        "schema_version": 1, "platform": sys.platform, "runtime_root": str(roots["runtime"]),
         "mcp_package_path": str(manifest),
         "mcp_package_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
         "browser_executable_path": str(executable),
         "browser_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-    }))
+    }
+    if sys.platform != "darwin":
+        # Both the Python trust check and Node loader consume real fixture files;
+        # no native library, font, package or browser is loaded/executed.
+        native = roots["runtime"] / "native-libs"
+        libraries = native / "lib"
+        libraries.mkdir(parents=True)
+        library = libraries / "libfixture.so"
+        library.write_bytes(b"synthetic library, never loaded\n")
+        native_manifest = native / "manifest.json"
+        native_manifest.write_text(json.dumps({"libraries": {
+            library.name: {"sha256": hashlib.sha256(library.read_bytes()).hexdigest()},
+        }}))
+        font = roots["runtime"] / "fixture.ttf"
+        font.write_bytes(b"synthetic font, never loaded\n")
+        linux_browser = roots["runtime"] / "browser/chrome-linux64/chrome"
+        linux_browser.parent.mkdir(parents=True)
+        linux_browser.write_bytes(executable.read_bytes())
+        linux_browser.chmod(0o700)
+        fields.update(
+            native_libs_root=str(native), font_path=str(font),
+            native_manifest_sha256=hashlib.sha256(native_manifest.read_bytes()).hexdigest(),
+            font_sha256=hashlib.sha256(font.read_bytes()).hexdigest())
+    profile = roots["control"] / "profile.json"
+    profile.write_text(json.dumps(fields))
     profile.chmod(0o600)
     env = dict(os.environ, HOME=str(roots["home"]), TMPDIR=str(roots["native-tmp"]),
                MEYO_RUNTIME_STORE=str(roots["control"]), MEYO_RUNTIME_ROOT=str(roots["runtime"]),
@@ -223,6 +248,35 @@ def material_scope(tmp_path, monkeypatch):
 
     return SimpleNamespace(roots=roots, package=package, core=core, env=env,
                            node=node, worker=worker, lease=lease, inspect=inspect)
+
+
+def test_material_scope_matches_host_and_passes_real_validators(material_scope):
+    case = material_scope
+    profile = json.loads(Path(case.env["MEYO_PLAYWRIGHT_RUNTIME_PROFILE"]).read_text())
+    assert profile["platform"] == sys.platform
+    case.lease._validate_materials(case.node, case.worker)
+    result = case.inspect()
+    assert result.returncode == 0, result.stderr
+    materials = json.loads(result.stdout)
+    assert materials["managed"] is True and materials["version"] == "0.0.79"
+    if sys.platform == "darwin":
+        assert materials["executable"] == profile["browser_executable_path"]
+        checked = [Path(profile["browser_executable_path"])]
+    else:
+        assert materials["libraries"] == str(Path(profile["native_libs_root"]) / "lib")
+        assert materials["font"] == profile["font_path"]
+        assert materials["executable"] == str(case.roots["runtime"] / "browser/chrome-linux64/chrome")
+        checked = [Path(profile["font_path"]),
+                   Path(materials["libraries"]) / "libfixture.so",
+                   Path(profile["native_libs_root"]) / "manifest.json"]
+    for path in checked:
+        original = path.read_bytes()
+        try:
+            path.write_bytes(b"tampered runtime material")
+            rejected = case.inspect()
+            assert rejected.returncode != 0 and "checksum" in rejected.stderr
+        finally:
+            path.write_bytes(original)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS material boundary")

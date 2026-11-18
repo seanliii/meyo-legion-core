@@ -348,9 +348,15 @@ def openmontage_source_status() -> dict:
         if entry is None:
             return {**out, "error": "OpenMontage 未登记；请通过 harness_onboard 登记固定源码"}
         out.update(declared=True, revision=entry.get("revision"), version=entry.get("version"))
+        state = registry.probe("openmontage")  # 单家 probe 不走全量 TTL 缓存
+        if state.get("status") == "requires_managed_probe":
+            # Metadata-only is an unperformed probe, not evidence of a missing install.
+            # Do not resolve the unreviewed declaration's source on the host.
+            return {**out, "status": state["status"],
+                    "status_detail": state.get("status_detail", ""),
+                    "error": "OpenMontage 源码尚未探测；需在有效原生 onboard lease 中校验"}
         source = registry.source_dir(entry)
         out["source"] = str(source)
-        state = registry.probe("openmontage")  # 单家 probe 不走全量 TTL 缓存
         if not state.get("source_present"):
             return {**out, "status": "not_installed",
                     "error": "OpenMontage 源码未安装；安装中心选择 repo:openmontage"}

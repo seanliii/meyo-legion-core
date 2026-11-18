@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 import copy
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib
 import importlib.util
@@ -11,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,14 +26,48 @@ import pytest
 SERVICE = Path(__file__).resolve().parents[1]
 ORCH = SERVICE.parents[1] / "harness_baselines/meyo-orchestrator"
 BRIDGE = SERVICE.parents[1] / "harness_baselines/comparison/responses_chat_bridge.py"
-NATIVE = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+# Same official release as the HTTP/resume evidence; CI pins its npm tarball hash.
+CODEX_VERSION = "0.167.0-alpha.3.2"
+NATIVE = Path(os.environ.get("LEGION_TEST_CODEX_CLI") or (
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+    if sys.platform == "darwin" else shutil.which("codex") or "/missing/codex"))
 MODEL = "fixture-output-budget"
 KEY = "fixture-upstream-only"
 LOCAL_TOKEN = "fixture-local-only"
 
 
+@lru_cache(maxsize=1)
+def native_cli(validation_root):
+    assert NATIVE.is_absolute(), "LEGION_TEST_CODEX_CLI 必须是原生 CLI 的绝对路径"
+    native = NATIVE.resolve(strict=True)
+    assert native.is_file(), "需要真实官方 Codex CLI，不静默跳过"
+    assert os.access(native, os.X_OK), "原生 CLI 必须可执行"
+    with native.open("rb") as binary:
+        magic = binary.read(4)
+    assert magic in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
+                     b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"), "必须指向原生二进制，不能使用 shell/npm 包装器"
+    root = validation_root / "official-codex-version"
+    root.mkdir(exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if not key.startswith(
+        ("MEYO_", "LEGION_", "AIGC_", "OPENAI_", "ANTHROPIC_", "CODEX_"))}
+    env.update(HOME=str(root), CODEX_HOME=str(root / "codex"))
+    proc = subprocess.Popen([str(native), "--version"], env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        import signal
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    assert proc.returncode == 0, stderr
+    assert stdout.strip() == "codex-cli " + CODEX_VERSION, stdout
+    return native
+
+
 @pytest.fixture
-def runtime(tmp_path, monkeypatch):
+def runtime(tmp_path, monkeypatch, tmp_path_factory):
+    native = native_cli(tmp_path_factory.getbasetemp())
     for key in tuple(os.environ):
         if key.startswith(("MEYO_", "LEGION_", "AIGC_", "OPENAI_", "ANTHROPIC_", "CODEX_")):
             monkeypatch.delenv(key)
@@ -68,10 +104,10 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(hr, "_WALL_S", 25)
     real_which = hr._sh.which
     monkeypatch.setattr(hr._sh, "which", lambda name, *a, **k:
-                        str(NATIVE) if name == "codex" else real_which(name, *a, **k))
+                        str(native) if name == "codex" else real_which(name, *a, **k))
     work = tmp_path / "work"
     work.mkdir()
-    return SimpleNamespace(root=tmp_path, work=work, mp=monkeypatch,
+    return SimpleNamespace(root=tmp_path, work=work, mp=monkeypatch, native=native,
                            hr=hr, mr=mr, owned=owned, bridge=bridge)
 
 
@@ -390,7 +426,7 @@ def loopback_provider():
 
 def test_real_native_request_gets_budget_through_existing_owned_bridge(runtime):
     """真 Codex CLI -> 既有透明桥进程 -> 本机HTTP夹具；没有真实模型或工具执行。"""
-    assert NATIVE.is_file(), "该实测需当前已安装的原生 CLI，不能假通过或静默跳过"
+    assert runtime.native.is_file(), "该实测需当前已安装的原生 CLI，不能假通过或静默跳过"
     case = runtime
     stopped = []
     original_stop = case.owned._stop_owned
