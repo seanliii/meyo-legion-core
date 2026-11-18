@@ -96,6 +96,49 @@ def test_private_nested_scope_clears_new_identity_and_restores_on_exception(isol
     assert p._bound_native_onboard() is None
 
 
+def test_private_target_projection_uses_real_tls_not_public_context(isolated):
+    p = isolated.provider
+    declaration = {"pi": {"model": "bound-target", "base_url": "https://target.example.invalid/v1",
+                           "api_key_env": "TARGET_PRIVATE_SLOT", "protocol": "responses"}}
+    isolated.mp.setenv("TARGET_PRIVATE_SLOT", "fake-host-default")
+    isolated.mp.setenv("LEGION_MEMBER_MODEL_BINDINGS", json.dumps({"cc": {
+        "model": "foreign", "base_url": "https://foreign.example.invalid/v1",
+        "api_key_env": "FOREIGN_SLOT", "protocol": "responses"}}))
+    isolated.mp.setenv("FOREIGN_SLOT", "fake-foreign-key")
+    scope = {"MEYO_USER_ID": "alice", "LEGION_MEMBER_MODEL_BINDINGS": json.dumps(declaration),
+             "TARGET_PRIVATE_SLOT": "fake-target-key", "LEGION_CODEX_TRANSPORT": "responses"}
+    with p._runtime_scope(scope, None, inherit_process_context=False):
+        public = p._runtime_binding()[1]
+        assert not any(name in public for name in (
+            "LEGION_MEMBER_MODEL_BINDINGS", "TARGET_PRIVATE_SLOT", "LEGION_CODEX_TRANSPORT"))
+        binding, uid = p._private_member_model_binding("pi")
+        assert binding["model"] == "bound-target" and binding["api_key"] == "fake-target-key"
+        assert uid == "alice"
+        with pytest.raises(ValueError):
+            p._private_member_model_binding("cc")
+        with p._runtime_scope({"MEYO_USER_ID": "bob"}, None, inherit_process_context=False):
+            with pytest.raises(ValueError):
+                p._private_member_model_binding("pi")
+        assert p._private_member_model_binding("pi")[0] == binding
+    assert not getattr(isolated.registry._INPROC_RUNTIME_ENV, "values", {})
+
+
+@pytest.mark.parametrize("fault", ["slot_missing", "no_owner", "cancelled"])
+def test_private_projection_cannot_recover_host_authority(isolated, fault):
+    p = isolated.provider
+    declaration = {"pi": {"model": "bound-target", "base_url": "https://target.example.invalid/v1",
+                           "api_key_env": "TARGET_PRIVATE_SLOT", "protocol": "responses"}}
+    isolated.mp.setenv("TARGET_PRIVATE_SLOT", "fake-host-key")
+    env = {"LEGION_MEMBER_MODEL_BINDINGS": json.dumps(declaration)}
+    if fault != "no_owner":
+        env["MEYO_USER_ID"] = "alice"
+    if fault != "slot_missing":
+        env["TARGET_PRIVATE_SLOT"] = "fake-target-key"
+    with p._runtime_scope(env, lambda: fault == "cancelled", inherit_process_context=False):
+        with pytest.raises(PermissionError if fault == "cancelled" else ValueError):
+            p._private_member_model_binding("pi")
+
+
 def test_thread_capture_preserves_public_profile_and_caller_private_binding(isolated):
     p = isolated.provider
     marker = object()

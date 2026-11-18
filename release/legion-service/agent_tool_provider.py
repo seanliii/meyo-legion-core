@@ -77,6 +77,66 @@ def _runtime_binding():
     return registry, env, getattr(registry._INPROC_CANCEL_CHECK, "check", None)
 
 
+def _private_member_model_binding(key, *, workdir="", user_id=""):
+    """Resolve only this member from trusted TLS or its verified active instance.
+
+    This private projection is not part of _ENV_FIELDS or tool/task context.
+    An isolated caller never recovers authorization from the host environment.
+    """
+    import model_registry
+    import personal_runtime
+
+    registry, env, cancel = _runtime_binding()
+    if cancel and cancel():
+        raise PermissionError("member runtime is cancelled")
+    inherit = getattr(registry._INPROC_RUNTIME_ENV, "inherit_process_context", True)
+    local = getattr(registry._INPROC_RUNTIME_ENV, "values", {})
+    uid = user_id or env.get("MEYO_USER_ID", "")
+    if workdir:
+        env["MEYO_WORKDIR"] = workdir
+    if env.get("MEYO_PERSONAL_STATE_DIR"):
+        root = personal_runtime._root(env["MEYO_PERSONAL_STATE_DIR"])
+        uid = uid or personal_runtime._configuration(root)["user"]
+        env["MEYO_USER_ID"] = uid
+        personal_runtime.model_profile_context(env)
+        choice = personal_runtime._member_models(root).get(key)
+        if choice is None:
+            raise ValueError("目标成员未绑定模型；未借用默认 provider")
+        profiles = personal_runtime._read(root / "secrets/model-profiles.json")
+        if choice["profile"] not in profiles:
+            raise ValueError("成员模型绑定引用了不存在的候选")
+        binding = personal_runtime._profile_binding(profiles[choice["profile"]])
+        slot = "MEYO_PRIVATE_SELECTED_KEY"
+        declaration = {"model": binding["model"], "base_url": binding["base_url"],
+                       "protocol": choice["protocol"], "api_key_env": slot}
+        source = {slot: binding["api_key"]}
+    else:
+        raw = local.get(model_registry.MEMBER_BINDINGS_ENV)
+        if raw is None and inherit:
+            raw = os.environ.get(model_registry.MEMBER_BINDINGS_ENV)
+        declared = json.loads(raw or "{}")
+        if not isinstance(declared, dict):
+            raise ValueError("成员模型绑定无效")
+        declaration = declared.get(key)
+        if declaration is None:
+            explicit = local.get("LEGION_CODEX_TRANSPORT")
+            if explicit is None and inherit:
+                explicit = os.environ.get("LEGION_CODEX_TRANSPORT")
+            if not inherit or raw or str(explicit or "").strip().lower() == "responses":
+                raise ValueError("目标成员未绑定模型；未借用默认 provider")
+            return None, uid
+        slot = declaration.get("api_key_env") if isinstance(declaration, dict) else None
+        source = {}
+        if isinstance(slot, str):
+            source[slot] = local.get(slot)
+            if source[slot] is None and inherit:
+                source[slot] = os.environ.get(slot)
+        if not uid:
+            raise ValueError("目标成员缺可信 owner")
+    source[model_registry.MEMBER_BINDINGS_ENV] = json.dumps({key: declaration})
+    return model_registry.explicit_member_bindings(source)[key], uid
+
+
 @contextmanager
 def _runtime_scope(env, cancel_check, *, inherit_process_context=None,
                    personal_token=_UNSET, native_onboard=_UNSET):

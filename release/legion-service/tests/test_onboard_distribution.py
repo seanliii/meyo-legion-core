@@ -61,6 +61,198 @@ def onboard(tmp_path, monkeypatch, isolated_environment):
     return module, core
 
 
+@pytest.fixture
+def member_run(onboard, monkeypatch, tmp_path):
+    import agent_tool_provider as provider
+    import personal_runtime as runtime
+
+    module, _ = onboard
+    root = tmp_path / "personal"
+    runtime.initialize(root, "fixture-owner")
+    work = tmp_path / "member-work"
+    work.mkdir()
+    keyfile = tmp_path / "fixture-key"
+    keyfile.write_text("fake-target-key")
+    keyfile.chmod(0o600)
+    runtime.save_model_profile(root, "target", "target-model", "https://target.example.invalid/v1", keyfile)
+    keyfile.write_text("fake-default-key")
+    runtime.save_model_profile(root, "default", "wrong-default-model", "https://default.example.invalid/v1", keyfile)
+    runtime.activate_model_profile(root, "default")
+    runtime.bind_member_model(root, "pi", "target", "responses")
+    runtime.bind_member_model(root, "cc", "default", "anthropic-messages")
+    env = {"MEYO_PERSONAL_STATE_DIR": str(root), "LEGION_PERSONAL_OWNER": "fixture-owner",
+           "MEYO_WORKDIR": str(work), "MEYO_SESSION_ID": "fixture-session",
+           "MEYO_DIRECTION": "research"}
+    monkeypatch.syspath_prepend(str(SERVICE_DIR.parents[1] / "harness_baselines/meyo-orchestrator"))
+    import harness_registry as registry
+    cancel = lambda: False
+    monkeypatch.setattr(module, "_native_onboard_lease", lambda: None)
+    seen = {}
+
+    def run(key, task, **kwargs):
+        seen.update(key=key, task=task, **kwargs)
+        return {"status": "ok", "final": "MOCK_ONLY"}
+
+    monkeypatch.setattr(module.R, "run", run)
+    with provider._runtime_scope(env, cancel, inherit_process_context=False):
+        env = registry._INPROC_RUNTIME_ENV.values
+        yield module, runtime, provider, root, work, env, registry, seen
+
+
+@pytest.mark.parametrize("override", ["", "wrong-override", "target-model"])
+def test_onboard_target_profile_overrides_model_and_default(member_run, override):
+    module, _, _, _, _, _, _, seen = member_run
+    assert module._run_agent("pi", "mock", timeout_s=5, model=override)["status"] == "ok"
+    assert seen["model"] == "target-model"
+    child = seen["env"]
+    assert child["MEYO_UNIFIED_APPID"] == child["AIGC_APPID"] == child["OPENAI_API_KEY"] == "fake-target-key"
+    assert child["MEYO_UNIFIED_GATEWAY"] == "https://target.example.invalid/v1"
+    assert child["MEYO_MODEL_PROTOCOL"] == "responses"
+    assert child["MEYO_DIRECTION"] == "research"
+    assert child["MEYO_USER_ID"] == seen["runtime_context"]["user_id"] == "fixture-owner"
+    assert "fake-default-key" not in json.dumps(child)
+    assert set(json.loads(child["LEGION_MEMBER_MODEL_BINDINGS"])) == {"pi"}
+
+
+@pytest.mark.parametrize("fault", ["missing", "bad_profile", "bad_protocol", "owner", "instance_owner"])
+def test_onboard_invalid_binding_never_uses_default(member_run, fault):
+    module, runtime, _, root, _, env, _, seen = member_run
+    if fault == "missing":
+        runtime.unbind_member_model(root, "pi")
+    elif fault == "bad_profile":
+        profiles = json.loads((root / "secrets/model-profiles.json").read_text())
+        profiles["target"]["api_key"] = ""
+        (root / "secrets/model-profiles.json").write_text(json.dumps(profiles))
+    elif fault == "bad_protocol":
+        choices = json.loads((root / "secrets/member-models.json").read_text())
+        choices["pi"]["protocol"] = "wrong"
+        (root / "secrets/member-models.json").write_text(json.dumps(choices))
+    elif fault == "owner":
+        env["MEYO_USER_ID"] = "forged-owner"
+    else:
+        env["LEGION_PERSONAL_OWNER"] = "forged-owner"
+    with pytest.raises(ValueError):
+        module._run_agent("pi", "mock", timeout_s=5, model="wrong-default-model")
+    assert seen == {}
+
+
+def test_onboard_lease_binding_and_narrow_parent_survive(member_run, monkeypatch):
+    from types import SimpleNamespace
+    module, _, provider, _, work, env, _, seen = member_run
+    env["MEYO_USER_ID"] = "ignored-request-owner"
+    env["MEYO_CAPABILITY_POLICY_JSON"] = json.dumps({"network": False, "install": True})
+    lease = SimpleNamespace(user_id="fixture-owner", session_id="lease-session", workdir=work,
+                            project_context={"marker": "parent-project"},
+                            check=lambda: {"network": True, "install": True})
+    monkeypatch.setattr(module, "_native_onboard_lease", lambda: lease)
+    monkeypatch.setattr(provider, "_bound_personal_token", lambda: "fake-parent-token")
+
+    module._run_agent("pi", "mock", timeout_s=5, model="wrong-parent-model")
+    assert seen["model"] == "target-model"
+    assert seen["session_id"] == "lease-session"
+    context = seen["runtime_context"]
+    assert context["user_id"] == "fixture-owner"
+    assert context["capability_policy"]["network"] is False
+    assert json.loads(seen["env"]["MEYO_CAPABILITY_POLICY_JSON"])["network"] is False
+    assert context["project_context"] == {"marker": "parent-project", "workspace_root": str(work)}
+    assert env["MEYO_USER_ID"] == "ignored-request-owner"  # Nested scope restored.
+
+
+@pytest.mark.parametrize("inherit", [False, True])
+def test_onboard_explicit_env_is_target_only(member_run, monkeypatch, inherit):
+    module, _, _, _, _, env, registry, seen = member_run
+    env.pop("MEYO_PERSONAL_STATE_DIR")
+    env.update(MEYO_USER_ID="trusted-runtime-owner", LEGION_CODEX_TRANSPORT="responses")
+    declared = {"pi": {"model": "env-target", "base_url": "https://target.example.invalid/v1",
+                       "api_key_env": "TARGET_SLOT", "protocol": "openai-completions"},
+                "cc": {"model": "foreign", "base_url": "https://foreign.example.invalid/v1",
+                       "api_key_env": "FOREIGN_SLOT", "protocol": "anthropic-messages"}}
+    monkeypatch.setenv("LEGION_MEMBER_MODEL_BINDINGS", json.dumps(declared))
+    monkeypatch.setenv("TARGET_SLOT", "fake-env-target-key")
+    monkeypatch.setenv("FOREIGN_SLOT", "fake-foreign-key")
+    monkeypatch.setenv("MEYO_PERSONAL_MEMBER_KEY_99", "fake-other-profile-key")
+    monkeypatch.setenv("MEYO_PERSONAL_PROVIDER_KEY", "fake-default-key")
+    registry._INPROC_RUNTIME_ENV.inherit_process_context = inherit
+    if not inherit:
+        env.update(LEGION_MEMBER_MODEL_BINDINGS=json.dumps(declared), TARGET_SLOT="fake-env-target-key")
+    module._run_agent("pi", "mock", timeout_s=5, model="wrong")
+    child = seen["env"]
+    assert seen["model"] == "env-target"
+    assert child["MEYO_MODEL_PROTOCOL"] == "openai-completions"
+    assert child["MEYO_USER_ID"] == "trusted-runtime-owner"
+    assert not child["FOREIGN_SLOT"] and not child["MEYO_PERSONAL_MEMBER_KEY_99"]
+    assert "fake-foreign-key" not in json.dumps(child)
+    assert "fake-other-profile-key" not in json.dumps(child)
+    assert "fake-default-key" not in json.dumps(child)
+    assert set(json.loads(child["LEGION_MEMBER_MODEL_BINDINGS"])) == {"pi"}
+
+
+@pytest.mark.parametrize("source", ["active_instance", "private_tls"])
+@pytest.mark.parametrize("protocol", ["responses", "anthropic-messages", "openai-completions", "cursor-agent"])
+def test_onboard_protocol_reaches_existing_registry_worker(member_run, monkeypatch, protocol, source):
+    module, runtime, provider, root, work, env, _, _ = member_run
+    if protocol == "cursor-agent":
+        keyfile = work / "key-input"
+        keyfile.write_text("fake-target-key")
+        keyfile.chmod(0o600)
+        runtime.save_model_profile(root, "cursor", "target-model", "https://api.cursor.com", keyfile)
+    runtime.bind_member_model(root, "pi", "cursor" if protocol == "cursor-agent" else "target", protocol)
+    if source == "private_tls":
+        env.pop("MEYO_PERSONAL_STATE_DIR")
+        env.update(MEYO_USER_ID="fixture-owner", TARGET_PRIVATE_SLOT="fake-target-key",
+                   LEGION_CODEX_TRANSPORT="responses", LEGION_MEMBER_MODEL_BINDINGS=json.dumps({
+                       "pi": {"model": "target-model", "api_key_env": "TARGET_PRIVATE_SLOT",
+                              "base_url": "https://api.cursor.com" if protocol == "cursor-agent" else
+                                          "https://target.example.invalid/v1", "protocol": protocol}}))
+        assert "LEGION_MEMBER_MODEL_BINDINGS" not in provider._runtime_binding()[1]
+    spec = importlib.util.spec_from_file_location("__ut_onboard_worker_registry", SERVICE_DIR / "external_agent_registry.py")
+    external = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(external)
+    entry = {"key": "pi", "transports": [{"type": "cli", "command": ["never-executed"]}]}
+    monkeypatch.setattr(external, "load_catalog", lambda: [entry])
+    monkeypatch.setattr(external, "_probe_one", lambda *a: {"execution_ready": True})
+    monkeypatch.setattr(external, "_strip_dead_proxy", lambda env: env)
+    monkeypatch.setattr(external, "_node_bin_dirs", lambda item: [])
+    monkeypatch.setattr(external, "_context", lambda item, cwd, values: {"runtime_dir": str(work), **values})
+    monkeypatch.setitem(sys.modules, "legion_sandbox", __import__("types").SimpleNamespace(
+        prepare_peer_sources=lambda *a, **kw: ""))
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-wrong-host-key")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "fake-wrong-host-key")
+    monkeypatch.setenv("LEGION_MEMBER_MODEL_BINDINGS", json.dumps({"cc": {
+        "model": "host-other", "base_url": "https://host.example.invalid/v1",
+        "api_key_env": "HOST_OTHER_SLOT", "protocol": "responses"}}))
+    monkeypatch.setenv("HOST_OTHER_SLOT", "fake-host-other-key")
+    monkeypatch.setenv("ARBITRARY_UNLISTED_AUTH", "fake-unlisted-host-key")
+
+    def transport(selected, context, child, timeout_s, **kwargs):
+        assert context["model"] == "target-model" and context["appid"] == "fake-target-key"
+        assert json.loads(context["runtime_context_json"])["user_id"] == "fixture-owner"
+        assert child["MEYO_MODEL_PROTOCOL"] == protocol
+        assert "LEGION_MEMBER_MODEL_BINDINGS" not in child
+        assert not child["HOST_OTHER_SLOT"]
+        assert "fake-host-other-key" not in json.dumps(child)
+        assert not child["ARBITRARY_UNLISTED_AUTH"]
+        assert "fake-unlisted-host-key" not in json.dumps(child)
+        assert "fake-wrong-host-key" not in json.dumps(child)
+        if protocol == "anthropic-messages":
+            assert child["ANTHROPIC_AUTH_TOKEN"] == "fake-target-key"
+        if protocol == "cursor-agent":
+            assert child["CURSOR_API_KEY"] == "fake-target-key"
+        return {"status": "ok", "final": "MOCK_TRANSPORT_ONLY"}
+
+    monkeypatch.setattr(external, "run_transport", transport)
+    monkeypatch.setattr(module, "R", external)
+    result = module._run_agent("pi", "mock", timeout_s=5, model="wrong-override")
+    assert result["final"] == "MOCK_TRANSPORT_ONLY"
+    if source == "private_tls":
+        with pytest.raises(ValueError):
+            module._run_agent("cc", "counterexample", timeout_s=5, model="host-other")
+        with provider._runtime_scope({"MEYO_USER_ID": "fixture-owner"}, None,
+                                     inherit_process_context=False):
+            with pytest.raises(ValueError):
+                module._run_agent("pi", "missing-binding", timeout_s=5, model="host-other")
+
+
 def invoke(onboard, monkeypatch, *options):
     module, _ = onboard
     monkeypatch.setattr(sys, "argv", ["harness_onboard.py", "--key", KEY, *options])

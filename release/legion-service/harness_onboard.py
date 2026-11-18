@@ -149,16 +149,63 @@ def _harness_pool_has(key, *, personal_token: str | None = None, uid: str | None
 
 
 def _run_agent(key, task, *, timeout_s, model, workdir=""):
-    lease = _native_onboard_lease()
-    if lease is None:
-        return R.run(key, task, timeout_s=timeout_s, model=model, workdir=workdir)
     import agent_tool_provider
-    _, env, cancel = agent_tool_provider._runtime_binding()
-    return R.run(key, task, timeout_s=timeout_s, model=model,
-                 workdir=workdir or str(lease.workdir), env=env,
-                 session_id=lease.session_id,
-                 runtime_context={"user_id": lease.user_id, "cancel_check": cancel,
-                                  "project_context": {"workspace_root": str(lease.workdir)}})
+    import model_registry
+    import personal_runtime
+
+    lease = _native_onboard_lease()
+    registry, env, cancel = agent_tool_provider._runtime_binding()
+    env = dict(env)
+    inherit = getattr(registry._INPROC_RUNTIME_ENV, "inherit_process_context", True)
+    cwd = workdir or (str(lease.workdir) if lease is not None else
+                      env.get("MEYO_WORKDIR") or os.getcwd())
+    uid = lease.user_id if lease is not None else env.get("MEYO_USER_ID", "")
+    sid = lease.session_id if lease is not None else env.get("MEYO_SESSION_ID", "external")
+    env.update(MEYO_WORKDIR=cwd, MEYO_SESSION_ID=sid)
+    project = json.loads(env.get("MEYO_PROJECT_CONTEXT_JSON") or "{}")
+    policy = json.loads(env.get("MEYO_CAPABILITY_POLICY_JSON") or "{}")
+    if lease is not None:
+        policy = agent_tool_provider._narrow_policy(policy, lease.check())
+        project = {**lease.project_context, **project, "workspace_root": cwd}
+    env["MEYO_CAPABILITY_POLICY_JSON"] = json.dumps(policy)
+
+    binding, uid = agent_tool_provider._private_member_model_binding(
+        key, workdir=cwd, user_id=uid)
+    if not inherit and binding is None:
+        raise ValueError("目标成员未绑定模型；未借用默认 provider")
+    # R.run merges os.environ unconditionally. Mask every ambient value except
+    # the existing non-secret host passthrough; never mutate the process env.
+    if binding is not None or not inherit:
+        safe = personal_runtime._PASSTHROUGH | {"HOME", "TMPDIR", "TMP", "TEMP"}
+        env = {**{name: "" for name in os.environ if name not in safe}, **env}
+        slot = personal_runtime.MEMBER_KEY_ENV + "ONBOARD"
+        env.update({slot: binding["api_key"], model_registry.MEMBER_BINDINGS_ENV: json.dumps({
+            key: {"model": binding["model"], "base_url": binding["base_url"],
+                  "protocol": binding["protocol"], "api_key_env": slot}})})
+    env["MEYO_USER_ID"] = uid or "default"
+    if binding is not None:
+        model = binding["model"]
+        env.update(MEYO_UNIFIED_MODEL=model, MEYO_UNIFIED_APPID=binding["api_key"],
+                   AIGC_APPID=binding["api_key"], MEYO_UNIFIED_GATEWAY=binding["base_url"],
+                   MEYO_MODEL_PROTOCOL=binding["protocol"], LEGION_CODEX_TRANSPORT="responses",
+                   MEYO_FALLBACK_MODELS="[]", OPENAI_API_KEY=binding["api_key"],
+                   OPENAI_BASE_URL=binding["base_url"], OPENAI_API_BASE=binding["base_url"],
+                   DEEPSEEK_API_KEY=binding["api_key"])
+        env.update(ANTHROPIC_API_KEY="", ANTHROPIC_AUTH_TOKEN="", CURSOR_API_KEY="")
+        if binding["protocol"] == "anthropic-messages":
+            env.update(ANTHROPIC_BASE_URL=binding["base_url"],
+                       ANTHROPIC_AUTH_TOKEN=binding["api_key"], ANTHROPIC_MODEL=model)
+        elif binding["protocol"] == "cursor-agent":
+            env["CURSOR_API_KEY"] = binding["api_key"]
+    env.setdefault("MEYO_DIRECTION", "programming")
+    with agent_tool_provider._runtime_scope(
+            env, cancel, inherit_process_context=False, native_onboard=lease,
+            personal_token=agent_tool_provider._bound_personal_token()):
+        return R.run(key, task, timeout_s=timeout_s, model=model, workdir=cwd,
+                     env=env, session_id=sid,
+                     runtime_context={"user_id": env["MEYO_USER_ID"],
+                                      "session_id": sid, "capability_policy": policy,
+                                      "project_context": project})
 
 
 def _speed_runs(key, model, rounds=3):
