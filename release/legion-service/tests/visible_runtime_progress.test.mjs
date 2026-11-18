@@ -108,7 +108,7 @@ async function screen(mode, requestedMode = "auto") {
     _readPersonalStatus: async () => "__ut_owner", _origTitle: "fixture",
     running: false, liveTeamId: "", lastEventId: 0, curSession: "__ut_sid",
     _resumeCtx: null, _resumeTimer: null, _initialSourceUrl: '', querySourceConsumed: false, nameOf: (name) => name,
-    esc: (s) => String(s).replaceAll("<", "&lt;"), _toolLabel: (name) => ({ name, desc: "" }),
+    rich: (s) => String(s), esc: (s) => String(s).replaceAll("<", "&lt;"), _toolLabel: (name) => ({ name, desc: "" }),
     _stepPurpose: () => "", colorOf: () => "#123456", _avatarIndex: () => 0,
     artifactHTML: () => "<div>真实产物卡</div>", hydrateArtifacts() {},
     _toggleJumpBtn(show) { chat.jumpVisible = show; },
@@ -121,7 +121,7 @@ async function screen(mode, requestedMode = "auto") {
     _bindReplayCard: (m,team) => { m.dataset.teamId=team;return (m._replay ||= { cursor: 0, complete: false }); },
     sessionStorage: { removeItem() {} },
     ...Object.fromEntries(["_chatScroll", "addUserMsg", "autosize", "_savePersonalDraft",
-      "_renderModeFacts", "_memberDeliverySignal", "saveLive", "_renderMilestones"]
+      "_renderModeFacts", "saveLive", "_renderMilestones"]
       .map((name) => [name, () => {}])),
     fetch: async (url) => {
       assert.equal(url, "/api/legion/dispatch", "unexpected request");
@@ -131,7 +131,7 @@ async function screen(mode, requestedMode = "auto") {
   const functions = ["_scrollAtLatest", "_processScrollState", "_captureProgressScroll", "_restoreProgressScroll", "_syncProcessJump", "_syncProcessProgress", "_renderRuntimePulse", "newLegionMsg",
     "_renderLegionHeartbeat", "_renderAgentHeartbeat", "_finalDeliveryData",
     "_deliveryDisplay", "_turnSignature", "_appendArtifactStatus", "_finishArtifactStatus", "_markReplayTerminal", "notifyDone",
-    "_renderProductMilestone", "_renderToolStep", "_loadMemberDeliveries", "_renderTerminalError", "_syncProcessMode", "_upgradeMsgMode", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "_finishResume", "_handoffLiveStream", "resumeLiveV2", "send"];
+    "_renderProductMilestone", "_renderToolStep", "_renderCandidateReady", "_memberDeliverySignal", "_loadMemberDeliveries", "_renderTerminalError", "_syncProcessMode", "_upgradeMsgMode", "_bindHistoryProcess", "_loadHistoryProcess", "pkGetLane", "pkActivate", "pkPrebuildLanes", "pkUpdateStatus", "applyLiveEvent", "_finishResume", "_handoffLiveStream", "resumeLiveV2", "send"];
   vm.runInContext([html.match(/^const _PHASE_LABELS=.*$/m)[0], html.match(/^const _PRODUCT_MILESTONES=.*$/m)[0], ...functions.map(pageFunction)].join("\n"), context);
   let sending;
   if (mode === "live") { sending = context.send(); await new Promise(setImmediate); }
@@ -493,8 +493,10 @@ async function terminalProcess() {
       {event_id:7,ts:7,event:"final",data:{results:[],outcome:{status:"completed"}}},
     ]})};
   };
-  for(const name of ["saveLive","loadWorkspace","_memberDeliverySignal","notifyDone"])
+  for(const name of ["saveLive","loadWorkspace","notifyDone"])
     context[name]=()=>{throw new Error("history side effect: "+name);};
+  // Actual signal/loader terminal guards must prevent extra member-result reads.
+  // The request assertions below still reject any history dispatch or resume.
   return {...ui,requests};
 }
 

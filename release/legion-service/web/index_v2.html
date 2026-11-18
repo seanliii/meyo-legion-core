@@ -226,7 +226,7 @@ details.artifact[open]>summary.artifact-head::before{transform:rotate(90deg);dis
 #lightbox #lbSnapshot{width:100%;height:auto;max-height:180px;object-fit:contain;border:1px solid var(--border);background:var(--surface2)}
 .canvas-paste{font-size:12px;border:1px dashed var(--border2);border-radius:8px;padding:10px;color:var(--fg-muted);cursor:pointer}
 .canvas-paste:focus-within{border-color:var(--brand)}.canvas-return{border:0;border-radius:9px;background:var(--brand);color:#fff;padding:11px;font:600 14px/1.3 var(--font,sans-serif);cursor:pointer}
-.canvas-return:disabled{opacity:.5;cursor:default}#lbStatus{font-size:12px;line-height:1.6;color:var(--fg-muted);min-height:20px}
+.canvas-return:disabled{opacity:.5;cursor:default}#lbStatus,#lbSubmitHint{font-size:12px;line-height:1.6;color:var(--fg-muted);min-height:20px}
 #lbExternal{white-space:nowrap;color:var(--fg-muted);font-size:12px}
 @media(max-width:700px){#lightbox{padding:0}#lightbox .canvas-shell{width:100%;max-width:100vw;height:100dvh;border-radius:0}.canvas-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(220px,1fr) minmax(180px,40%)}.canvas-feedback{border-left:0;border-top:1px solid var(--border);padding:12px;gap:8px}.canvas-feedback textarea{min-height:68px}#lightbox .canvas-bar{padding:9px;gap:7px;min-height:50px}#lbExternal{display:none}#lbContent{padding:10px}}
 /* 进度行(优雅折叠·不刷屏) */
@@ -2050,8 +2050,9 @@ function appendSessionTurns(newTurns){
   const chat=$('#chat');if(!overview?.primary.length&&_chatNearBottom())chat.scrollTop=chat.scrollHeight;
   return lastTeam;
 }
-async function _syncSessionOnce(knownSession=null){
+async function _syncSessionOnce(knownSession=null,scope=null){
   const sid=curSession,view=_sessionView;
+  if(scope&&scope.sid!==sid)return;
   const current=()=>sid===curSession&&view===_sessionView&&!running;
   if(!sid||!current())return;
   const t=await(await fetch('/api/legion/session/teams?sid='+encodeURIComponent(sid)+'&uid='+encodeURIComponent(clientUid))).json();
@@ -2060,6 +2061,8 @@ async function _syncSessionOnce(knownSession=null){
   if(!current()||r.error||r.ok===false)return;
   const turns=r.turns||[],changed=turns.length!==_renderedTurns;
   appendSessionTurns(turns);_renderedTurns=turns.length;
+  if(typeof _canvasState!=='undefined'&&_canvasState?.request?.receipt)await _canvasRefreshFeedback(_canvasState,r);
+  if(!current())return;
   for(const info of t.teams||[]){
     const entry=_teamReplay.get(info.team_id);
     if(entry?.complete&&!info.active){
@@ -2068,7 +2071,7 @@ async function _syncSessionOnce(knownSession=null){
       entry.cursor=Math.max(entry.cursor,entry.terminalId);
     }
   }
-  const live=(t.teams||[]).find(x=>x.active&&_canAttachTeam(x));
+  const live=(t.teams||[]).find(x=>x.active&&(!scope||x.team_id===scope.teamId)&&_canAttachTeam(x));
   if(live)attachExternalLive(live.team_id,live.question,live);
   if(changed)await loadSessions();
 }
@@ -3223,10 +3226,104 @@ function _openArtifactLink(event){
   event.preventDefault();
   if(_personalSwitchPending){toast('正在切换个人身份，请稍后再打开成果。');return true;}
   // 正文、概览和历史链接走同一个预览入口；下载和外链保持原行为。
-  openArtifactCanvas({url,name},{sid:link.closest('[data-sid]')?.dataset.sid||curSession||''});
+  openArtifactCanvas({url,name},_canvasLinkContext(link));
   return true;
 }
 document.addEventListener('click',_openArtifactLink);
+function _canvasLinkContext(el){
+  return {sid:el.closest('[data-sid]')?.dataset.sid||'',team_id:el.closest('[data-team-id]')?.dataset.teamId||''};
+}
+function _canvasFeedbackCurrent(state){
+  return !!state&&state===_canvasState&&state.id===_canvasSeq&&state.owner===_personalSubject&&
+    state.epoch===_personalEpoch&&!_personalSwitchPending;
+}
+function _canvasRecordedArtifacts(turn){
+  const result=turn.result||turn;
+  return (result.results||[]).flatMap(row=>(row.artifacts||[]).map(artifact=>({
+    artifact,task:String(row.task_id||row.key||''),team:String(result.team_id||turn.team_id||'')})));
+}
+async function _canvasFeedbackOwner(state){
+  if(!_canvasFeedbackCurrent(state)||!state.sid)throw Error('没有关联原会话；请仅带回原对话草稿。');
+  const urlSid=new URL(state.url,location.href).searchParams.get('sid');
+  if(urlSid&&urlSid!==state.sid)throw Error('成果URL与原会话不匹配，未提交。');
+  const get=async path=>{const response=await fetch(path,{signal:AbortSignal.timeout(15000)});
+    const body=await response.json();if(!response.ok||body.error||body.ok===false)throw Error('原单归属尚未确认；请仅带回原对话草稿。');return body;};
+  const session=await get('/api/legion/session?sid='+encodeURIComponent(state.sid));
+  if(!_canvasFeedbackCurrent(state))throw Error('身份或预览已切换，未提交。');
+  if(session.sid!==state.sid||session.user_id!==state.owner)throw Error('原会话或用户不匹配，未提交。');
+  const matches=(session.turns||[]).flatMap((turn,index)=>_canvasRecordedArtifacts(turn)
+    .filter(row=>_canvasArtifactUrl(row.artifact.url)===state.url).map(row=>({...row,index})));
+  if(matches.length!==1||!matches[0].team||!matches[0].task)throw Error('无法精确绑定成果所属原任务；请仅带回原对话草稿。');
+  const match=matches[0];
+  if(state.team&&state.team!==match.team)throw Error('原团队不匹配，未提交。');
+  if(state.binding&&(state.binding.team!==match.team||state.binding.task!==match.task||state.binding.index!==match.index))throw Error('成果所属轮次已变化，未提交。');
+  const team=await get('/api/legion/team?team_id='+encodeURIComponent(match.team));
+  if(!_canvasFeedbackCurrent(state))throw Error('身份或预览已切换，未提交。');
+  if(team.team_id!==match.team||team.conversation_id!==state.sid||team.user_id!==state.owner||!team.tasks?.[match.task])throw Error('原团队、用户或任务不匹配，未提交。');
+  state.team=match.team;state.binding=match;
+  return session;
+}
+function _canvasSubmitAvailability(state){
+  if(!_canvasFeedbackCurrent(state))return;
+  const button=$('#lbSubmit');
+  button.disabled=!state.binding||!!state.submitting||!!state.file;
+  button.title=state.file?'截图无法通过此消息接口直接附送，请用“带回原对话”保留附件草稿。':
+    state.binding?'仅真人点击才提交原项目续做；不会取消原任务。':state.bindingError||'正在核验原会话和原任务；未绑定时仅能带回草稿。';
+  $('#lbSubmitHint').textContent=button.title;
+}
+async function _canvasBindFeedback(state){
+  try{await _canvasFeedbackOwner(state);}catch(error){if(_canvasFeedbackCurrent(state)){state.binding=null;state.bindingError=error.message;}}
+  _canvasSubmitAvailability(state);
+}
+async function _canvasRefreshFeedback(state,knownSession=null){
+  if(!_canvasFeedbackCurrent(state)||!state.request?.receipt||curSession!==state.sid||running)return;
+  const view=_sessionView,receipt=state.request.receipt;
+  const response=knownSession?null:await fetch('/api/legion/session?sid='+encodeURIComponent(state.sid),{signal:AbortSignal.timeout(15000)});
+  const session=knownSession||await response.json();
+  if((response&&!response.ok)||!_canvasFeedbackCurrent(state)||curSession!==state.sid||view!==_sessionView||session.sid!==state.sid||session.user_id!==state.owner)return;
+  const turns=session.turns||[],last=turns[turns.length-1];
+  const added=last&&turns.length>state.request.turnCount&&_canvasRecordedArtifacts(last).filter(row=>row.team===receipt.team_id&&
+    _canvasArtifactUrl(row.artifact.url)&&!state.request.urls.includes(_canvasArtifactUrl(row.artifact.url)));
+  if(added?.length){
+    const artifact=added[added.length-1].artifact,link=$('#lbNewVersion');link.hidden=false;
+    link.textContent='查看原会话新记录的成果（未判定修改效果）';link.href=_canvasArtifactUrl(artifact.url);
+    link.onclick=event=>{event.preventDefault();if(_canvasFeedbackCurrent(state)&&curSession===state.sid&&view===_sessionView)openArtifactCanvas(artifact,{sid:state.sid,team_id:receipt.team_id});};
+  }
+  if(!knownSession)await _syncSessionOnce(session,{sid:state.sid,teamId:receipt.team_id});
+}
+async function _submitCanvasFeedback(event){
+  const state=_canvasState;
+  if(event?.isTrusted!==true||!_canvasFeedbackCurrent(state)||state.submitting)return;
+  if(state.file){$('#lbStatus').textContent='截图无法直接附送；请点“带回原对话”保留截图和意见草稿，尚未提交。';return;}
+  if(curSession!==state.sid){$('#lbStatus').textContent='请先打开成果所属原会话；不会切换或清除其他对话草稿。';return;}
+  state.note=$('#lbFeedback').value.trim();
+  if(!state.note&&!state.quote&&!state.point){$('#lbStatus').textContent='请先填写具体修改意见。';return;}
+  const view=_sessionView;
+  state.submitting=true;_canvasSubmitAvailability(state);
+  try{
+    const session=await _canvasFeedbackOwner(state);
+    if(!_canvasFeedbackCurrent(state)||curSession!==state.sid||view!==_sessionView)throw Error('原会话已切换，未提交。');
+    const text=_canvasFeedbackText({...state,screenshot:false});
+    if(state.request&&state.request.text!==text)throw Error('上一条提交需先确认；请恢复原意见重试同一请求，或带回草稿。');
+    if(!state.request){
+      if(typeof crypto.randomUUID!=='function')throw Error('当前环境无法生成安全请求标识，请带回草稿。');
+      state.request={id:crypto.randomUUID(),text,turnCount:(session.turns||[]).length,urls:(session.turns||[]).flatMap(_canvasRecordedArtifacts).map(row=>_canvasArtifactUrl(row.artifact.url))};
+      _canvasDrafts.set(_canvasDraftKey(state),{note:state.note,quote:state.quote,point:state.point,request:state.request});
+    }
+    if(!state.request.receipt){
+      const response=await fetch('/api/legion/team/message',{method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(15000),
+        body:JSON.stringify({team_id:state.team,recipient:'commander',text:state.request.text,request_id:state.request.id,continue_execution:true})});
+      const body=await response.json(),receipt=body.continuation;
+      if(!response.ok||body.error||!receipt||receipt.request_id!==state.request.id||receipt.source_team_id!==state.team||
+        receipt.conversation_id!==state.sid||receipt.user_id!==state.owner||!receipt.team_id)throw Error('未获得匹配的续做回执');
+      state.request.receipt=receipt;
+    }
+    if(!_canvasFeedbackCurrent(state)||curSession!==state.sid||view!==_sessionView)return;
+    $('#lbStatus').textContent='已提交续做，尚未改好';
+    try{await _canvasRefreshFeedback(state);}catch{/* 提交回执不因读取新版本失败而丢失。 */}
+  }catch(error){if(_canvasFeedbackCurrent(state)&&curSession===state.sid&&view===_sessionView)$('#lbStatus').textContent='未确认提交成功：'+error.message+'。意见仍保留；重试复用同一请求，不会新建重复任务。';}
+  finally{state.submitting=false;_canvasSubmitAvailability(state);}
+}
 function _canvasDraftKey(state){
   return JSON.stringify([state.owner,state.sid,state.url]);
 }
@@ -3248,7 +3345,7 @@ function _setCanvasScreenshot(file){
     $('#lbStatus').textContent='请使用不超过8MB的 PNG、JPEG 或 WebP 截图。';return;
   }
   if(state.imageUrl)URL.revokeObjectURL(state.imageUrl);
-  state.file=file;state.imageUrl=URL.createObjectURL(file);
+  state.file=file;state.imageUrl=URL.createObjectURL(file);_canvasSubmitAvailability(state);
   $('#lbSnapshot').src=state.imageUrl;$('#lbSnapshot').hidden=false;
   $('#lbStatus').textContent='截图已放入本次反馈，点“带回原对话”后才上传；尚未发送任务。';
 }
@@ -3474,8 +3571,8 @@ async function openLightbox(kind,url,name,context={}){
   if(!safePath){toast('此链接不适合在个人成果画布中打开，请使用其原有访问入口。');return;}
   if(!_personalSubject){_openPersonalAuth();return;}
   if(_canvasState)closeLightbox();
-  const sid=context.sid!==undefined?String(context.sid||''):String(curSession||'');
-  const state={id:++_canvasSeq,owner:_personalSubject,epoch:_personalEpoch,sid,url:safePath,name:String(name||'成果'),kind,quote:'',note:'',point:null,file:null,imageUrl:''};
+  const sid=String(context.sid||'');
+  const state={id:++_canvasSeq,owner:_personalSubject,epoch:_personalEpoch,sid,team:String(context.team_id||context.team||''),url:safePath,name:String(name||'成果'),kind,quote:'',note:'',point:null,file:null,imageUrl:''};
   const draft=_canvasDrafts.get(_canvasDraftKey(state));if(draft)Object.assign(state,draft);
   _canvasState=state;url=safePath;
   const current=()=>state===_canvasState&&state.id===_canvasSeq&&state.owner===_personalSubject&&
@@ -3494,6 +3591,8 @@ async function openLightbox(kind,url,name,context={}){
   $('#lbCapture').hidden=!['img','pdf','pdfpng','video'].includes(kind);
   $('#lbCapture').onclick=_captureCanvasFrame;
   $('#lbReturn').disabled=!sid;$('#lbReturn').onclick=_returnCanvasFeedback;
+  $('#lbSubmit').onclick=_submitCanvasFeedback;$('#lbNewVersion').hidden=true;
+  _canvasSubmitAvailability(state);_canvasBindFeedback(state);
   $('#lbFeedback').oninput=()=>{state.note=$('#lbFeedback').value;};
   $('#lbFeedback').onpaste=event=>{
     const file=Array.from(event.clipboardData?.items||[]).find(x=>x.kind==='file'&&x.type.startsWith('image/'))?.getAsFile();
@@ -3566,7 +3665,7 @@ function closeLightbox(){
       state.preview.frame=null;state.preview.nonce='';state.preview.token='';
     }
     if(state.owner===_personalSubject&&state.epoch===_personalEpoch){
-      _canvasDrafts.set(_canvasDraftKey(state),{note:state.note||'',quote:state.quote||'',point:state.point});
+      _canvasDrafts.set(_canvasDraftKey(state),{note:state.note||'',quote:state.quote||'',point:state.point,request:state.request});
       if(_canvasDrafts.size>30)_canvasDrafts.delete(_canvasDrafts.keys().next().value);
     }else _canvasDrafts.clear();
     if(state.imageUrl)URL.revokeObjectURL(state.imageUrl);
@@ -3603,11 +3702,11 @@ async function renderArtDoc(el){
 function hydrateArtifacts(root){
   (root||document).querySelectorAll('.art-media[data-lb]').forEach(el=>{
     if(el._hy)return;el._hy=1;
-    el.onclick=()=>openArtifactCanvas({name:el.dataset.name,url:el.dataset.url},{sid:el.closest('[data-sid]')?.dataset.sid||curSession||''});
+    el.onclick=()=>openArtifactCanvas({name:el.dataset.name,url:el.dataset.url},_canvasLinkContext(el));
   });
   (root||document).querySelectorAll('[data-canvas-preview]').forEach(el=>{
     if(el._canvasBound)return;el._canvasBound=true;
-    el.onclick=()=>openArtifactCanvas({name:el.dataset.name,url:el.dataset.url},{sid:el.closest('[data-sid]')?.dataset.sid||curSession||''});
+    el.onclick=()=>openArtifactCanvas({name:el.dataset.name,url:el.dataset.url},_canvasLinkContext(el));
   });
   // 离屏文档不抢占历史请求；可见时再转换，同一节点只转换一次。
   if(typeof IntersectionObserver!=='undefined'&&!hydrateArtifacts._observer){
@@ -3836,6 +3935,8 @@ function _taskFailureHTML(r){
 }
 function renderLegionAnswer(results, data, msgEl){
   const m=msgEl||newLegionMsg();
+  if(data?.sid||data?.session?.sid)m.dataset.sid=String(data.sid||data.session.sid);
+  if(data?.team_id)m.dataset.teamId=String(data.team_id);
   _renderModeFacts(m,data||{},true);
   m._memberDeliveryFinal=true;
   _finishArtifactStatus(m,data);
@@ -5694,7 +5795,10 @@ if($("#cdSay"))$("#cdSay").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e
         <textarea id="lbFeedback" placeholder="例如：这段结论需要证据；把我标记的位置放大……"></textarea>
         <button type="button" class="canvas-paste" id="lbPaste">也可以在意见框粘贴你自己截取的画面</button>
         <button class="canvas-return" id="lbReturn" type="button">带回原对话</button>
-        <div class="canvas-context">只准备引用和附件。回到输入框确认后，才会派出军团。</div>
+        <button class="canvas-return" id="lbSubmit" type="button" disabled aria-describedby="lbSubmitHint">提交修改，继续原项目</button>
+        <div class="lb-status" id="lbSubmitHint"></div>
+        <a class="mini-btn" id="lbNewVersion" hidden></a>
+        <div class="canvas-context">“带回原对话”只准备引用和附件草稿；“提交修改”会续做原项目，不会取消原任务。</div>
         <div id="lbStatus" role="status" aria-live="polite"></div>
       </aside>
     </div>
