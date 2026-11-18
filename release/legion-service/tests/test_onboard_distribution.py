@@ -128,6 +128,75 @@ def test_official_cc_runtime_spec_is_locked_capability(onboard, monkeypatch, tmp
     assert result["report"]["runtime_acceptance"] == "not_run"
 
 
+@pytest.mark.parametrize("case", ["exact", "modified", "managed_restore"])
+def test_cc_build_only_cli_uses_exact_reviewed_host_identity(tmp_path, monkeypatch, capsys, case):
+    from types import SimpleNamespace
+    spec_path = SERVICE_DIR / "external_adapters/cc-runtime.spec.json"
+    entry = json.loads(spec_path.read_text())
+    registry_spec = importlib.util.spec_from_file_location(
+        "__ut_cc_host_registry", SERVICE_DIR / "external_agent_registry.py")
+    registry = importlib.util.module_from_spec(registry_spec)
+    registry_spec.loader.exec_module(registry)
+    assert registry._TRUSTED_PROBE_SPECS["cc-runtime"] == registry._probe_spec_identity(entry)
+    monkeypatch.setenv("LEGION_EXTERNAL_SOURCE_ROOT", str(tmp_path / "sources"))
+    monkeypatch.setenv("LEGION_EXTERNAL_RUNTIME_ROOT", str(tmp_path / "native"))
+    monkeypatch.setattr(registry, "CATALOG", tmp_path / "state/catalog.json")
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state/install-state.json")
+    monkeypatch.setattr(registry, "_LOG_DIR", tmp_path / "state/logs")
+    monkeypatch.setattr(registry, "_native_onboard_lease", lambda: None)
+    module_spec = importlib.util.spec_from_file_location(
+        "__ut_cc_host_onboard", SERVICE_DIR / "harness_onboard.py")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "R", registry)
+    monkeypatch.setattr(module, "REPORT_DIR", tmp_path / "reports")
+    if case == "modified":
+        entry["name"] += " user replacement"
+        spec_path = tmp_path / "modified-spec.json"
+        spec_path.write_text(json.dumps(entry))
+    elif case == "managed_restore":
+        # Record a real sticky managed replacement, then restore the bundled
+        # declaration through the ordinary host CLI; neither may inherit trust.
+        registry._save_catalog([entry])
+        with monkeypatch.context() as patch:
+            patch.setattr(registry, "_native_onboard_lease", lambda: SimpleNamespace(check=lambda: None))
+            registry._save_catalog([{**entry, "name": "managed replacement"}])
+    source = registry.source_dir(entry)
+    (source / ".git").mkdir(parents=True)
+    monkeypatch.setattr(registry, "_git_revision", lambda *a: entry["revision"])
+    monkeypatch.setattr(registry, "_strip_dead_proxy", lambda env: dict(env))
+    install_calls, probe_calls = [], []
+
+    def install_step(command, *args):
+        assert registry._native_onboard_lease() is None
+        install_calls.append(command)
+        return dict(exit_code=0, timed_out=False, stdout="", stderr="")
+
+    def probe_command(command, root, **kwargs):
+        probe_calls.append(command)
+        assert command == registry._format_argv(entry["build_probe"]["command"], entry)
+        return True, "fixture build proof only; task acceptance not_run"
+
+    monkeypatch.setattr(registry, "_run_install_step", install_step)
+    monkeypatch.setattr(registry, "_run_probe_command", probe_command)
+    monkeypatch.setattr(sys, "argv", ["harness_onboard.py", "--key", "cc-runtime",
+                                    "--spec", str(spec_path), "--build-only", "--install-timeout", "5"])
+    code = module.main()
+    report = json.loads(capsys.readouterr().out)
+    assert install_calls and registry.load_catalog() == [entry]
+    assert report["scope"] == "build_only" and report["runtime_acceptance"] == "not_run"
+    assert bool(probe_calls) == (case == "exact")
+    assert report["ok"] == (case == "exact")
+    assert code == (0 if case == "exact" else 1)
+    assert report["probe"]["status"] == ("built" if case == "exact" else "requires_managed_probe")
+    if case == "managed_restore":
+        assert "cc-runtime" in json.loads(registry.CATALOG.read_text())["native_managed_sources"]
+    # Even the reviewed identity cannot bypass the existing catalog mode check.
+    registry.CATALOG.chmod(0o666)
+    assert registry.probe_build(entry)["status"] == "requires_managed_probe"
+    assert len(probe_calls) == (1 if case == "exact" else 0)
+
+
 @pytest.mark.parametrize("fault", ["ancestor", "symlink", "hardlink", "metadata", "ok"])
 def test_cc_official_postinstall_cannot_borrow_ancestor_package(tmp_path, fault):
     import os

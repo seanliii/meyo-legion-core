@@ -166,6 +166,7 @@ def _probe_spec_identity(item: dict) -> str:
 # Reviewed release identities, not a snapshot of the mutable catalog at startup.
 # Update with reviewed bundled declarations; restart must never launder user specs.
 _TRUSTED_PROBE_SPECS = {
+    "cc-runtime": "0b7372c56b724243977eba5759b9e631e7819ba9501eed3e71c1d97f3b79e7ff",
     "cowagent": "1c3bee49b83fe3f54852ccf69ec79e36f64c76aceb9961d252e95c72bc8e7e7a",
     "paperclip": "5b42d86e33ce094817ce3f94bcbe5c82d34c94598be0551eb5f1939e1e12b9b9",
     "deer-flow": "e787d060f5c4d3d20b59474dccd05be6e6a32c01a66202065dbc0333f087565c",
