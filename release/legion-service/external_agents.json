@@ -1310,7 +1310,7 @@
       "name": "Qwen Code CLI",
       "kind": "agent",
       "url": "https://github.com/QwenLM/qwen-code",
-      "version": "v0.23.0",
+      "version": "v0.22.3",
       "runtime": {
         "node": ">=20"
       },
@@ -1323,6 +1323,18 @@
           "@qwen-code/qwen-code@0.22.3",
           "--no-fund",
           "--no-audit"
+        ],
+        [
+          "{python}",
+          "{adapter_dir}/overlays/penguin-v0.2.4/source_patch_hook.py",
+          "stage-npm",
+          "--source",
+          "{runtime_dir}/node_modules/@qwen-code/qwen-code",
+          "--destination",
+          "{runtime_dir}/native-overlays/qwen-code-0.22.3-native-error",
+          "--overlay",
+          "{adapter_dir}/overlays/qwen-code-v0.22.3",
+          "--fetch-official"
         ]
       ],
       "credentials": {
@@ -1337,7 +1349,7 @@
         {
           "type": "cli",
           "command": [
-            "{runtime_dir}/node_modules/.bin/qwen",
+            "{runtime_dir}/native-overlays/qwen-code-0.22.3-native-error/cli-entry.js",
             "-p",
             "{task}",
             "-o",
@@ -1349,9 +1361,9 @@
       ],
       "probe": {
         "method": "cli",
-        "target": "{runtime_dir}/node_modules/.bin/qwen",
+        "target": "{runtime_dir}/native-overlays/qwen-code-0.22.3-native-error/cli-entry.js",
         "command": [
-          "{runtime_dir}/node_modules/.bin/qwen",
+          "{runtime_dir}/native-overlays/qwen-code-0.22.3-native-error/cli-entry.js",
           "--version"
         ]
       },
@@ -1380,7 +1392,7 @@
       "update": {
         "strategy": "github_release",
         "channel": "stable",
-        "current_ref": "v0.23.0"
+        "current_ref": "v0.22.3"
       },
       "env": {
         "OPENAI_BASE_URL": "{gateway}",

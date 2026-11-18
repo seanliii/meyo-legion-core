@@ -207,6 +207,46 @@ def test_real_normal_success_is_unchanged(stack, http_fixture, kind):
     assert "transport_failures" not in result["native_facts"]
 
 
+@pytest.mark.parametrize("partial", ["", "好", "已保存的部分正文。\n下一步仍待完成。"])
+def test_real_registry_keeps_current_native_assistant_partial_without_completion(stack, partial):
+    records = [
+        {"type": "assistant", "session_id": "offline-native", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": partial}]}},
+        {"type": "error", "native_source": "LlmEventType.Error", "error": {
+            "name": "APIError", "message": "Streaming request received a non-SSE response "
+            '(HTTP 200, Content-Type: application/json). Body prefix: {"code":524}'}},
+        {"type": "result", "session_id": "offline-native", "is_error": False,
+         "result": partial, "usage": {"input_tokens": 2, "output_tokens": 3}},
+    ]
+    code = "import json\nfor row in " + repr(records) + ":\n print(json.dumps(row), flush=True)\n"
+    stack.entry["transports"] = [{"type": "cli", "command": [sys.executable, "-B", "-c", code],
+                                  "streaming_protocol": "stream-json"}]
+    result = run(stack)
+    assert result["status"] == "error"
+    assert result["final"] == partial
+    assert result["partial"] is bool(partial)
+    assert result["native_facts"]["failed"] is True
+    assert result["native_facts"]["completed"] is False
+    assert result["native_facts"]["process_returncode"] == 0
+    assert result["error_envelope"]["code"] == "native_api_non_sse_response"
+    history = result["transport_failures"]
+    assert len(history) == 1 and "final" not in history[0]
+    assert "source_authority" not in history[0]["native_facts"]
+
+
+def test_last_failure_cannot_recover_an_older_assistant_partial(stack):
+    first = {"status": "error", "final": "older partial", "error": "old error",
+             "native_facts": {"failed": True, "completed": False,
+                              "final_source": "cli_assistant_stream",
+                              "source_authority": {"answer": "native_assistant_text"}}}
+    last = {"status": "error", "final": PRIVATE, "error": "latest untyped failure"}
+    enqueue(stack, [first, last])
+    result = run(stack)
+    assert result["status"] == "error" and result["final"] == ""
+    assert result["error"] == "latest untyped failure"
+    assert "older partial" not in json.dumps(result) and PRIVATE not in json.dumps(result)
+
+
 def enqueue(stack, returns, kinds=("cli", "sdk")):
     stack.entry["transports"] = [{"type": kind, "command": ["fixture-only"]} for kind in kinds]
     calls = []

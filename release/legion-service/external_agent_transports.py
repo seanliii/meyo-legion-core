@@ -436,6 +436,42 @@ def redact_native_diagnostic(value: Any, environment: dict | None = None) -> Any
     return walk(value)
 
 
+def _native_stream_error_facts(records: list[Any]) -> dict:
+    """Only separate protocol error channels establish source authority.
+
+    Qwen 98a9c964 BaseJsonOutputAdapter:645-652 also appends API errors
+    to assistant text. Its createUsage:210-216 defaults to zero without
+    provider metadata, so neither that text nor zero usage proves failure.
+    """
+    reported = []
+    for record in records:
+        if not isinstance(record, dict) or record.get("parent_tool_use_id") not in (None, ""):
+            continue
+        if record.get("type") == "error" and isinstance(record.get("error"), dict):
+            reported.append(record)
+        elif (record.get("type") == "result" and record.get("is_error") is True
+              and isinstance(record.get("session_id"), str)):
+            reported.append(record)
+    if not reported:
+        if not any(isinstance(row, dict) and row.get("type") in {"assistant", "result"}
+                   and isinstance(row.get("session_id"), str) for row in records):
+            return {}
+        return {"source_authority": {"answer": "native_assistant_text",
+                                     "embedded_diagnostic_origin": "unknown"}}
+    return {"source_authority": {"error": "native_protocol_error",
+                                 "answer": "native_assistant_text"},
+            "native_error_records": reported}
+
+
+def _native_non_sse_cause(message: str) -> bool:
+    # This is classification of an authoritative error, never answer parsing.
+    # Do not parse closing brackets: the native body prefix is arbitrary bytes.
+    return message.startswith((
+        "Streaming request received a non-SSE response (HTTP ",
+        "[API Error: Streaming request received a non-SSE response (HTTP ",
+    ))
+
+
 def _stream_records_result(records: list[Any], environment: dict | None = None) -> tuple[str, str]:
     """提取 Goose 等 stream-json 的 assistant 文本增量与结构化错误。
 
@@ -445,6 +481,34 @@ def _stream_records_result(records: list[Any], environment: dict | None = None) 
     text_parts, errors = [], []
     saw_stream_message = False
     for record in records:
+        if isinstance(record, dict) and record.get("parent_tool_use_id") not in (None, ""):
+            continue
+        if (isinstance(record, dict) and record.get("type") in {"assistant", "result"}
+                and isinstance(record.get("session_id"), str)
+                and record.get("parent_tool_use_id") in (None, "")):
+            # Shared assistant/result JSON protocol; user/tool payloads and
+            # declared plain stdout are not native runtime declarations.
+            if record["type"] == "result":
+                if record.get("is_error") is True:
+                    diagnostic = (_final_from_json(record.get("error"))
+                                  or _final_from_json(record.get("result")))
+                    errors.append(diagnostic or "native result reported an error")
+                    saw_stream_message = True
+                    continue
+                if record.get("is_error") is not False:
+                    continue
+                text = _final_from_json(record.get("result"))
+            else:
+                message = record.get("message")
+                if not isinstance(message, dict) or message.get("role") != "assistant":
+                    continue
+                text = _final_from_json(message.get("content"))
+            # The result repeats the last assistant message; never append both.
+            # Assistant content remains intact even when a separate error exists.
+            if text and (record["type"] == "assistant" or not text_parts):
+                text_parts.append(text)
+                saw_stream_message = True
+            continue
         if isinstance(record, dict) and record.get("type") == "error":
             native = record.get("error")
             if isinstance(native, dict):
@@ -929,12 +993,14 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
         native_output = (_fresh_file_output(spec, context["workdir"], before_output) if file_output
                          else _declared_json_output(stdout, records, spec))
         stream_facts = _stream_terminal_facts(records) if native_output is None else {}
+        if native_output is None and not plain_output:
+            stream_facts.update(redact_native_diagnostic(_native_stream_error_facts(records), launch_env))
         final = native_output["final"] if native_output is not None else _final_from_text(stdout, spec)
         stream_error = ""
         _answer_rec = None
         # Goose stream-json 每个 assistant token 是一条 type=message 记录，必须按协议聚合；
         # 倒序取第一条只会拿到最后一个字/标点。结构化 error 单独回传为失败，不冒充交付。
-        _stream_final, stream_error = (("", "") if native_output is not None
+        _stream_final, stream_error = (("", "") if native_output is not None or plain_output
                                        else _stream_records_result(records, launch_env))
         if native_output is not None:
             _answer_rec = native_output["record"]
@@ -1028,6 +1094,16 @@ def _supervise_cli_process(command, spec, context, env, timeout_s, event_cb=None
             error = ""
         if stream_error:
             native_facts["error_source"] = "native_error_event"
+            native_facts["native_error_message"] = stream_error
+            if any(_native_non_sse_cause(line) for line in stream_error.splitlines()):
+                native_facts["error_source"] = "native_protocol_error"
+                if not contract.get("error_envelope"):
+                    contract["error_envelope"] = {
+                        "category": "gateway", "scope": "provider", "retryable": True,
+                        "code": "native_api_non_sse_response", "message": stream_error,
+                        "details": {"native_source": "cli_stream_json",
+                                    "transport_failure": True},
+                    }
         elif error:
             native_facts["error_source"] = "cli_stderr"
         contract["native_facts"] = native_facts

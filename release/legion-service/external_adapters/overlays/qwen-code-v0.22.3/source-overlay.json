@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "npm_bundle",
+  "repository": "https://github.com/QwenLM/qwen-code",
+  "upstream_revision": "98a9c964158697dd5631d15a62174684ff7bbb53",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "modified_notice": "Meyo native-error visibility overlay; only LlmEventType.Error output framing changes.",
+  "package": "@qwen-code/qwen-code",
+  "version": "0.22.3",
+  "official_tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.22.3.tgz",
+  "official_integrity": "sha512-8Ngy/ZEn+idOyN3k52K9TNu/XSkNfS2hyzsikeSDe79kRd2/eMYbWLOZq6LHSGVYXVNpY6ktpfZLthxY5AHWeA==",
+  "source_anchor": "packages/cli/src/nonInteractive/io/BaseJsonOutputAdapter.ts:645-652",
+  "patch_file": "native-error.patch",
+  "patch_sha256": "05b02f56af1f5dab724f20e27ba6625f496ccee32a8bec8b4df0903ea8f88be5",
+  "files": {
+    "chunks/chunk-GVIVASYK.js": {
+      "before_sha256": "bf673cb5e4913260cc76469b80517d8b430cfab61becbaf24e23ba33c99e9e0d",
+      "after_sha256": "a40d63df1f4155754f924e4ad1185989d794e0190b681aa60abc1cc82d751dcd"
+    }
+  },
+  "native_event": {
+    "type": "error",
+    "native_source": "LlmEventType.Error",
+    "error_name": "APIError"
+  }
+}

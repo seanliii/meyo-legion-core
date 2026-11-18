@@ -1,0 +1,19 @@
+diff --git a/chunks/chunk-GVIVASYK.js b/chunks/chunk-GVIVASYK.js
+--- a/chunks/chunk-GVIVASYK.js
++++ b/chunks/chunk-GVIVASYK.js
+@@ -421,7 +421,14 @@
+           event.value.error,
+           this.config.getContentGeneratorConfig()?.authType
+         );
+-        this.appendText(state, errorText, null);
++        // Meyo overlay: preserve native API errors as protocol facts, not answer text.
++        this.emitMessageImpl({
++          type: "error",
++          session_id: this.getSessionId(),
++          parent_tool_use_id: null,
++          error: { name: "APIError", message: errorText },
++          native_source: "LlmEventType.Error"
++        });
+         break;
+       }
+       case "model_fallback" /* ModelFallback */:

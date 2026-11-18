@@ -180,7 +180,7 @@ _TRUSTED_PROBE_SPECS = {
     "kimi-code": "8d669a9a4087036ab7f986567c83a5f4756264cd016147b64fa6d15c793dec1a",
     "ironclaw": "81fee483b624345b0dc1fba4658563b13cd5d2d5366e0069ef2e8495e7ebbb13",
     "aeon": "78a1670cdbb2ddc3b4a012a23c169da8791214e5230f8bbde95015434d17a14d",
-    "qwen-code": "00655dbdc8a299c8043e4f89d3d80bdabd07b310dcf36db1887b8570c4e378e8",
+    "qwen-code": "90cbd3bb3a47aca1978a0b54c0df67eb375af5a98d83aa58412485bebaa11a05",
     "aider": "ba8120c32da4d36a12b22f15bf43570f8dc5c952b108dc700b499e7d90a8f1b3",
     "opencode": "f62dbd9cecdc5bc4bf49aea3844dbcbb4bc92f0c5b97e0a5bc6cec856cd32f7f",
     "browser-use": "8d133df5521320237e4533a396c1efb37712d7faefd267addc5efc0c6dfe805e",
@@ -1832,9 +1832,10 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
     transport_evidence = []
     last_native_recovery = {}
     last_error_envelope = None
+    last_assistant_partial = None
 
     def preserve_failed_transport(transport, result):
-        nonlocal last_error_envelope
+        nonlocal last_error_envelope, last_assistant_partial
         import math
         import error_envelope as _ee
         import token_telemetry as _tokens
@@ -1942,6 +1943,15 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
                 last_native_recovery["resumed_native"] = result["resumed_native"]
         raw_facts = result.get("native_facts")
         raw_facts = raw_facts if isinstance(raw_facts, dict) else {}
+        authority = raw_facts.get("source_authority")
+        # Only the current transport's declared assistant channel owns visible
+        # partial output. Raw stdout, tools and older failures stay private.
+        last_assistant_partial = (
+            result["final"] if isinstance(result.get("final"), str)
+            and raw_facts.get("final_source") == "cli_assistant_stream"
+            and isinstance(authority, dict)
+            and authority.get("answer") == "native_assistant_text" else None
+        )
         facts = machine_fields(raw_facts)
         for name in ("terminal_event", "request_end", "turn_result"):
             nested = machine_fields(raw_facts.get(name))
@@ -2039,6 +2049,9 @@ def run(key: str, task: str, workdir: str = "", timeout_s: int = 900,
                     if name in latest:
                         result[name] = copy.deepcopy(latest[name])
                 result["error"] = error
+                if last_assistant_partial is not None:
+                    result["final"] = last_assistant_partial
+                    result["partial"] = bool(last_assistant_partial)
             facts = dict(result.get("native_facts") or {})
             facts["transport_failures"] = [observation for observation, _ in transport_evidence]
             result["native_facts"] = facts

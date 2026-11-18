@@ -167,6 +167,421 @@ def test_declared_plain_stdout_is_content_not_a_runtime_json_envelope(cli_stack,
         "plain stdout has no native turn-completion record")
 
 
+# Public native diagnostic only; no session input, bindings or credentials.
+NON_SSE_ERROR = (
+    '[API Error: Streaming request received a non-SSE response '
+    '(HTTP 200, Content-Type: application/json;charset=UTF-8). Body prefix: '
+    '{"code":524,"msg":"exception: Promise was collected"}\n]'
+)
+
+
+def assistant_result_frames(text, *, failed=False, error="reported native failure", output_tokens=3):
+    # Schema read from the LOCAL pinned Qwen source, not a captured user event:
+    # revision 98a9c964158697dd5631d15a62174684ff7bbb53,
+    # packages/cli/src/nonInteractive/io/BaseJsonOutputAdapter.ts:1199-1264.
+    # createUsage:210-216 defaults zeros when metadata is absent; no proof.
+    return "\n".join(json.dumps(row, ensure_ascii=False) for row in [
+        {"type": "assistant", "session_id": "offline-native", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": text}]}},
+        {"type": "result", "session_id": "offline-native", "uuid": "offline-result",
+         "subtype": "error_during_execution" if failed else "success",
+         "is_error": failed,
+         **({"error": {"message": error}} if failed else {"result": text}),
+         "duration_ms": 1, "duration_api_ms": 0, "num_turns": 1,
+         "permission_denials": [], "usage": {"input_tokens": 0, "output_tokens": output_tokens}},
+    ])
+
+
+@pytest.mark.parametrize("partial", ["", "已保存可恢复的部分正文。\n"])
+def test_native_non_sse_payload_is_transport_failure_even_with_rc_zero(cli_stack, partial):
+    cli_stack.protocol = "stream-json"
+    cli_stack.payload = assistant_result_frames(partial, failed=True, error=NON_SSE_ERROR,
+                                              output_tokens=0)
+    result = invoke(cli_stack)
+    transport = cli_stack.mapped[0]
+    assert len(cli_stack.calls) == 1, "fixture budget must not become an unbounded retry"
+    assert transport["returncode"] == 0 and transport["status"] == "error"
+    assert transport["final"] == partial.strip()
+    assert result["status"] != "done", result
+    assert result["final"] == partial.strip()
+    assert NON_SSE_ERROR in transport["error"] and NON_SSE_ERROR in result["error"]
+    facts = result["native_facts"]
+    assert facts["failed"] is True and facts["completed"] is False
+    assert facts["error_source"] == "native_protocol_error"
+    assert facts["source_authority"]["error"] == "native_protocol_error"
+    assert NON_SSE_ERROR in facts["native_error_message"]
+    envelope = result["error_envelope"]
+    assert envelope["category"] == "gateway" and envelope["scope"] == "provider"
+    assert envelope["retryable"] is True
+    assert envelope["code"] == "native_api_non_sse_response"
+    assert envelope["details"]["transport_failure"] is True
+    assert transport["usage_records"][0]["output_tokens"] == 0
+    assert transport["events"][0]["message"]["content"][0]["text"] == partial
+    assert facts["native_error_records"][-1]["error"]["message"] == NON_SSE_ERROR
+
+
+@pytest.mark.parametrize("answer", [
+    "好", "2", "APIError 是 SDK 的异常类型，API Error 表示接口错误。",
+    "文档例子：" + NON_SSE_ERROR,
+    NON_SSE_ERROR,
+    "```text\n" + NON_SSE_ERROR + "\n```",
+    "> 引用\n> " + NON_SSE_ERROR.replace("\n", "\n> "),
+    "原样日志：\n" + NON_SSE_ERROR + "\n仅作示例。",
+    "[API Error: 本文解释错误日志，并非本次调用失败]",
+])
+def test_native_assistant_result_keeps_short_and_error_discussion_answers(cli_stack, answer):
+    cli_stack.protocol = "stream-json"
+    cli_stack.payload = assistant_result_frames(answer)
+    result = invoke(cli_stack)
+    assert result["status"] == "done", result
+    assert result["final"] == answer
+    assert result["error"] == "" and not result.get("error_envelope")
+    assert len(cli_stack.calls) == 1
+
+
+@pytest.mark.parametrize("tokens", [0, None, False])
+def test_untyped_embedded_diagnostic_is_unknown_not_deleted(cli_stack, tokens):
+    cli_stack.protocol = "stream-json"
+    cli_stack.payload = assistant_result_frames(NON_SSE_ERROR, output_tokens=tokens)
+    result = invoke(cli_stack)
+    assert result["final"] == NON_SSE_ERROR
+    assert result["error"] == "" and not result.get("error_envelope")
+    assert result["native_facts"]["source_authority"]["embedded_diagnostic_origin"] == "unknown"
+
+
+@pytest.mark.parametrize("cause", [
+    NON_SSE_ERROR.replace('Promise was collected', 'body [inner] [unclosed'),
+    NON_SSE_ERROR.replace('Promise was collected', 'body ] trailing [ bytes'),
+    NON_SSE_ERROR[:-1],
+])
+def test_brackets_in_authoritative_error_are_not_parsed_or_removed(cli_stack, cause):
+    cli_stack.protocol = "stream-json"
+    text = "已保存部分正文。\n```text\n" + cause + "\n```"
+    cli_stack.payload = assistant_result_frames(text, failed=True, error=cause)
+    result = invoke(cli_stack)
+    assert result["status"] != "done"
+    assert result["final"] == text
+    assert result["error_envelope"]["category"] == "gateway"
+    assert result["error_envelope"]["message"] == cause.strip()
+    assert result["native_facts"]["native_error_records"][-1]["error"]["message"] == cause
+
+
+def test_subagent_error_is_not_a_main_turn_failure(cli_stack):
+    cli_stack.protocol = "stream-json"
+    child = {"type": "result", "session_id": "offline-native", "parent_tool_use_id": "child",
+             "is_error": True, "error": {"message": NON_SSE_ERROR}}
+    cli_stack.payload = assistant_result_frames("好") + "\n" + json.dumps(child)
+    result = invoke(cli_stack)
+    assert result["status"] == "done" and result["final"] == "好"
+    assert not result.get("error_envelope")
+    assert "native_error_records" not in result["native_facts"]
+
+
+def test_separate_api_error_event_keeps_assistant_literal_and_partial(cli_stack):
+    cli_stack.protocol = "stream-json"
+    text = "部分正文\n" + NON_SSE_ERROR
+    # Existing type=error protocol; an overlay can expose the otherwise lost
+    # LlmEventType.Error here. This fixture is NOT evidence of an installed overlay.
+    cli_stack.payload = assistant_result_frames(text) + "\n" + json.dumps({
+        "type": "error", "error": {"name": "APIError", "message": NON_SSE_ERROR}})
+    result = invoke(cli_stack)
+    assert result["status"] != "done"
+    assert result["final"] == text
+    assert result["error_envelope"]["message"] == NON_SSE_ERROR
+    assert result["native_facts"]["source_authority"]["error"] == "native_protocol_error"
+
+
+def test_plain_stderr_literal_does_not_establish_native_error(cli_stack):
+    cli_stack.payload = assistant_result_frames("好")
+    cli_stack.stderr = NON_SSE_ERROR
+    result = invoke(cli_stack)
+    assert result["status"] == "done" and result["final"] == "好"
+    assert result["error"] == "" and not result.get("error_envelope")
+
+
+def test_native_transport_failure_returns_full_context_without_borrowing_binding(cli_stack, monkeypatch):
+    models = importlib.import_module("model_registry")
+    monkeypatch.setenv("LEGION_CODEX_TRANSPORT", "responses")
+    binding = {"model": "offline-model", "api_key": "offline-fixture",
+               "base_url": "https://offline.example.invalid/v1", "protocol": "chat"}
+    monkeypatch.setattr(models, "explicit_member_bindings", lambda: {
+        KEY: binding, "other-member": {**binding, "api_key": "other-member-fixture"},
+    })
+    monkeypatch.setattr(cli_stack.core, "_dynamic_max_attempts", lambda _: 3)
+    cli_stack.protocol = "stream-json"
+    cli_stack.payload = assistant_result_frames("", failed=True, error=NON_SSE_ERROR, output_tokens=0)
+    result = invoke(cli_stack)
+    assert result["status"] == "error", result
+    assert result["execution_calls"] == 1, "ordinary failure must stop at the explicit binding boundary"
+    assert len(cli_stack.calls) == 1
+    prior = result["prior_attempts"][0]
+    assert prior["fail_kind"] == "gateway" and prior["workdir"] == str(cli_stack.project)
+    assert NON_SSE_ERROR in prior["error_envelope"]["message"]
+    assert "other-member-fixture" not in repr(result)
+    assert result["final"] == ""
+
+
+def test_structured_native_error_retains_partial_body_and_error_facts(cli_stack):
+    cli_stack.protocol = "stream-json"
+    cli_stack.payload = assistant_result_frames("部分真实正文", failed=True)
+    result = invoke(cli_stack)
+    assert result["status"] != "done"
+    assert result["final"] == "部分真实正文"
+    assert "reported native failure" in result["error"]
+    assert result["native_facts"]["failed"] is True
+    assert cli_stack.mapped[0]["events"][-1]["is_error"] is True
+
+
+def test_plain_json_error_payload_is_still_business_content(cli_stack):
+    cli_stack.protocol = "text"
+    cli_stack.payload = assistant_result_frames(NON_SSE_ERROR, failed=True)
+    result = invoke(cli_stack)
+    assert result["status"] == "done", result
+    assert result["final"] == cli_stack.payload
+    assert not result.get("error_envelope")
+
+
+@pytest.mark.skipif(not os.environ.get("QWEN_NATIVE_PROTOCOL_TEST_CLI"),
+                    reason="explicit opt-in to the already installed CLI, never installs")
+@pytest.mark.parametrize("response_mode", ["non_sse", "normal", "partial"])
+def test_installed_qwen_non_sse_protocol_observation(cli_stack, response_mode):
+    from collections import Counter
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+    from urllib.parse import quote
+
+    cli = Path(os.environ["QWEN_NATIVE_PROTOCOL_TEST_CLI"]).resolve()
+    package = json.loads((cli.parent / "package.json").read_text())
+    assert package["name"] == "@qwen-code/qwen-code" and package["version"] == "0.22.3"
+    patched = os.environ.get("QWEN_NATIVE_PROTOCOL_TEST_OVERLAY") == "1"
+    if patched:
+        import runpy
+        hook = SERVICE / "external_adapters/overlays/penguin-v0.2.4/source_patch_hook.py"
+        stage = runpy.run_path(str(hook))["stage_npm_bundle"]
+        original = cli.parent
+        destination = cli_stack.project / "patched-qwen-0.22.3"
+        stage(original, destination, SERVICE / "external_adapters/overlays/qwen-code-v0.22.3",
+              Path(os.environ["QWEN_NATIVE_PROTOCOL_TEST_ARCHIVE"]))
+        cli = destination / cli.name
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            # Never record headers, request text, credentials or system context.
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            requests.append(self.path)
+            body = b'{"code":524,"msg":"exception: Promise was collected"}'
+            content_type = "application/json;charset=UTF-8"
+            if response_mode != "non_sse":
+                content_type = "text/event-stream"
+                chunk = {"id": "offline", "object": "chat.completion.chunk", "model": "offline-protocol-fixture",
+                         "choices": [{"index": 0, "delta": {"role": "assistant", "content": "好"}, "finish_reason": None}]}
+                end = ({"error": {"message": "offline partial provider failure", "type": "server_error", "code": "524"}}
+                       if response_mode == "partial" else
+                       {"id": "offline", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+                body = ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\ndata: " + json.dumps(end) + "\n\ndata: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=.01))
+    thread.start()
+    # Runs before the actual CLI entry. Assert every TCP connection is loopback;
+    # this is a test-only network boundary, not a model/provider fallback.
+    guard = (
+        "import net from 'node:net';const original=net.Socket.prototype.connect;"
+        "net.Socket.prototype.connect=function(...args){let a=args[0];"
+        "if(Array.isArray(a))a=a[0];const host=typeof a==='object'?a.host:"
+        "(typeof args[1]==='string'?args[1]:'localhost');"
+        "if(host&&!['127.0.0.1','localhost','::1'].includes(host))"
+        "throw Error('OFFLINE_NETWORK_ASSERTION:'+host);"
+        "return original.apply(this,args)};"
+    )
+    environment = {
+        "HOME": os.environ["HOME"], "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+        "TMPDIR": str(cli_stack.project), "NO_PROXY": "127.0.0.1,localhost,::1",
+        "OPENAI_API_KEY": "offline-protocol-placeholder-not-a-credential",
+        "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+        "OPENAI_MODEL": "offline-protocol-fixture",
+        "QWEN_CODE_SUPPRESS_YOLO_WARNING": "1", "CI": "1",
+        "MEYO_LEGION_DIR": os.environ["MEYO_LEGION_DIR"],
+        "LEGION_HOME_DIR": os.environ["LEGION_HOME_DIR"],
+        "LEGION_PROC_REGISTRY_DIR": os.environ["LEGION_PROC_REGISTRY_DIR"],
+    }
+    command = ["/opt/homebrew/bin/node", "--import", "data:text/javascript," + quote(guard),
+               str(cli), "-p", "Return OK; do not use tools.", "-o", "stream-json", "-y",
+               "--auth-type", "openai", "--max-session-turns", "1"]
+    try:
+        result = cli_stack.transport._supervise_cli_process(
+            command, {"streaming_protocol": "stream-json", "snapshot_terminal": True},
+            {"workdir": str(cli_stack.project)}, environment, 60)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    snapshot = result["terminal_snapshot"]["streams"]["stdout"]["path"]
+    raw = Path(snapshot).read_text()
+    records = [json.loads(line) for line in raw.splitlines() if line.strip().startswith("{")]
+    print("QWEN_NATIVE_PROTOCOL_OBSERVATION=" + json.dumps({
+        "version": package["version"], "requests": requests,
+        "returncode": result["returncode"], "status": result["status"],
+        "raw_bytes": len(raw.encode()), "record_count": len(records),
+        "types": dict(Counter(row.get("type") for row in records)),
+        "records": records, "transport_final": result["final"],
+        "transport_error": result["error"], "native_facts": result["native_facts"],
+    }, ensure_ascii=False))
+    assert requests and set(requests) == {"/v1/chat/completions"}
+    assert len(requests) == (2 if response_mode == "normal" else 1), (
+        "Qwen's normal stream includes its native second request; failures are single-shot")
+    assert "OFFLINE_NETWORK_ASSERTION" not in result["stderr"]
+    if patched and response_mode == "non_sse":
+        errors = [row for row in records if row.get("type") == "error"]
+        assert len(errors) == 1 and errors[0]["native_source"] == "LlmEventType.Error"
+        assert result["returncode"] == 0 and result["status"] == "error"
+        assert result["final"] == "", "native error must not become an answer payload"
+        assert result["native_facts"]["failed"] is True
+        assert result["error_envelope"]["category"] == "gateway"
+        assert result["error_envelope"]["code"] == "native_api_non_sse_response"
+    if patched and response_mode == "normal":
+        assert result["status"] == "ok" and result["final"] == "好", result
+        assert not result.get("error_envelope")
+    if patched and response_mode == "partial":
+        assert result["status"] == "error" and result["final"] == "好", result
+        assert "offline partial provider failure" in result["error"]
+        assert any(row.get("native_source") == "LlmEventType.Error" for row in records)
+    import legion_proc_registry
+    # Normal completion leaves observations of already exited children until
+    # the existing registry sweep. Only this test's isolated registry is used.
+    legion_proc_registry.sweep(kill=False)
+    entries = legion_proc_registry._load_entries()
+    assert not any(legion_proc_registry.is_alive(row["pid"]) for _, row in entries), (
+        "native process remained alive after protocol observation")
+    for _, row in entries:
+        legion_proc_registry.unregister(row["pid"])
+
+
+def test_npm_overlay_stage_rejects_unknown_package_without_publication(tmp_path):
+    import runpy
+    import hashlib
+    overlay = SERVICE / "external_adapters/overlays/qwen-code-v0.22.3"
+    manifest = json.loads((overlay / "source-overlay.json").read_text())
+    assert hashlib.sha256((overlay / manifest["patch_file"]).read_bytes()).hexdigest() == manifest["patch_sha256"]
+    stage = runpy.run_path(str(SERVICE / "external_adapters/overlays/penguin-v0.2.4/source_patch_hook.py"))["stage_npm_bundle"]
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "package.json").write_text(json.dumps({"name": manifest["package"], "version": "0.22.4"}))
+    destination = tmp_path / "generation"
+    with pytest.raises(ValueError, match="package identity"):
+        stage(source, destination, overlay)
+    assert not destination.exists()
+    (source / "package.json").write_text(json.dumps({"name": manifest["package"], "version": manifest["version"]}))
+    (source / "LICENSE").write_text("fixture license")
+    target = source / next(iter(manifest["files"]))
+    target.parent.mkdir()
+    target.write_text("unknown bundle must not be overwritten")
+    with pytest.raises(ValueError, match="bundle hash/path"):
+        stage(source, destination, overlay)
+    assert not destination.exists() and target.read_text() == "unknown bundle must not be overwritten"
+
+
+def test_full_package_closure_rejects_extra_files_and_bad_sri(tmp_path):
+    import runpy, hashlib, base64, io, tarfile
+    stage = runpy.run_path(str(SERVICE / "external_adapters/overlays/penguin-v0.2.4/source_patch_hook.py"))["stage_npm_bundle"]
+    source, overlay = tmp_path / "source", tmp_path / "overlay"
+    source.mkdir(); overlay.mkdir()
+    files = {"package.json": json.dumps({"name": "fixture", "version": "1"}).encode(),
+             "LICENSE": b"license", "chunk.js": b"original"}
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:gz") as tar:
+        for name, content in files.items():
+            member = tarfile.TarInfo("package/" + name); member.size = len(content)
+            tar.addfile(member, io.BytesIO(content)); (source / name).write_bytes(content)
+    archive = tmp_path / "official.tgz"; archive.write_bytes(data.getvalue())
+    (overlay / "patch").write_text("fixture")
+    manifest = {"kind": "npm_bundle", "package": "fixture", "version": "1", "license_file": "LICENSE",
+                "patch_file": "patch", "patch_sha256": hashlib.sha256(b"fixture").hexdigest(),
+                "official_integrity": "sha512-" + base64.b64encode(hashlib.sha512(data.getvalue()).digest()).decode(),
+                "files": {"chunk.js": {"before_sha256": hashlib.sha256(b"original").hexdigest(), "after_sha256": "unused"}}}
+    (overlay / "source-overlay.json").write_text(json.dumps(manifest))
+    (source / "extra-entry.js").write_text("unknown entry")
+    with pytest.raises(ValueError, match="byte closure"):
+        stage(source, tmp_path / "dest", overlay, archive)
+    assert not (tmp_path / "dest").exists()
+    archive.write_bytes(b"not the locked archive")
+    with pytest.raises(ValueError, match="SRI"):
+        stage(source, tmp_path / "dest", overlay, archive)
+
+
+def test_overlay_publication_never_replaces_empty_directory_or_race(tmp_path):
+    import runpy
+    from concurrent.futures import ThreadPoolExecutor
+    publish = runpy.run_path(str(SERVICE / "external_adapters/overlays/penguin-v0.2.4/source_patch_hook.py"))["_publish_noreplace"]
+    for name in ("a", "b", "existing"):
+        (tmp_path / name).mkdir()
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(FileExistsError):
+            publish(fd, "a", "existing")
+        assert (tmp_path / "a").exists() and (tmp_path / "existing").exists()
+        def attempt(name):
+            try:
+                publish(fd, name, "winner")
+                return True
+            except FileExistsError:
+                return False
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            assert sorted(pool.map(attempt, ("a", "b"))) == [False, True]
+        assert (tmp_path / "winner").exists()
+    finally:
+        os.close(fd)
+
+
+def test_catalog_qwen_install_and_run_share_fixed_overlay(cli_stack):
+    catalog = json.loads((SERVICE / "external_agents.json").read_text())
+    rows = catalog if isinstance(catalog, list) else catalog["agents"]
+    qwen = next(row for row in rows if row["key"] == "qwen-code")
+    import external_agent_registry as registry
+    assert registry._probe_spec_identity(qwen) == registry._TRUSTED_PROBE_SPECS["qwen-code"]
+    assert "stage-npm" in qwen["install"][1] and "--fetch-official" in qwen["install"][1]
+    assert qwen["probe"]["target"] == qwen["transports"][0]["command"][0]
+    assert "native-overlays/qwen-code-0.22.3-native-error" in qwen["probe"]["target"]
+
+
+def test_observed_qwen_0223_non_sse_success_schema_cannot_prove_error(cli_stack):
+    # Observed with the installed 0.22.3 CLI against one loopback HTTP request.
+    # Volatile IDs/workdir/timing omitted; no provider or credential was used.
+    diagnostic = NON_SSE_ERROR.replace("\n]", "]")
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "offline-native",
+         "qwen_code_version": "0.22.3"},
+        {"type": "stream_event", "session_id": "offline-native", "parent_tool_use_id": None,
+         "event": {"type": "goal_state", "goal_state": {
+             "v": 2, "goal": None, "activity": "idle"}}},
+        {"type": "assistant", "session_id": "offline-native", "parent_tool_use_id": None,
+         "message": {"type": "message", "role": "assistant", "model": "offline-protocol-fixture",
+                     "content": [{"type": "text", "text": diagnostic}], "stop_reason": None,
+                     "usage": {"input_tokens": 0, "output_tokens": 0}}},
+        {"type": "result", "session_id": "offline-native", "subtype": "success",
+         "is_error": False, "result": diagnostic, "num_turns": 1,
+         "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0},
+         "permission_denials": []},
+    ]
+    cli_stack.protocol = "stream-json"
+    cli_stack.payload = "\n".join(json.dumps(row) for row in rows)
+    result = invoke(cli_stack)
+    assert result["final"] == diagnostic
+    assert result["error"] == "" and not result.get("error_envelope")
+    assert result["native_facts"]["source_authority"]["embedded_diagnostic_origin"] == "unknown"
+    assert "native_error_records" not in result["native_facts"]
+
+
 def test_native_error_wins_even_with_a_prior_completed_step_and_rc_zero(cli_stack):
     cli_stack.payload = frames("partial result", tail=({
         "type": "error", "error": {
